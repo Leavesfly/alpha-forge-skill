@@ -23,7 +23,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | [references/pairs-trading.md](references/pairs-trading.md) | 配对交易：市场中性统计套利，价差 z-score 开平仓 |
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + LightGBM 方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
-| [references/use-cases.md](references/use-cases.md) | 端到端典型用例（策略选优、风控、多空、组合、跨市场、研究流水线） |
+| [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6 逐级上手）+ 端到端典型用例（策略选优、风控、多空、组合、跨市场、研究流水线） |
 | `scripts/` | 可直接运行的回测工具代码（策略库、回测引擎、组合、CLI） |
 
 ## 环境配置

@@ -33,7 +33,7 @@ alpha-forge-skill/
 │   ├── pairs-trading.md         # 配对交易（市场中性）
 │   ├── ml-strategy.md           # 机器学习策略（LightGBM + 走步样本外）
 │   ├── sentiment.md             # 新闻情绪交易（akshare + AI 打分）
-│   └── use-cases.md             # 端到端典型用例
+│   └── use-cases.md             # 新手引导动线 + 端到端典型用例
 ├── outputs/                     # --plot 图表与新闻/打分中间文件（与 scripts/ 平级，自动创建、已忽略）
 └── scripts/                     # 可运行的回测工具代码
     ├── pyproject.toml           # 依赖（tickflow / pandas / numpy / matplotlib / lightgbm / akshare）
@@ -142,7 +142,7 @@ uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 | [references/pairs-trading.md](references/pairs-trading.md) | 配对交易（市场中性统计套利） |
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + LightGBM 方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
-| [references/use-cases.md](references/use-cases.md) | 端到端典型用例与结果解读 |
+| [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6）+ 端到端典型用例与结果解读 |
 
 ## 环境要求
 
