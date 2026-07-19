@@ -15,6 +15,7 @@
 - **配对交易**：市场中性统计套利，自动筛选/手动指定配对，价差 z-score 开平仓。
 - **机器学习策略**：技术指标特征 + LightGBM 方向预测，走步（walk-forward）重训练并只在样本外（OOS）段计价，天然规避前视与过拟合。
 - **新闻情绪交易**：akshare 抓 A 股新闻 + AI（agent LLM）半自动情绪打分（agent-in-the-loop），情绪信号回测。
+- **定投（定期定额/DCA）**：按周期（日/周/月）注入现金、份额累积，现金流账本建模，资金加权 XIRR 计量；内置智能定投（分档加码）、超跌回撤加码、价值平均等增强模式，并与一次性投入、纯定投双基准对比。
 - **绩效与可视化**：累计/年化收益、夏普、索提诺、最大回撤、卡玛比率、胜率等指标；净值曲线/回撤/买卖点图表。
 - **参数寻优**：策略参数网格搜索，按任意指标排序。
 
@@ -33,6 +34,7 @@ alpha-forge-skill/
 │   ├── pairs-trading.md         # 配对交易（市场中性）
 │   ├── ml-strategy.md           # 机器学习策略（LightGBM + 走步样本外）
 │   ├── sentiment.md             # 新闻情绪交易（akshare + AI 打分）
+│   ├── dca.md                   # 定投（定期定额/DCA，现金流回测 + XIRR）
 │   └── use-cases.md             # 新手引导动线 + 端到端典型用例
 ├── outputs/                     # --plot 图表与新闻/打分中间文件（与 scripts/ 平级，自动创建、已忽略）
 └── scripts/                     # 可运行的回测工具代码
@@ -45,13 +47,15 @@ alpha-forge-skill/
     ├── run_pairs.py             # 配对交易 CLI
     ├── run_ml.py                # 机器学习策略 CLI（走步样本外）
     ├── run_sentiment.py         # 新闻情绪交易 CLI（两阶段 agent-in-the-loop）
+    ├── run_dca.py               # 定投（定期定额）回测 CLI（现金流账本 + XIRR）
     ├── strategies/              # 策略库（base + 7 策略 + 注册表）
     ├── backtest/                # 回测引擎、绩效指标、可视化、寻优
     ├── portfolio/               # 组合回测引擎、轮动/优化、可视化
     ├── factors/                 # 因子库、预处理合成、选股与分层回测
     ├── pairs/                   # 配对筛选、价差信号、可视化
     ├── ml/                      # 特征工程、LightGBM 走步训练、可视化
-    └── sentiment/               # 新闻抓取、情绪打分契约、情绪信号回测
+    ├── sentiment/               # 新闻抓取、情绪打分契约、情绪信号回测
+    └── dca/                     # 定投现金流账本、XIRR 指标、可视化
 ```
 
 ## 快速开始
@@ -117,6 +121,11 @@ uv run python run_sentiment.py --symbol 600000.SH --stage fetch
 uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 ```
 
+```bash
+# 定投（定期定额）：每月定投 + 资金加权 IRR 与一次性投入对比（免费日 K 即可；增强模式见 --mode smart/dip/value_avg）
+uv run python run_dca.py --symbol 600000.SH --freq monthly --amount 1000 --plot
+```
+
 ## 内置策略
 
 | 策略名 | 名称 | 核心逻辑 |
@@ -142,6 +151,7 @@ uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 | [references/pairs-trading.md](references/pairs-trading.md) | 配对交易（市场中性统计套利） |
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + LightGBM 方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
+| [references/dca.md](references/dca.md) | 定投（定期定额/DCA）：现金流账本回测、资金加权 XIRR、智能定投/超跌加码/价值平均等增强模式、双基准对比 |
 | [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6）+ 端到端典型用例与结果解读 |
 
 ## 环境要求

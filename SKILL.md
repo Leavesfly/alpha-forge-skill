@@ -1,6 +1,6 @@
 ---
 name: alpha-forge-skill
-description: 使用 TickFlow Python SDK 获取 A 股、港股、美股、期货等市场的实时行情、K 线与财务数据，内置双均线、MACD、RSI、布林带、动量、唐奇安通道、KDJ 等 7 个量化策略与轻量回测引擎（支持多空、止损止盈、波动率目标仓位、绩效指标、可视化、参数寻优），多标的组合回测与截面轮动（动量/等权/风险平价/最小方差/最大夏普），多因子选股（价值/质量/规模/动量/波动率因子打分与分层回测），配对交易（市场中性统计套利），机器学习策略（LightGBM 方向预测 + 走步样本外验证），以及新闻情绪交易（akshare 新闻 + AI 情绪打分）。当需要查询多市场行情/K线/财务数据、下载历史数据做分析，或对交易策略（含做空、止损止盈、多标的轮动、多因子选股、配对交易/统计套利、组合优化、机器学习、新闻情绪）进行历史回测与参数寻优时使用。
+description: 使用 TickFlow Python SDK 获取 A 股、港股、美股、期货等市场的实时行情、K 线与财务数据，内置双均线、MACD、RSI、布林带、动量、唐奇安通道、KDJ 等 7 个量化策略与轻量回测引擎（支持多空、止损止盈、波动率目标仓位、绩效指标、可视化、参数寻优），多标的组合回测与截面轮动（动量/等权/风险平价/最小方差/最大夏普），多因子选股（价值/质量/规模/动量/波动率因子打分与分层回测），配对交易（市场中性统计套利），机器学习策略（LightGBM 方向预测 + 走步样本外验证），新闻情绪交易（akshare 新闻 + AI 情绪打分），以及定投（定期定额/DCA 现金流回测 + 资金加权 XIRR，含智能定投/超跌加码/价值平均等增强模式与双基准对比）。当需要查询多市场行情/K线/财务数据、下载历史数据做分析，或对交易策略（含做空、止损止盈、多标的轮动、多因子选股、配对交易/统计套利、组合优化、机器学习、新闻情绪、定投/定期定额）进行历史回测与参数寻优时使用。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
@@ -23,6 +23,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | [references/pairs-trading.md](references/pairs-trading.md) | 配对交易：市场中性统计套利，价差 z-score 开平仓 |
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + LightGBM 方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
+| [references/dca.md](references/dca.md) | 定投（定期定额/DCA）：现金流账本回测、资金加权 XIRR、智能定投/超跌加码/价值平均等增强模式、双基准对比 |
 | [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6 逐级上手）+ 端到端典型用例（策略选优、风控、多空、组合、跨市场、研究流水线） |
 | `scripts/` | 可直接运行的回测工具代码（策略库、回测引擎、组合、CLI） |
 
@@ -250,6 +251,28 @@ uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 
 > 数据源 akshare 仅返回最近约 100 条新闻，回测为近端短窗口演示；仅支持 A 股。详见 [references/sentiment.md](references/sentiment.md)。
 
+### 定投（定期定额 / DCA）
+
+定投按固定周期投入固定金额、累积份额，靠摊薄成本获利，与信号择时策略本质不同，
+因此单独用**现金流账本**建模，核心指标为**资金加权年化收益率（XIRR）**。除纯定投外，还内置
+**智能定投 / 超跌加码 / 价值平均**等增强模式（`--mode`），并与**一次性投入**、**纯定投**双基准对比：
+
+```bash
+# 每月纯定投 1000（默认），输出定投报告 + 一次性投入基准对比（免费日 K 即可）
+uv run python run_dca.py --symbol 600000.SH
+
+# 智能定投：按偏离 60 日均线幅度分档加码/减码/暂停
+uv run python run_dca.py --symbol 600519.SH --mode smart --ma-window 60 --plot
+
+# 超跌回撤加码：按距近期高点回撤深度分档 + RSI 超卖
+uv run python run_dca.py --symbol AAPL.US --mode dip --dip-window 120 --count 1000 --plot
+
+# 价值平均：盯目标市值增长线，涨过目标会卖出
+uv run python run_dca.py --symbol 600000.SH --mode value_avg --amount 1000 --plot
+```
+
+> 先比 **IRR vs 基准 A（纯定投）** 判断加码/择时是否真的有正贡献，再比 **基准 B（一次性投入）**。详见 [references/dca.md](references/dca.md)。
+
 ## 典型用例
 
 以下为常见工作流，完整命令与结果解读见 [references/use-cases.md](references/use-cases.md)：
@@ -266,12 +289,13 @@ uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 | 配对交易 | `run_pairs.py` 价差 z-score 做市场中性套利 |
 | 机器学习 | `run_ml.py` LightGBM 预测方向，走步样本外回测 |
 | 新闻情绪 | `run_sentiment.py --stage fetch` 抓新闻→agent 打分→`--stage backtest` |
+| 定投定期定额 | `run_dca.py` 按周期定投，看资金加权 IRR 与一次性投入对比 |
 | 组合优化 | `run_portfolio.py --strategy min_variance/max_sharpe` |
 
 ## 注意事项
 
 - 数据获取与回测脚本均在 `scripts/` 目录下用 `uv run python` 运行，首次需 `uv sync`。
-- 所有 `--plot` 生成的回测图表统一输出到与 `scripts/` 平级的项目根目录 `outputs/` 目录（首次自动创建，已在 `.gitignore` 忽略）；文件名默认按关键参数自动命名以避免互相覆盖，如 `backtest_600000SH_ma_cross.png`、`portfolio_momentum_4syms.png`、`pairs_600000SH_601398SH.png`（相同配置重跑才覆盖）；可用 `--output <路径>` 自定义。
+- 所有 `--plot` 生成的回测图表统一输出到与 `scripts/` 平级的项目根目录 `outputs/` 目录（首次自动创建，已在 `.gitignore` 忽略）；文件名默认按关键参数自动命名以避免互相覆盖，如 `backtest_600000SH_ma_cross.png`、`portfolio_momentum_4syms.png`、`pairs_600000SH_601398SH.png`、`dca_600000SH_monthly.png`（相同配置重跑才覆盖）；可用 `--output <路径>` 自定义。
 - SDK 支持 Python 3.9+，推荐 Python 3.10 或更高版本。
 - 免费服务仅提供历史日 K 线；实时行情与分钟 K 线需配置 `TICKFLOW_API_KEY`。
 - 支持 A 股、港股、美股、国内期货等多市场，标的代码可混合查询；`as_dataframe=True` 直接返回 pandas DataFrame。
