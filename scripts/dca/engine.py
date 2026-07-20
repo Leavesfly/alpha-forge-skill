@@ -11,6 +11,10 @@
 以现金流账本记账（买入为流出、卖出为流入），资金加权收益率（XIRR）计量，
 并与「一次性投入」「纯定投」两条基准对比。增强模式的择时判断仅依据截至当日（含）
 的数据，且买卖均在当日收盘价成交，不引入未来信息。绩效由 ``dca.metrics`` 计算。
+
+支持**显式分红建模**（``dividends`` + ``div_policy``）：按除权除息日持仓份额
+计现金分红，``reinvest`` 当日收盘价再投入、``cash`` 计入投资者现金流（XIRR 口径）。
+显式分红应搭配**不复权**价格使用，否则与前复权隐含的分红重复计收益。
 """
 
 from __future__ import annotations
@@ -24,6 +28,9 @@ from .metrics import compute_dca_metrics, compute_lumpsum_metrics
 
 #: 支持的定投模式
 MODES = ("fixed", "ma", "smart", "dip", "value_avg")
+
+#: 分红处理策略：再投入 / 现金落袋
+DIV_POLICIES = ("reinvest", "cash")
 
 
 @dataclass
@@ -43,6 +50,8 @@ class DCAResult:
     metrics: dict = field(default_factory=dict)
     lumpsum_metrics: dict = field(default_factory=dict)
     dca_metrics: dict | None = None  # 纯定投基准（增强模式下才有）
+    dividends: pd.Series | None = None  # 逐日到账现金分红（显式分红建模时才有）
+    div_policy: str | None = None
 
     @property
     def transactions(self) -> pd.DataFrame:
@@ -75,6 +84,8 @@ def run_dca_backtest(
     ma_window: int = 60,
     boost: float = 2.0,
     dip_window: int = 120,
+    dividends: pd.Series | None = None,
+    div_policy: str = "reinvest",
 ) -> DCAResult:
     """执行定投回测。
 
@@ -90,12 +101,18 @@ def run_dca_backtest(
         ma_window: ``ma`` / ``smart`` 模式的均线窗口。
         boost: 加码基准倍数（``ma`` 低于均线倍数；``smart`` / ``dip`` 分档以此缩放）。
         dip_window: ``dip`` 模式的回撤参考高点滚动窗口。
+        dividends: 每股现金分红序列（索引为除权除息日）；提供时显式建模分红，
+            应搭配不复权价格使用。
+        div_policy: 分红处理：``reinvest``（默认，当日收盘价再投入）或
+            ``cash``（现金落袋，计入 XIRR 现金流）。
 
     Returns:
         DCAResult。年化收益率为资金加权 XIRR，并附一次性投入与纯定投两条基准。
     """
     if mode not in MODES:
         raise ValueError(f"未知定投模式 '{mode}'，可选：{', '.join(MODES)}")
+    if div_policy not in DIV_POLICIES:
+        raise ValueError(f"未知分红策略 '{div_policy}'，可选：{', '.join(DIV_POLICIES)}")
 
     df = df.reset_index(drop=True)
     close = df["close"].astype(float)
@@ -104,8 +121,12 @@ def run_dca_backtest(
 
     mask = _contribution_mask(index, freq)
     cost_rate = commission + slippage
+    dps = _align_dividends(index, dividends)
 
-    ledger = _simulate(close, mask, mode, amount, cost_rate, ma_window, boost, dip_window)
+    ledger = _simulate(
+        close, mask, mode, amount, cost_rate, ma_window, boost, dip_window,
+        dps=dps, div_policy=div_policy,
+    )
     metrics = compute_dca_metrics(
         ledger["invested"],
         ledger["market_value"],
@@ -113,13 +134,20 @@ def run_dca_backtest(
         ledger["contribution"],
         ledger["num_contributions"],
         cashflow=ledger["cashflow"],
+        dividend_income=ledger["dividend_income"],
+        total_dividends=ledger["total_dividends"],
     )
-    lumpsum_metrics = compute_lumpsum_metrics(close, metrics["total_invested"], cost_rate)
+    lumpsum_metrics = compute_lumpsum_metrics(
+        close, metrics["total_invested"], cost_rate, dividends=dps
+    )
 
     # 增强模式额外给出「同参数纯定投」基准，用于判断增强是否真的更优
     dca_metrics = None
     if mode != "fixed":
-        base = _simulate(close, mask, "fixed", amount, cost_rate, ma_window, boost, dip_window)
+        base = _simulate(
+            close, mask, "fixed", amount, cost_rate, ma_window, boost, dip_window,
+            dps=dps, div_policy=div_policy,
+        )
         dca_metrics = compute_dca_metrics(
             base["invested"],
             base["market_value"],
@@ -127,6 +155,8 @@ def run_dca_backtest(
             base["contribution"],
             base["num_contributions"],
             cashflow=base["cashflow"],
+            dividend_income=base["dividend_income"],
+            total_dividends=base["total_dividends"],
         )
 
     return DCAResult(
@@ -143,6 +173,8 @@ def run_dca_backtest(
         metrics=metrics,
         lumpsum_metrics=lumpsum_metrics,
         dca_metrics=dca_metrics,
+        dividends=ledger["dividends"] if dividends is not None else None,
+        div_policy=div_policy if dividends is not None else None,
     )
 
 
@@ -155,6 +187,8 @@ def _simulate(
     ma_window: int,
     boost: float,
     dip_window: int,
+    dps: np.ndarray | None = None,
+    div_policy: str = "reinvest",
 ) -> dict:
     """按模式推进现金流账本，返回各曲线（Series）与定投期数。
 
@@ -162,6 +196,10 @@ def _simulate(
     卖出时成本从卖出所得中扣除（到手现金 = 市值×(1-成本)）。
     ``cashflow`` 为投资者视角的实际现金流（买入为负、卖出为正），用于 XIRR。
     ``contribution`` 为名义交易金额（买入>0、卖出<0），用于展示与绘图。
+
+    分红（``dps`` 非空时）：除权除息日按**当日定投前**的持仓份额计现金分红，
+    ``reinvest`` 当日收盘价再投入（不计入本金与外部现金流）；``cash`` 计入
+    正向现金流（落袋，参与 XIRR）。
     """
     price = close.to_numpy(dtype=float)
     n = len(price)
@@ -174,12 +212,23 @@ def _simulate(
     invested = np.zeros(n)
     shares_curve = np.zeros(n)
     market_value = np.zeros(n)
+    dividend_recv = np.zeros(n)
 
     shares_cum = 0.0
     invested_cum = 0.0
+    dividend_income = 0.0  # cash 策略下累计落袋分红（计入盈亏）
     num = 0
     k = 0  # value_avg 的已定投期数（用于目标市值增长线）
     for i in range(n):
+        # 分红：按当日定投前的持仓计（除权日当天买入不享当期分红）
+        if dps is not None and dps[i] > 0 and shares_cum > 0 and price[i] > 0:
+            cash_div = shares_cum * dps[i]
+            dividend_recv[i] = cash_div
+            if div_policy == "reinvest":
+                shares_cum += cash_div * (1.0 - cost_rate) / price[i]
+            else:  # cash：落袋，计入正向现金流
+                cashflow[i] += cash_div
+                dividend_income += cash_div
         if mask[i] and price[i] > 0:
             if mode == "value_avg":
                 k += 1
@@ -221,7 +270,34 @@ def _simulate(
         "shares": pd.Series(shares_curve, index=close.index),
         "market_value": pd.Series(market_value, index=close.index),
         "num_contributions": num,
+        "dividends": pd.Series(dividend_recv, index=close.index),
+        "dividend_income": dividend_income,
+        "total_dividends": float(dividend_recv.sum()),
     }
+
+
+def _align_dividends(index: pd.Index, dividends: pd.Series | None) -> np.ndarray | None:
+    """把每股分红序列对齐到交易日历：除权日不是交易日时顺延至其后首个交易日。
+
+    超出回测区间的分红直接丢弃；非时间索引时无法对齐，返回 None。
+    """
+    if dividends is None or len(dividends) == 0:
+        return None
+    if not isinstance(index, pd.DatetimeIndex):
+        return None
+    dps = np.zeros(len(index))
+    div = dividends.dropna()
+    dates = pd.DatetimeIndex(pd.to_datetime(div.index))
+    for dt, value in zip(dates, div.to_numpy(dtype=float)):
+        if value <= 0:
+            continue
+        if dt < index[0]:
+            continue  # 除权日在回测区间之前（当时尚无持仓）
+        pos = int(index.searchsorted(dt, side="left"))
+        if pos >= len(index):
+            continue  # 除权日在回测区间之后
+        dps[pos] += value
+    return dps if dps.any() else None
 
 
 def _resolve_index(df: pd.DataFrame) -> pd.Index:
@@ -229,7 +305,9 @@ def _resolve_index(df: pd.DataFrame) -> pd.Index:
     for col in ("trade_date", "date", "datetime", "time"):
         if col in df.columns:
             try:
-                return pd.to_datetime(df[col])
+                # 显式转 DatetimeIndex（to_datetime 返回 Series 会使后续
+                # isinstance 判断失效，导致周/月定投退化为固定间隔）
+                return pd.DatetimeIndex(pd.to_datetime(df[col]))
             except (ValueError, TypeError):
                 return pd.Index(df[col])
     return pd.RangeIndex(len(df))

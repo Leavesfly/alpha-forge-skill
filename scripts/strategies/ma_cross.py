@@ -23,6 +23,14 @@ class MACrossStrategy(Strategy):
     def default_params(cls) -> dict:
         return {"fast": 5, "slow": 20, "ma_type": "sma", "allow_short": False}
 
+    def validate_params(self) -> None:
+        fast, slow = int(self.params["fast"]), int(self.params["slow"])
+        if fast >= slow:
+            raise ValueError(
+                f"双均线参数要求 fast < slow，当前 fast={fast}, slow={slow}；"
+                "请减小 fast 或增大 slow。"
+            )
+
     def _ma(self, series: pd.Series, window: int) -> pd.Series:
         if self.params.get("ma_type", "sma").lower() == "ema":
             return series.ewm(span=window, adjust=False).mean()

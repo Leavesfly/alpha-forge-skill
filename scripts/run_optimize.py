@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""参数寻优 CLI：对策略参数网格搜索并按指定指标排序输出。
+"""参数寻优 CLI：对策略参数网格/随机搜索并按指定指标排序输出。
 
 示例：
     uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross
     uv run python run_optimize.py --symbol AAPL.US --strategy rsi --metric calmar --top 5
+    # 随机搜索：网格空间大时只采样 40 组（更快，且多重检验惩罚更轻）
+    uv run python run_optimize.py --symbol 600000.SH --strategy turtle --method random --n-iter 40
+    # 贝叶斯搜索：同预算下自适应聚焦高潜力参数区，通常优于随机
+    uv run python run_optimize.py --symbol 600000.SH --strategy turtle --method bayes --n-iter 40
     uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross --json > opt.json
 """
 
@@ -18,8 +22,10 @@ from backtest.optimize import grid_search
 from backtest.rules import TradingRules
 from cli_common import (
     add_json_arg,
+    build_next_steps,
     check_symbol,
     emit_json,
+    log_next_steps,
     make_logger,
     make_parser,
     run_cli,
@@ -60,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="排序指标，默认 sharpe",
     )
     parser.add_argument("--top", type=int, default=10, help="展示前 N 组，默认 10")
+    parser.add_argument(
+        "--method",
+        choices=["grid", "random", "bayes"],
+        default="grid",
+        help="寻优方法：grid(默认，穷举) / random(随机采样 --n-iter 组) / "
+        "bayes(TPE 风格自适应搜索，同预算通常优于 random)",
+    )
+    parser.add_argument("--n-iter", type=int, default=60, help="random/bayes 方法评估组数，默认 60")
+    parser.add_argument("--seed", type=int, default=42, help="random/bayes 方法随机种子（固定可复现），默认 42")
     parser.add_argument(
         "--jobs",
         type=int,
@@ -105,7 +120,8 @@ def main() -> None:
 
     log(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
     df = fetch_ohlcv(args.symbol, period=args.period, count=args.count)
-    log(f"已获取 {len(df)} 根 K 线，开始寻优（按 {args.metric} 排序）...\n")
+    method_str = f"method={args.method}" + (f", n_iter={args.n_iter}" if args.method in ("random", "bayes") else "")
+    log(f"已获取 {len(df)} 根 K 线，开始寻优（{method_str}，按 {args.metric} 排序）...\n")
 
     cost_model = CostModel.preset(
         args.market, commission=args.commission, slippage=args.slippage
@@ -116,13 +132,13 @@ def main() -> None:
 
     table = None
     with ProgressBar(total=1, description="参数寻优") as bar:
+        # 不在此处截 top_n：DSR 诊断需要全部试验的夏普（只用 top-N 会低估惩罚）
         table = grid_search(
             df,
             strategy_cls,
             symbol=args.symbol,
             period=args.period,
             metric=args.metric,
-            top_n=args.top,
             fixed_params={"allow_short": True} if args.allow_short else None,
             stop_loss=args.stop_loss,
             take_profit=args.take_profit,
@@ -134,13 +150,17 @@ def main() -> None:
             trading_rules=trading_rules,
             n_jobs=args.jobs,
             progress=bar.update,
+            method=args.method,
+            n_iter=args.n_iter,
+            seed=args.seed,
         )
 
     param_cols = [c for c in strategy_cls.param_grid.keys() if c in table.columns]
     cols = param_cols + [m for m in DISPLAY_METRICS if m in table.columns]
+    display = table.head(args.top)
 
     frame_table(
-        table[cols],
+        display[cols],
         title=f"{args.symbol} {strategy_cls.display_name} 寻优结果（Top {args.top}，按 {args.metric} 排序）",
         pct_cols=("total_return", "annual_return", "max_drawdown", "win_rate"),
         stderr=json_stdout,
@@ -150,7 +170,7 @@ def main() -> None:
     best_params = {c: _clean(best[c]) for c in param_cols}
     log(f"\n最优参数（{args.metric}={best[args.metric]:.4f}）：{best_params}")
 
-    # 过拟合诊断：Deflated Sharpe Ratio（对寻优试验次数做惩罚）
+    # 过拟合诊断：Deflated Sharpe Ratio（对全部寻优试验次数做惩罚）
     ann = periods_per_year(args.period)
     trial_sr = (table["sharpe"] / (ann ** 0.5)).to_numpy()
     fixed = {"allow_short": True} if args.allow_short else {}
@@ -171,14 +191,25 @@ def main() -> None:
     else:
         log("  ✅ DSR >= 90%：在多重检验惩罚后仍显著。")
 
+    params_str = " ".join(f"{k}={v}" for k, v in best_params.items())
+    log_next_steps(
+        log,
+        f"用最优参数复跑出图 run_backtest.py --symbol {args.symbol} "
+        f"--strategy {args.strategy} --params {params_str} --plot",
+        f"走步样本外验证 run_validate.py --symbol {args.symbol} --strategy {args.strategy}",
+    )
+
     if args.json is not None:
+        dsr_warn = "DSR<90%，过拟合风险高，建议样本外验证。" if dsr["dsr"] < 0.90 else "DSR>=90%，多重检验后仍显著。"
         payload = attach_meta(
             {
                 "symbol": args.symbol,
                 "strategy": args.strategy,
                 "metric": args.metric,
+                "method": args.method,
+                "n_trials": int(len(table)),
                 "num_periods": int(len(df)),
-                "results": frame_records(table[cols]),
+                "results": frame_records(display[cols]),
                 "best_params": best_params,
                 "best_metric_value": float(best[args.metric]),
                 "dsr": {
@@ -186,6 +217,17 @@ def main() -> None:
                     "sr_star": float(dsr["sr_star"]),
                     "dsr": float(dsr["dsr"]),
                 },
+                "summary": (
+                    f"{args.symbol} {args.strategy} 寻优完成：最优参数 {best_params}，"
+                    f"{args.metric}={best[args.metric]:.4f}。"
+                    f"{dsr_warn}"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "backtest", "reason": "用最优参数复跑出图",
+                     "command": f"run_backtest.py --symbol {args.symbol} --strategy {args.strategy} --params {params_str} --plot --json"},
+                    {"action": "validate", "reason": "走步样本外验证确认稳健性",
+                     "command": f"run_validate.py --symbol {args.symbol} --strategy {args.strategy} --json"},
+                ),
             },
             command="optimize",
         )

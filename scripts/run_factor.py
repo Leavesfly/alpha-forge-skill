@@ -18,7 +18,15 @@ from __future__ import annotations
 import argparse
 
 from backtest.metrics import format_report
-from cli_common import make_parser, run_cli, split_symbols
+from cli_common import (
+    add_json_arg,
+    build_next_steps,
+    emit_json,
+    make_logger,
+    make_parser,
+    run_cli,
+    split_symbols,
+)
 from cli_config import parse_args_with_config
 from datafeed import fetch_fundamentals, fetch_prices, fetch_universe
 from factors import (
@@ -31,6 +39,7 @@ from factors import (
     run_factor_model,
 )
 from naming import default_output
+from report import attach_meta
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ic-horizon", type=int, default=5, help="IC 前瞻收益周期，默认 5")
     parser.add_argument("--plot", action="store_true", help="生成多因子回测图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/factor_<股票池或标的数>.png 命名")
+    add_json_arg(parser)
     return parser
 
 
@@ -66,51 +76,56 @@ def resolve_symbols(args) -> list[str]:
     return fetch_universe(args.universe, limit=args.limit)
 
 
-def _report_ic(prices, fundamentals, factors_used, args) -> None:
-    """计算并打印各因子的 IC/IR、衰减与相关性。"""
+def _report_ic(prices, fundamentals, factors_used, args, log) -> dict:
+    """计算并打印各因子的 IC/IR、衰减与相关性；返回 IC 摘要供 JSON 输出。"""
     frames = {}
     for name in factors_used:
         frame = compute_factor(name, prices, fundamentals, args.lookback, args.lag_days)
         if frame is not None:
             frames[name] = frame.reindex(index=prices.index, columns=prices.columns)
     if not frames:
-        print("\n[IC] 无可用因子帧，跳过 IC 分析。")
-        return
+        log("\n[IC] 无可用因子帧，跳过 IC 分析。")
+        return {}
 
-    print(f"\n===== 因子 IC/IR 分析（前瞻 {args.ic_horizon} 期，Spearman）=====")
-    print(f"{'因子':<12}{'IC均值':>10}{'IC_IR':>10}{'t值':>10}{'胜率':>10}")
+    summaries: dict = {}
+    log(f"\n===== 因子 IC/IR 分析（前瞻 {args.ic_horizon} 期，Spearman）=====")
+    log(f"{'因子':<12}{'IC均值':>10}{'IC_IR':>10}{'t值':>10}{'胜率':>10}")
     for name, frame in frames.items():
         summ = ic_summary(compute_ic(frame, prices, horizon=args.ic_horizon))
-        print(
+        summaries[name] = {k: float(v) for k, v in summ.items()}
+        log(
             f"{name:<12}{summ['ic_mean']:>10.4f}{summ['ic_ir']:>10.3f}"
             f"{summ['t_stat']:>10.2f}{summ['hit_rate'] * 100:>9.1f}%"
         )
 
     horizons = (1, 5, 10, 20)
-    print("\n===== 因子衰减（IC 均值 @ 不同前瞻期）=====")
-    print("因子".ljust(10) + "".join(f"{f'h={h}':>10}" for h in horizons))
+    log("\n===== 因子衰减（IC 均值 @ 不同前瞻期）=====")
+    log("因子".ljust(10) + "".join(f"{f'h={h}':>10}" for h in horizons))
     for name, frame in frames.items():
         decay = factor_decay(frame, prices, horizons=horizons)
         cells = "".join(f"{decay.loc[h, 'ic_mean']:>10.4f}" for h in horizons)
-        print(name.ljust(10) + cells)
+        log(name.ljust(10) + cells)
 
     if len(frames) > 1:
-        print("\n===== 因子相关性矩阵（平均横截面 Spearman）=====")
-        print(factor_correlation(frames).round(2).to_string())
+        log("\n===== 因子相关性矩阵（平均横截面 Spearman）=====")
+        log(factor_correlation(frames).round(2).to_string())
+    return summaries
 
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
+    json_stdout = args.json == "-"
+    log = make_logger(json_stdout)
     factors = [f.strip() for f in args.factors.split(",") if f.strip()] or None
 
     symbols = resolve_symbols(args)
     if len(symbols) < 3:
         raise SystemExit("[error] 多因子选股至少需要 3 个标的（--symbols 逗号分隔，或用 --universe 指定股票池）。")
-    print(f"标的数量：{len(symbols)}")
+    log(f"标的数量：{len(symbols)}")
 
-    print(f"拉取 {args.period} K 线（{args.count} 根）...")
+    log(f"拉取 {args.period} K 线（{args.count} 根）...")
     prices = fetch_prices(symbols, period=args.period, count=args.count)
-    print(f"对齐后共同交易日 {len(prices)} 天，有效标的 {prices.shape[1]} 只")
+    log(f"对齐后共同交易日 {len(prices)} 天，有效标的 {prices.shape[1]} 只")
 
     # 仅当启用了基本面因子时才拉取财务数据，避免无谓请求/限流
     active = factors or list(FACTORS)
@@ -118,7 +133,7 @@ def main() -> None:
         name in FACTORS and FACTORS[name].category != "price" for name in active
     )
     if need_fund:
-        print("获取财务指标（用于价值/质量/规模因子）...")
+        log("获取财务指标（用于价值/质量/规模因子）...")
         fundamentals = fetch_fundamentals(list(prices.columns))
     else:
         fundamentals = None
@@ -137,27 +152,30 @@ def main() -> None:
         slippage=args.slippage,
     )
 
-    print()
-    print(f"启用因子：{', '.join(result.factors_used)}")
+    log()
+    log(f"启用因子：{', '.join(result.factors_used)}")
     if result.skipped:
-        print(f"跳过因子（数据不可用）：{', '.join(result.skipped)}")
-    print()
-    print(format_report(result.top_portfolio.metrics, title=f"Top {args.top_quantile:.0%} 组合"))
-    print(f"调仓次数      : {result.top_portfolio.rebalance_count}")
-    print()
-    print(format_report(result.top_portfolio.benchmark_metrics, title="等权基准"))
+        log(f"跳过因子（数据不可用）：{', '.join(result.skipped)}")
+    log()
+    log(format_report(result.top_portfolio.metrics, title=f"Top {args.top_quantile:.0%} 组合"))
+    log(f"调仓次数      : {result.top_portfolio.rebalance_count}")
+    log()
+    log(format_report(result.top_portfolio.benchmark_metrics, title="等权基准"))
 
-    print("\n=== 分层累计收益（单调性检验，L1=最高分层） ===")
+    log("\n=== 分层累计收益（单调性检验，L1=最高分层） ===")
+    layer_cum = []
     for i, layer in enumerate(result.layers):
         cum = (layer.equity.iloc[-1] - 1.0) * 100
-        print(f"  L{i + 1}: {cum:+.2f}%")
+        layer_cum.append(float(layer.equity.iloc[-1] - 1.0))
+        log(f"  L{i + 1}: {cum:+.2f}%")
 
-    print(f"\n=== 最新选股（{result.latest_date}，Top {args.top_quantile:.0%}） ===")
+    log(f"\n=== 最新选股（{result.latest_date}，Top {args.top_quantile:.0%}） ===")
     for sym, score in result.latest_picks.items():
-        print(f"  {sym}: 综合得分 {score:+.3f}")
+        log(f"  {sym}: 综合得分 {score:+.3f}")
 
+    ic_summaries = {}
     if args.ic:
-        _report_ic(prices, fundamentals, result.factors_used, args)
+        ic_summaries = _report_ic(prices, fundamentals, result.factors_used, args, log)
 
     if args.plot:
         from factors.plot import plot_factor
@@ -166,7 +184,45 @@ def main() -> None:
             "factor", f"{len(symbols)}syms" if args.symbols else args.universe
         )
         path = plot_factor(result, title="多因子选股", output=output)
-        print(f"\n图表已保存：{path}")
+        log(f"\n图表已保存：{path}")
+
+    if args.json is not None:
+        m = dict(result.top_portfolio.metrics)
+        bm = dict(result.top_portfolio.benchmark_metrics)
+        beat = "跑赢" if m.get("sharpe", 0) > bm.get("sharpe", 0) else "跑输"
+        picks_str = "、".join(list(result.latest_picks.keys())[:3])
+        payload = attach_meta(
+            {
+                "symbols": list(prices.columns),
+                "period": args.period,
+                "factors_used": list(result.factors_used),
+                "factors_skipped": list(result.skipped),
+                "top_quantile": float(args.top_quantile),
+                "metrics": m,
+                "benchmark_metrics": bm,
+                "rebalance_count": int(result.top_portfolio.rebalance_count),
+                "layer_cum_returns": layer_cum,
+                "latest_date": str(result.latest_date),
+                "latest_picks": {
+                    str(k): float(v) for k, v in result.latest_picks.items()
+                },
+                "ic": ic_summaries or None,
+                "summary": (
+                    f"多因子选股（{', '.join(result.factors_used)}）："
+                    f"Top {args.top_quantile:.0%} 组合夏普 {m.get('sharpe', 0):.2f}，"
+                    f"{beat}等权基准（夏普 {bm.get('sharpe', 0):.2f}）。"
+                    f"最新选股：{picks_str}。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "backtest", "reason": "对选出的标的做策略回测",
+                     "command": f"run_backtest.py --symbol {list(result.latest_picks.keys())[0] if result.latest_picks else '<代码>'} --strategy ma_cross --json"},
+                    {"action": "portfolio", "reason": "将选股结果纳入组合轮动",
+                     "command": "run_portfolio.py --symbols <选股结果> --strategy momentum --json"},
+                ),
+            },
+            command="factor",
+        )
+        emit_json(args.json, payload, log)
 
 
 if __name__ == "__main__":

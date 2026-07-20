@@ -33,10 +33,13 @@ _METRIC_ROWS = [
     ("annual_volatility", "年化波动率", "pct"),
     ("sharpe", "夏普比率", "num"),
     ("sortino", "索提诺比率", "num"),
+    ("omega", "欧米茄比率", "num"),
     ("max_drawdown", "最大回撤", "pct"),
+    ("max_dd_duration", "最长回撤期", "int"),
     ("calmar", "卡玛比率", "num"),
     ("num_trades", "交易次数", "int"),
     ("win_rate", "胜率", "pct"),
+    ("profit_factor", "盈亏比", "num"),
     ("num_periods", "回测周期数", "int"),
 ]
 

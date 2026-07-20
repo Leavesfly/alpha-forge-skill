@@ -1,16 +1,20 @@
-"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + akshare 兜底）。
+"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + baostock / akshare / yfinance 兜底）。
 
 统一拉取 K 线为回测所需的 OHLCV DataFrame。默认优先 TickFlow
 （免费服务历史日 K 足以回测，配置 TICKFLOW_API_KEY 后支持分钟级）；
-TickFlow 不可用且标的为 A 股日/周/月 K 时自动降级 akshare。
-环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|akshare`` 可强制指定单源。
+单源失败先重试（默认 2 次，退避 1s/2s，``ALPHA_FORGE_RETRIES`` 可调，0 关闭），
+重试仍失败时自动降级：A 股日/周/月 K 走 baostock → akshare，
+港股/美股日/周/月 K 走 yfinance。
+环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|baostock|akshare|yfinance`` 可强制指定单源。
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
+import time
 
 import pandas as pd
 from tickflow import TickFlow
@@ -40,6 +44,40 @@ def _check_symbol(symbol: str) -> None:
         )
 
 
+def _retry_config() -> tuple[int, float]:
+    """重试配置：(重试次数, 首次退避秒数)；``ALPHA_FORGE_RETRIES=0`` 关闭重试。"""
+    try:
+        retries = int(os.environ.get("ALPHA_FORGE_RETRIES", "2"))
+    except ValueError:
+        retries = 2
+    return max(0, retries), 1.0
+
+
+def _fetch_with_retry(source, symbol: str, period: str, count: int, adjust: str) -> pd.DataFrame:
+    """单数据源拉取，失败时指数退避重试（网络抖动兜底）。
+
+    重试仍失败时抛出最后一次异常，由调用方决定是否降级下一源。
+    """
+    retries, backoff = _retry_config()
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            # SDK 可能向 stdout 打印服务横幅，重定向到 stderr 保证 --json 的 stdout 纯净
+            with contextlib.redirect_stdout(sys.stderr):
+                return source.fetch(symbol, period, count, adjust)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                wait = backoff * (2 ** attempt)
+                print(
+                    f"[warn] {source.name} 拉取 {symbol} 失败（第 {attempt + 1} 次："
+                    f"{type(exc).__name__}），{wait:.0f}s 后重试...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+    raise last_exc  # type: ignore[misc]
+
+
 def _fetch_ohlcv_raw(
     symbol: str,
     period: str,
@@ -48,18 +86,18 @@ def _fetch_ohlcv_raw(
 ) -> pd.DataFrame:
     """按数据源优先级拉取单标的 K 线（不经缓存）。
 
-    主源失败且存在可用兜底源时自动降级（stderr 告警）；
+    单源失败先重试（退避），仍失败且存在可用兜底源时自动降级（stderr 告警）；
     全部失败时抛出汇总错误。
     """
     sources = [s for s in get_sources() if s.supports(symbol, period)]
     if not sources:
         raise RuntimeError(
-            f"没有数据源支持 {symbol} {period}（akshare 兜底仅限 A 股日/周/月 K）。"
+            f"没有数据源支持 {symbol} {period}（兜底源仅限 A 股/港股/美股的日/周/月 K）。"
         )
     errors: list[str] = []
     for i, source in enumerate(sources):
         try:
-            df = source.fetch(symbol, period, count, adjust)
+            df = _fetch_with_retry(source, symbol, period, count, adjust)
             if i > 0:
                 print(
                     f"[warn] 主源失败，已降级使用 {source.name} 数据源："
@@ -111,6 +149,8 @@ def fetch_ohlcv(
             count=count,
             adjust=adj,
             source=source_label(),
+            # 陈旧缓存增量更新：只拉尾部小段合并（每日扫描不再全量重拉）
+            fetch_tail_fn=lambda n: _fetch_ohlcv_raw(symbol, period, n, adj),
         )
     if df is None or len(df) == 0:
         raise RuntimeError(
@@ -192,6 +232,50 @@ def fetch_universe(name: str = "CN_Equity_A", limit: int | None = None) -> list[
     if not symbols:
         raise RuntimeError(f"股票池 {name} 未返回任何成分，请检查名称。")
     return symbols
+
+
+def fetch_dividends(symbol: str) -> pd.Series:
+    """拉取 A 股现金分红历史（每股派现，索引为除权除息日）。
+
+    数据源 akshare 分红送配详情（东财），无需 API Key；仅支持 A 股。
+    供 run_dca.py 显式分红建模（--dividends auto）使用，应搭配不复权价格。
+
+    Returns:
+        每股现金分红 Series（float，DatetimeIndex 为除权除息日，升序）。
+
+    Raises:
+        RuntimeError: 非 A 股、接口异常或无分红记录时。
+    """
+    _check_symbol(symbol)
+    if not symbol.upper().endswith((".SH", ".SZ", ".BJ")):
+        raise RuntimeError(
+            f"分红数据目前仅支持 A 股（收到 {symbol}）；"
+            "其他市场可用 --dividends <CSV> 提供（列：date,dps）。"
+        )
+    import akshare as ak
+
+    code = symbol.split(".")[0]
+    with contextlib.redirect_stdout(sys.stderr):
+        df = ak.stock_fhps_detail_em(symbol=code)
+    if df is None or len(df) == 0:
+        raise RuntimeError(f"akshare 未返回 {symbol} 的分红记录。")
+
+    # 防御式取列：「现金分红-现金分红比例」为每 10 股派现金额
+    div_col = next((c for c in df.columns if "现金分红比例" in str(c)), None)
+    date_col = next((c for c in df.columns if "除权除息日" in str(c)), None)
+    if div_col is None or date_col is None:
+        raise RuntimeError(
+            f"分红数据列名不兼容（实际列：{list(df.columns)}），"
+            "可能 akshare 接口变更；可改用 --dividends <CSV> 提供（列：date,dps）。"
+        )
+    out = df[[date_col, div_col]].dropna()
+    dps = pd.to_numeric(out[div_col], errors="coerce") / 10.0  # 每 10 股 -> 每股
+    dates = pd.to_datetime(out[date_col], errors="coerce")
+    series = pd.Series(dps.to_numpy(), index=pd.DatetimeIndex(dates))
+    series = series[series > 0].dropna().sort_index()
+    if series.empty:
+        raise RuntimeError(f"{symbol} 无有效现金分红记录（可能从未分红）。")
+    return series
 
 
 def fetch_fundamentals(symbols: list[str]) -> pd.DataFrame | None:

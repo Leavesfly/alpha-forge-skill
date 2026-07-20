@@ -48,6 +48,15 @@ class TurtleStrategy(Strategy):
             "allow_short": False,
         }
 
+    def validate_params(self) -> None:
+        entry, exit_ = int(self.params["entry"]), int(self.params["exit"])
+        if exit_ > entry:
+            raise ValueError(
+                f"海龟策略要求 exit <= entry，当前 entry={entry}, exit={exit_}。"
+            )
+        if float(self.params["atr_mult"]) <= 0:
+            raise ValueError("atr_mult 应为正数（如 2.0）。")
+
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         entry = int(self.params["entry"])
         exit_ = int(self.params["exit"])

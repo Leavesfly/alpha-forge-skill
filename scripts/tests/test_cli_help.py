@@ -10,7 +10,7 @@ import importlib
 
 import pytest
 
-# 全部 13 个 CLI 入口模块
+# 全部 CLI 入口模块
 CLI_MODULES = [
     "run_backtest",
     "run_optimize",
@@ -25,6 +25,7 @@ CLI_MODULES = [
     "run_signal",
     "run_paper",
     "run_event",
+    "run_canslim",
 ]
 
 

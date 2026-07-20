@@ -22,9 +22,13 @@ from backtest.engine import BacktestResult, run_backtest
 from strategies.base import Strategy
 
 from .features import build_features
+from .labeling import meta_labels, triple_barrier_labels
 
 #: 支持的模型名
 MODELS = ("lgbm", "ridge", "logistic")
+
+#: 支持的标签模式
+LABEL_MODES = ("fixed", "triple")
 
 
 class _PrecomputedSignalStrategy(Strategy):
@@ -64,6 +68,7 @@ class MLResult:
     test_window: int = 20
     threshold: float = 0.05
     model_name: str = "lgbm"
+    label_mode: str = "fixed"
 
 
 def build_target(close: pd.Series, horizon: int) -> pd.Series:
@@ -191,6 +196,9 @@ def run_ml_strategy(
     warmup: int = 60,
     model: str = "lgbm",
     prob_sizing: bool = False,
+    label: str = "fixed",
+    pt_mult: float = 2.0,
+    sl_mult: float = 1.0,
 ) -> MLResult:
     """训练并回测机器学习方向预测策略。
 
@@ -204,10 +212,16 @@ def run_ml_strategy(
         warmup: 特征形成所需的最小预热周期（该段不参与训练/预测）。
         model: 模型名（lgbm / ridge / logistic）。
         prob_sizing: True 时按预测置信度线性映射为连续仓位。
+        label: 标签模式：fixed（固定持有期方向）/ triple（三重障碍：
+            止盈/止损/最长持有期先触发者定标签，更贴近真实交易）。
+        pt_mult: triple 模式止盈障碍宽度（×滚动波动率）。
+        sl_mult: triple 模式止损障碍宽度（×滚动波动率）。
 
     Returns:
         MLResult。回测净值仅覆盖样本外（OOS）段。
     """
+    if label not in LABEL_MODES:
+        raise ValueError(f"未知标签模式 '{label}'，可选：{LABEL_MODES}")
     df = df.reset_index(drop=True)
     close = df["close"].astype(float)
     n = len(df)
@@ -215,7 +229,12 @@ def run_ml_strategy(
     feats = build_features(df)
     cols = list(feats.columns)
     X = feats.to_numpy(dtype=float)
-    y = build_target(close, horizon).to_numpy(dtype=float)
+    if label == "triple":
+        y = triple_barrier_labels(
+            close, horizon=horizon, pt_mult=pt_mult, sl_mult=sl_mult
+        ).to_numpy(dtype=float)
+    else:
+        y = build_target(close, horizon).to_numpy(dtype=float)
 
     valid_feat = ~np.isnan(X).any(axis=1)
     valid_y = ~np.isnan(y)
@@ -296,4 +315,127 @@ def run_ml_strategy(
         test_window=test_window,
         threshold=threshold,
         model_name=model,
+        label_mode=label,
     )
+
+
+@dataclass
+class MetaResult:
+    """meta-labeling 结果容器：原始策略 vs 过滤后策略。"""
+
+    base_backtest: BacktestResult
+    filtered_backtest: BacktestResult
+    n_models: int
+    n_signals: int
+    n_filtered: int
+    oos_start_pos: int
+    oos_start_label: object = None
+    model_name: str = "lgbm"
+
+
+def run_meta_strategy(
+    df: pd.DataFrame,
+    base_signals: pd.Series | np.ndarray,
+    symbol: str = "",
+    period: str = "1d",
+    horizon: int = 5,
+    train_window: int = 250,
+    test_window: int = 20,
+    threshold: float = 0.05,
+    commission: float = 0.0005,
+    slippage: float = 0.0005,
+    warmup: int = 60,
+    model: str = "lgbm",
+    pt_mult: float = 2.0,
+    sl_mult: float = 1.0,
+) -> MetaResult:
+    """meta-labeling：走步训练二级模型过滤一级策略的假信号。
+
+    二级模型不预测方向，只学习「一级信号按三重障碍执行是否赚钱」；
+    样本外段中，仅当二级模型置信度 > 0.5 + threshold 时才放行一级信号。
+    训练/预测只用一级信号非零的 bar；回测同时输出原始与过滤后两套净值
+    （均仅计价 OOS 段），便于判断过滤是否真有增益。
+    """
+    df = df.reset_index(drop=True)
+    close = df["close"].astype(float)
+    n = len(df)
+    sig = np.asarray(base_signals, dtype=float)[:n]
+
+    feats = build_features(df)
+    # 一级信号方向作为额外特征（二级模型可学到多/空胜率差异）
+    X = np.column_stack([feats.to_numpy(dtype=float), np.sign(sig)])
+    y = meta_labels(
+        close, sig, horizon=horizon, pt_mult=pt_mult, sl_mult=sl_mult
+    ).to_numpy(dtype=float)
+
+    valid_feat = ~np.isnan(X).any(axis=1)
+    valid_y = ~np.isnan(y)
+    has_sig = np.sign(sig) != 0
+
+    first_test = warmup + train_window + horizon
+    if first_test >= n:
+        raise RuntimeError(
+            f"历史长度不足：需要至少 {first_test + test_window} 根 K 线，当前仅 {n} 根。"
+            "请增大 --count 或减小 --train-window。"
+        )
+
+    keep = np.zeros(n, dtype=bool)  # 样本外被二级模型放行的 bar
+    n_models = 0
+    for test_start in range(first_test, n, test_window):
+        test_end = min(test_start + test_window, n)
+        train_hi = test_start - horizon
+        train_lo = max(warmup, train_hi - train_window)
+
+        tr_mask = np.zeros(n, dtype=bool)
+        tr_mask[train_lo:train_hi] = True
+        tr_mask &= valid_feat & valid_y & has_sig
+        y_tr = y[tr_mask]
+        if len(y_tr) < 30 or len(np.unique(y_tr)) < 2:
+            # 训练样本不足：保守放行全部信号（退化为原策略）
+            keep[test_start:test_end] = True
+            continue
+
+        te_idx = np.arange(test_start, test_end)
+        te_valid = te_idx[valid_feat[te_idx] & has_sig[te_idx]]
+        keep[te_idx[~(valid_feat[te_idx] & has_sig[te_idx])]] = True
+        if len(te_valid) == 0:
+            continue
+
+        proba, _ = _train_predict(model, X[tr_mask], y_tr, X[te_valid])
+        n_models += 1
+        keep[te_valid] = proba > 0.5 + threshold
+
+    filtered = np.where(keep, sig, 0.0)
+    # OOS 段之前两套信号均置 0，保证可比性
+    base_oos = sig.copy()
+    base_oos[:first_test] = 0.0
+    filtered[:first_test] = 0.0
+
+    allow_short = bool((sig < 0).any())
+    base_bt = run_backtest(
+        df, _PrecomputedSignalStrategy(base_oos, allow_short=allow_short),
+        symbol=symbol, period=period, commission=commission, slippage=slippage,
+    )
+    filt_bt = run_backtest(
+        df, _PrecomputedSignalStrategy(filtered, allow_short=allow_short),
+        symbol=symbol, period=period, commission=commission, slippage=slippage,
+    )
+
+    n_signals = int((np.sign(base_oos) != 0).sum())
+    n_filtered = int(n_signals - (np.sign(filtered) != 0).sum())
+    oos_label = None
+    idx = base_bt.equity.index
+    if first_test < len(idx):
+        oos_label = idx[first_test]
+
+    return MetaResult(
+        base_backtest=base_bt,
+        filtered_backtest=filt_bt,
+        n_models=n_models,
+        n_signals=n_signals,
+        n_filtered=n_filtered,
+        oos_start_pos=first_test,
+        oos_start_label=oos_label,
+        model_name=model,
+    )
+

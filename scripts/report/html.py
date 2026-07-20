@@ -20,11 +20,30 @@ _METRIC_LABELS = [
     ("annual_volatility", "年化波动率", "pct"),
     ("sharpe", "夏普比率", "num"),
     ("sortino", "索提诺比率", "num"),
+    ("omega", "欧米茄比率", "num"),
     ("max_drawdown", "最大回撤", "pct"),
+    ("max_dd_duration", "最长回撤期", "int"),
     ("calmar", "卡玛比率", "num"),
     ("win_rate", "胜率", "pct"),
+    ("profit_factor", "盈亏比", "num"),
     ("num_trades", "交易次数", "int"),
 ]
+
+#: 指标解释文字（报告中随指标行展示，帮助非专业读者理解）
+_METRIC_EXPLAIN = {
+    "total_return": "区间总收益，需与基准对比才有意义",
+    "annual_return": "折算为年的复利收益率",
+    "annual_volatility": "收益波动的年化标准差，越小越稳",
+    "sharpe": "每承担一单位波动换来的超额收益，>1 尚可，>2 优秀，>3 先怀疑过拟合",
+    "sortino": "只惩罚下行波动的夏普变体，对上涨波动友好",
+    "omega": "收益总和/亏损总和，>1 赚多亏少，对分布形状不敏感",
+    "max_drawdown": "净值从最高点到最低点的最大跌幅，代表最坏情况能亏多少",
+    "max_dd_duration": "净值低于前高的最长连续周期数，衡量套牛时长",
+    "calmar": "年化收益/最大回撤，越高越好，看重回撤控制",
+    "win_rate": "盈利交易占比；需与盈亏比一起看，高胜率低盈亏比未必赚钱",
+    "profit_factor": "毛利/毛损，>1 才有正期望，>1.5 较健康",
+    "num_trades": "交易越频繁成本越高，样本越多统计越可靠",
+}
 
 
 def _fmt(value: float, kind: str) -> str:
@@ -71,19 +90,82 @@ def _chart_base64(result) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.read()).decode("ascii")
 
 
+def _rolling_chart_base64(result, window: int = 60) -> str:
+    """滚动夏普（60 期窗口）+ 收益分布直方图的双联图 base64 data URI。"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = [
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Arial Unicode MS", "DejaVu Sans",
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    from backtest.metrics import periods_per_year
+
+    ret = result.returns.dropna()
+    ann = periods_per_year(getattr(result, "period", "1d"))
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
+    # 左：滚动夏普（窗口内均值/标准差年化）
+    if len(ret) > window:
+        roll_mean = ret.rolling(window).mean()
+        roll_std = ret.rolling(window).std(ddof=0)
+        roll_sharpe = (roll_mean / roll_std * np.sqrt(ann)).replace(
+            [np.inf, -np.inf], np.nan
+        )
+        axes[0].plot(roll_sharpe.index, roll_sharpe.values, color="#8e44ad", linewidth=1.2)
+        axes[0].axhline(0, color="#7f8c8d", linewidth=0.8, linestyle="--")
+    else:
+        axes[0].text(0.5, 0.5, "样本不足", ha="center", va="center", color="#7f8c8d")
+    axes[0].set_title(f"滚动夏普（{window} 期窗口）")
+    axes[0].grid(True, alpha=0.3)
+
+    # 右：收益分布直方图（肥尾直观可见）
+    axes[1].hist(ret.values * 100, bins=50, color="#2980b9", alpha=0.75)
+    axes[1].axvline(0, color="#7f8c8d", linewidth=0.8, linestyle="--")
+    axes[1].set_title("逐周期收益分布 (%)")
+    axes[1].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return "data:image/png;base64," + base64.b64encode(buf.read()).decode("ascii")
+
+
 def _metrics_table_html(metrics: dict, benchmark: dict) -> str:
     rows = []
     for key, label, kind in _METRIC_LABELS:
-        s = _fmt(metrics.get(key), kind)
+        # 旧版结果缺新增指标键时显示 '-'，保证向后兼容
+        s = _fmt(metrics.get(key), kind) if key in metrics else "-"
         b = _fmt(benchmark.get(key), kind) if key in benchmark else "-"
+        note = _METRIC_EXPLAIN.get(key, "")
         rows.append(
-            f"<tr><td>{label}</td><td class='num'>{s}</td><td class='num muted'>{b}</td></tr>"
+            f"<tr><td>{label}</td><td class='num'>{s}</td>"
+            f"<td class='num muted'>{b}</td><td class='note'>{note}</td></tr>"
         )
     return "\n".join(rows)
 
 
+def _heat_color(value: float, scale: float = 0.08) -> str:
+    """收益幅度 -> 热力图背景色（正红负绿，A 股习惯），幅度越大颜色越深。"""
+    ratio = max(-1.0, min(1.0, value / scale))
+    if ratio >= 0:
+        # 白 -> 红
+        g = b = int(255 - 90 * ratio)
+        return f"rgb(255,{g},{b})"
+    # 白 -> 绿
+    r = int(255 - 90 * -ratio)
+    b = int(255 - 60 * -ratio)
+    return f"rgb({r},255,{b})"
+
+
 def _monthly_table_html(returns: pd.Series) -> str:
-    """按 年×月 展示月度收益率（%）。索引非时间时返回空表说明。"""
+    """按 年×月 展示月度收益率热力图（背景色按幅度渐变）。"""
     if not isinstance(returns.index, pd.DatetimeIndex):
         idx = pd.to_datetime(returns.index, errors="coerce")
         if idx.isna().all():
@@ -107,7 +189,10 @@ def _monthly_table_html(returns: pd.Series) -> str:
                 cells.append("<td class='muted'>-</td>")
             else:
                 color = "#c0392b" if v >= 0 else "#27ae60"
-                cells.append(f"<td class='num' style='color:{color}'>{v * 100:+.1f}</td>")
+                cells.append(
+                    f"<td class='num' style='color:{color};"
+                    f"background:{_heat_color(v)}'>{v * 100:+.1f}</td>"
+                )
         body.append(f"<tr><td>{year}</td>{''.join(cells)}</tr>")
     return (
         f"<table class='grid'><thead><tr><th>年份</th>{header}</tr></thead>"
@@ -177,6 +262,115 @@ def _stress_html(stress: dict | None) -> str:
     return "".join(parts)
 
 
+def _yearly_chart_base64(result) -> str:
+    """年度收益对比条形图（策略 vs 基准）；无法按年聚合时返回空串。"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = [
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+        "Arial Unicode MS", "DejaVu Sans",
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    def _yearly(ret: pd.Series) -> pd.Series | None:
+        if not isinstance(ret.index, pd.DatetimeIndex):
+            idx = pd.to_datetime(ret.index, errors="coerce")
+            if pd.isna(idx).all():
+                return None
+            ret = pd.Series(ret.to_numpy(), index=idx)
+        y = (1.0 + ret.dropna()).resample("YE").prod() - 1.0
+        return y if len(y) else None
+
+    strat = _yearly(result.returns)
+    bench_eq = getattr(result, "benchmark_equity", None)
+    bench = _yearly(bench_eq.pct_change()) if bench_eq is not None else None
+    if strat is None:
+        return ""
+
+    years = [str(t.year) for t in strat.index]
+    x = np.arange(len(years))
+    width = 0.38
+    fig, ax = plt.subplots(figsize=(11, 3.6))
+    ax.bar(x - width / 2, strat.values * 100, width, label="策略", color="#c0392b", alpha=0.85)
+    if bench is not None and len(bench) == len(strat):
+        ax.bar(x + width / 2, bench.values * 100, width, label="基准", color="#7f8c8d", alpha=0.7)
+    ax.axhline(0, color="#7f8c8d", linewidth=0.8)
+    ax.set_xticks(x, years)
+    ax.set_title("年度收益对比 (%)")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return "data:image/png;base64," + base64.b64encode(buf.read()).decode("ascii")
+
+
+def drawdown_episodes(equity: pd.Series, top_n: int = 5) -> list[dict]:
+    """提取最深的 top_n 次回撤事件（开始/谷底/恢复/深度/持续周期数）。
+
+    回撤事件 = 净值从前高回落到重新创高之间的完整区间；末尾未恢复的
+    事件照常纳入（recover 为 None）。返回按深度降序。
+    """
+    eq = equity.dropna()
+    if len(eq) < 2:
+        return []
+    cummax = eq.cummax()
+    dd = eq / cummax - 1.0
+    episodes: list[dict] = []
+    in_dd = False
+    start = trough = None
+    trough_val = 0.0
+    for i, (ts, v) in enumerate(dd.items()):
+        if not in_dd and v < 0:
+            in_dd = True
+            start = dd.index[i - 1] if i > 0 else ts
+            trough, trough_val = ts, v
+        elif in_dd:
+            if v < trough_val:
+                trough, trough_val = ts, v
+            if v >= 0:  # 创新高，事件结束
+                episodes.append({
+                    "start": start, "trough": trough, "recover": ts,
+                    "depth": trough_val,
+                    "length": int(dd.index.get_loc(ts) - dd.index.get_loc(start)),
+                })
+                in_dd = False
+    if in_dd:  # 末尾未恢复
+        episodes.append({
+            "start": start, "trough": trough, "recover": None,
+            "depth": trough_val,
+            "length": int(len(dd) - 1 - dd.index.get_loc(start)),
+        })
+    episodes.sort(key=lambda e: e["depth"])
+    return episodes[:top_n]
+
+
+def _drawdown_table_html(equity: pd.Series, top_n: int = 5) -> str:
+    """Top N 最深回撤区间表（QuantStats 风格 worst drawdowns）。"""
+    eps = drawdown_episodes(equity, top_n)
+    if not eps:
+        return "<p class='muted'>（无回撤事件）</p>"
+    rows = []
+    for e in eps:
+        recover = str(e["recover"])[:10] if e["recover"] is not None else "未恢复"
+        rows.append(
+            f"<tr><td>{str(e['start'])[:10]}</td><td>{str(e['trough'])[:10]}</td>"
+            f"<td>{recover}</td><td class='num'>{e['depth'] * 100:.2f}%</td>"
+            f"<td class='num'>{e['length']}</td></tr>"
+        )
+    return (
+        "<table class='grid'><thead><tr><th>开始</th><th>谷底</th>"
+        "<th>恢复</th><th class='num'>深度</th><th class='num'>持续周期</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _assumptions_html(config: dict, period_range: str) -> str:
     """固定的「假设与局限」声明区块。"""
     cfg = "".join(f"<li><b>{k}</b>：{v}</li>" for k, v in (config or {}).items())
@@ -215,8 +409,11 @@ def render_backtest_report(
         period_range=period_range,
         config=_config_html(config or {}),
         chart=_chart_base64(result),
+        rolling_chart=_rolling_chart_base64(result),
+        yearly_chart=_yearly_chart_base64(result),
         metrics=_metrics_table_html(result.metrics, result.benchmark_metrics),
         monthly=_monthly_table_html(result.returns),
+        drawdown_table=_drawdown_table_html(result.equity),
         trades=_trades_table_html(result),
         stress=_stress_html(stress),
         assumptions=_assumptions_html(config or {}, period_range),
@@ -255,6 +452,7 @@ def render_compare_report(
         config=_config_html(config or {}),
         chart=_compare_chart_base64(results),
         metrics=_compare_metrics_html(results),
+        monthly=_compare_monthly_html(results),
     )
     out_path = Path(output).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -314,6 +512,15 @@ def _compare_metrics_html(results: dict[str, object]) -> str:
     )
 
 
+def _compare_monthly_html(results: dict[str, object]) -> str:
+    """各策略月度收益热力图小表并排展示。"""
+    parts = []
+    for name, res in results.items():
+        parts.append(f"<h3>{name}</h3>")
+        parts.append(_monthly_table_html(res.returns))
+    return "".join(parts)
+
+
 _TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -328,6 +535,7 @@ _TEMPLATE = """<!DOCTYPE html>
   th, td {{ border: 1px solid #e1e4e8; padding: 6px 10px; text-align: left; }}
   th {{ background: #f6f8fa; }}
   td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  td.note {{ color: #95a5a6; font-size: 12px; }}
   .muted {{ color: #b2bec3; }}
   img {{ width: 100%; margin-top: 8px; border: 1px solid #e1e4e8; border-radius: 6px; }}
   ul.config {{ font-size: 13px; color: #636e72; }}
@@ -339,11 +547,17 @@ _TEMPLATE = """<!DOCTYPE html>
   {config}
   <h2>净值与回撤</h2>
   <img src="{chart}" alt="净值曲线与回撤">
+  <h2>滚动风险与收益分布</h2>
+  <img src="{rolling_chart}" alt="滚动夏普与收益分布">
+  <h2>年度收益对比</h2>
+  <img src="{yearly_chart}" alt="年度收益对比">
   <h2>绩效指标（策略 vs 基准）</h2>
-  <table><thead><tr><th>指标</th><th class="num">策略</th><th class="num">基准</th></tr></thead>
+  <table><thead><tr><th>指标</th><th class="num">策略</th><th class="num">基准</th><th>说明</th></tr></thead>
   <tbody>{metrics}</tbody></table>
   <h2>月度收益 (%)</h2>
   {monthly}
+  <h2>最深回撤 Top 5</h2>
+  {drawdown_table}
   <h2>交易明细（前 50 笔）</h2>
   {trades}
   {stress}
@@ -380,6 +594,8 @@ _COMPARE_TEMPLATE = """<!DOCTYPE html>
   <img src="{chart}" alt="多策略净值对比">
   <h2>绩效指标对照</h2>
   {metrics}
+  <h2>各策略月度收益 (%)</h2>
+  {monthly}
   <p class="disclaimer">本报告基于历史数据回测，不代表未来收益；多策略同标的比较
   存在选择性偏差，建议用 run_validate.py 做样本外验证。</p>
 </body></html>

@@ -15,11 +15,14 @@ import argparse
 from backtest.costs import CostModel
 from backtest.engine import run_backtest
 from backtest.ledger import run_backtest_ledger
+from backtest.metrics import relative_metrics
 from backtest.rules import TradingRules
 from cli_common import (
     add_json_arg,
+    build_next_steps,
     check_symbol,
     emit_json,
+    log_next_steps,
     make_logger,
     make_parser,
     parse_params,
@@ -98,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--take-profit", type=float, default=None, help="止盈比例，如 0.10 表示浮盈 10%%")
     parser.add_argument("--vol-target", type=float, default=None, help="年化目标波动率，如 0.15（开启连续仓位）")
     parser.add_argument("--vol-window", type=int, default=20, help="波动率滚动窗口，默认 20")
+    parser.add_argument("--kelly", action="store_true", help="半 Kelly 连续仓位（仓位=信号×0.5μ/σ²，与 --vol-target 互斥且优先；仅向量引擎）")
+    parser.add_argument("--kelly-window", type=int, default=60, help="Kelly 估计滚动窗口，默认 60")
     parser.add_argument("--max-leverage", type=float, default=1.0, help="仓位上限，默认 1.0")
     parser.add_argument("--plot", action="store_true", help="生成回测图表")
     parser.add_argument("--stress", action="store_true", help="输出压力测试（历史情景重放 + 蒙特卡洛冲击）")
@@ -149,6 +154,8 @@ def main() -> None:
 
     if args.engine == "ledger":
         lot = args.lot_size or (100 if args.market == "astock" else 1)
+        if args.kelly:
+            log("[warn] 账本引擎暂不支持 --kelly，已忽略（可用向量引擎）。")
         log(f"账本引擎：初始资金 {args.capital:,.0f}，lot_size={lot}")
         result = run_backtest_ledger(
             df,
@@ -179,6 +186,8 @@ def main() -> None:
             take_profit=args.take_profit,
             vol_target=args.vol_target,
             vol_window=args.vol_window,
+            kelly=args.kelly,
+            kelly_window=args.kelly_window,
             max_leverage=args.max_leverage,
         )
 
@@ -197,6 +206,15 @@ def main() -> None:
         {"策略": result.metrics, "基准 Buy&Hold": result.benchmark_metrics},
         title=f"{args.symbol} {strategy.display_name} 回测绩效",
         stderr=json_stdout,
+    )
+
+    # 基准相对指标：信息比率/跟踪误差/Beta/Alpha
+    benchmark_returns = result.benchmark_equity.pct_change().fillna(0.0)
+    relative = relative_metrics(result.returns, benchmark_returns, period=args.period)
+    log(
+        f"\n相对基准：信息比率 {relative['information_ratio']:.2f}、"
+        f"跟踪误差 {relative['tracking_error'] * 100:.2f}%、"
+        f"Beta {relative['beta']:.2f}、Alpha(年化) {relative['alpha'] * 100:+.2f}%"
     )
 
     stress = None
@@ -237,11 +255,36 @@ def main() -> None:
         )
         log(f"HTML 报告已保存：{path}")
 
+    log_next_steps(
+        log,
+        f"多策略对比 run_compare.py --symbol {args.symbol}",
+        f"参数寻优 run_optimize.py --symbol {args.symbol} --strategy {args.strategy}（含 DSR 诊断）",
+        "样本外验证 run_validate.py",
+    )
+
     if args.json is not None:
-        payload = attach_meta(
-            result_to_dict(result, strategy_name=strategy.display_name, config=config),
-            command="backtest",
+        payload = result_to_dict(result, strategy_name=strategy.display_name, config=config)
+        payload["relative"] = relative
+        # Agent 友好：自然语言结论 + 结构化下一步
+        m = result.metrics
+        bm = result.benchmark_metrics
+        beat = "跑赢" if m.get("sharpe", 0) > bm.get("sharpe", 0) else "跑输"
+        payload["summary"] = (
+            f"{args.symbol} 使用{strategy.display_name}策略回测："
+            f"累计收益 {m.get('total_return', 0) * 100:+.1f}%，"
+            f"夏普 {m.get('sharpe', 0):.2f}，最大回撤 {m.get('max_drawdown', 0) * 100:.1f}%，"
+            f"{beat}基准 Buy&Hold（夏普 {bm.get('sharpe', 0):.2f}）。"
+            f"回测不代表未来收益。"
         )
+        payload["next_steps"] = build_next_steps(
+            {"action": "compare", "reason": "对比全部策略选出最优",
+             "command": f"run_compare.py --symbol {args.symbol} --json"},
+            {"action": "optimize", "reason": "寻找最优参数（含 DSR 过拟合诊断）",
+             "command": f"run_optimize.py --symbol {args.symbol} --strategy {args.strategy} --json"},
+            {"action": "validate", "reason": "样本外验证策略稳健性",
+             "command": f"run_validate.py --symbol {args.symbol} --strategy {args.strategy} --json"},
+        )
+        payload = attach_meta(payload, command="backtest")
         emit_json(args.json, payload, log)
 
 

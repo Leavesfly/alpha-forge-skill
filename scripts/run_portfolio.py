@@ -4,6 +4,9 @@
 示例：
     uv run python run_portfolio.py --symbols 600000.SH,000001.SZ,600519.SH --strategy momentum
     uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US --strategy inverse_vol --plot
+    # HRP 层次风险平价（对协方差估计误差更稳健）/ 最小 CVaR（尾部风险最小）
+    uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US,AMZN.US --strategy hrp
+    uv run python run_portfolio.py --symbols 600000.SH,600519.SH,000858.SZ --strategy min_cvar
     uv run python run_portfolio.py --symbols 600000.SH,600519.SH,000858.SZ --strategy momentum \
         --lookback 60 --top-k 2 --rebalance 20
     uv run python run_portfolio.py --symbols 600000.SH,000001.SZ,600519.SH --json > pf.json
@@ -15,6 +18,7 @@ import argparse
 
 from cli_common import (
     add_json_arg,
+    build_next_steps,
     emit_json,
     make_logger,
     make_parser,
@@ -43,13 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--strategy",
         default="momentum",
         choices=list(ROTATIONS),
-        help="轮动策略：momentum/equal_weight/inverse_vol",
+        help="轮动/优化策略：momentum/equal_weight/inverse_vol/min_variance/max_sharpe/hrp/min_cvar",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
     parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
     parser.add_argument("--lookback", type=int, default=60, help="回看周期（动量/波动率），默认 60")
     parser.add_argument("--top-k", type=int, default=2, help="动量轮动持有标的数，默认 2")
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期，默认 20")
+    parser.add_argument("--cvar-alpha", type=float, default=0.95, help="min_cvar 的置信水平，默认 0.95")
     parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
     parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
     parser.add_argument("--max-weight", type=float, default=None, help="单标的权重上限（如 0.4）")
@@ -74,6 +79,10 @@ def build_weight_params(args) -> dict:
         params.update(lookback=args.lookback)
     elif args.strategy == "max_sharpe":
         params.update(lookback=args.lookback, period=args.period)
+    elif args.strategy == "hrp":
+        params.update(lookback=args.lookback)
+    elif args.strategy == "min_cvar":
+        params.update(lookback=args.lookback, cvar_alpha=args.cvar_alpha)
     return params
 
 
@@ -165,6 +174,9 @@ def main() -> None:
 
     if args.json is not None:
         idx = result.equity.index
+        m = dict(result.metrics)
+        bm = dict(result.benchmark_metrics)
+        beat = "跑赢" if m.get("sharpe", 0) > bm.get("sharpe", 0) else "跑输"
         payload = attach_meta(
             {
                 "symbols": symbols,
@@ -174,12 +186,24 @@ def main() -> None:
                     "end": str(idx[-1]) if len(idx) else None,
                     "num_periods": int(len(idx)),
                 },
-                "metrics": dict(result.metrics),
-                "benchmark_metrics": dict(result.benchmark_metrics),
+                "metrics": m,
+                "benchmark_metrics": bm,
                 "rebalance_count": int(result.rebalance_count),
                 "risk": risk_rep,
                 "attribution": (
                     {k: float(v) for k, v in contrib.items()} if contrib is not None else None
+                ),
+                "summary": (
+                    f"{len(symbols)} 只标的组合（{strategy_name}）："
+                    f"夏普 {m.get('sharpe', 0):.2f}，最大回撤 {m.get('max_drawdown', 0) * 100:.1f}%，"
+                    f"{beat}等权基准（夏普 {bm.get('sharpe', 0):.2f}）。"
+                    f"调仓 {result.rebalance_count} 次。回测不代表未来。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "signal", "reason": "每日查看组合调仓信号",
+                     "command": f"run_signal.py --symbols {','.join(symbols)} --strategy ma_cross --json"},
+                    {"action": "stress", "reason": "压力测试看极端行情表现",
+                     "command": f"run_portfolio.py --symbols {','.join(symbols)} --strategy {args.strategy} --stress --json"},
                 ),
             },
             command="portfolio",

@@ -31,11 +31,19 @@ class Strategy(ABC):
     def __init__(self, **params):
         # 用默认参数占位，再用传入参数覆盖
         self.params = {**self.default_params(), **params}
+        self.validate_params()
 
     @classmethod
     def default_params(cls) -> dict:
         """返回策略默认参数。子类应覆盖。"""
         return {}
+
+    def validate_params(self) -> None:
+        """校验参数组合合法性，非法时抛 ValueError（含怎么改的提示）。
+
+        子类按需覆盖（如双均线要求 fast < slow）；CLI 层由 run_cli
+        统一转为友好错误，寻优网格中的非法组合会被自动跳过。
+        """
 
     @abstractmethod
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:

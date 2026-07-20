@@ -64,6 +64,8 @@ def run_backtest(
     take_profit: float | None = None,
     vol_target: float | None = None,
     vol_window: int = 20,
+    kelly: bool = False,
+    kelly_window: int = 60,
     max_leverage: float = 1.0,
     cost_model: CostModel | None = None,
     exec_price: str = "close",
@@ -85,6 +87,10 @@ def run_backtest(
         vol_target: 年化目标波动率（如 0.15=15%）；设置后按实现波动率将
             {-1,0,1} 信号缩放为连续仓位。None 关闭（满仓模式）。
         vol_window: 波动率估计的滚动窗口（周期数）。
+        kelly: 启用半 Kelly 连续仓位（与 vol_target 互斥，同时设置时 kelly 优先）：
+            仓位 = 信号 × clip(0.5×μ/σ², 0, max_leverage)，μ/σ² 由标的收益的
+            滚动均值/方差估计（仅用截至当前 bar 的数据）。
+        kelly_window: Kelly 估计的滚动窗口，默认 60。
         max_leverage: 仓位上限（默认 1.0，即不加杠杆）。
         cost_model: 交易成本模型；None 时用 commission/slippage 构造（兼容旧行为）。
         exec_price: 成交价约定，``close``（收盘成交，默认）或 ``open``（次日开盘成交，
@@ -101,8 +107,10 @@ def run_backtest(
     # 应用止损/止盈（作用于目标持仓时间线，随后统一 shift(1) 执行）
     if stop_loss or take_profit:
         signals = _apply_risk_management(signals, close, stop_loss, take_profit)
-    # 波动率目标仓位：将离散信号缩放为连续仓位
-    if vol_target:
+    # 连续仓位：半 Kelly 优先，否则波动率目标
+    if kelly:
+        signals = _apply_kelly(signals, close, kelly_window, max_leverage)
+    elif vol_target:
         signals = _apply_vol_target(
             signals, close, vol_target, vol_window, max_leverage, period
         )
@@ -259,3 +267,32 @@ def _apply_vol_target(
     scale = (vol_target / realized_vol).clip(upper=max_leverage)
     scale = scale.replace([np.inf, -np.inf], np.nan)
     return (signals * scale).fillna(0.0)
+
+
+def _apply_kelly(
+    signals: pd.Series,
+    close: pd.Series,
+    window: int,
+    max_leverage: float,
+) -> pd.Series:
+    """半 Kelly 连续仓位：按标的收益的滚动 μ/σ² 缩放信号。
+
+    高斯近似下连续 Kelly 最优仓位 f* = μ/σ²；实盘惯例取半 Kelly（f*/2）
+    降低估计误差放大风险。仓位限幅 [0, max_leverage]（期望为负时空仓，
+    不反向加杠杆）；估计仅用截至当前 bar 的数据，经引擎 shift(1) 后次日生效。
+
+    Args:
+        signals: 目标持仓信号（{-1, 0, 1}）。
+        close: 收盘价序列。
+        window: μ/σ² 估计的滚动窗口。
+        max_leverage: 仓位上限。
+
+    Returns:
+        连续仓位 Series（Kelly 尚未形成时仓位为 0）。
+    """
+    ret = close.pct_change()
+    mu = ret.rolling(window).mean()
+    var = ret.rolling(window).var()
+    frac = (0.5 * mu / var).replace([np.inf, -np.inf], np.nan)
+    frac = frac.clip(lower=0.0, upper=max_leverage)
+    return (signals * frac).fillna(0.0)

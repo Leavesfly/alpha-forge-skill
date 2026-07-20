@@ -30,6 +30,9 @@
 |--------|------|----------|--------|
 | `momentum` | price | 过去 lookback 期收益率 | 收盘价 |
 | `low_vol` | price | -收益率滚动标准差（低波异象） | 收盘价 |
+| `reversal` | price | -近 1 月（≤21 期）收益（短期反转，超跌得高分） | 收盘价 |
+| `sharpe_mom` | price | 滚动均值收益/滚动波动（风险调整动量，涨得稳者高分） | 收盘价 |
+| `consistency` | price | 滚动窗口内上涨天数占比（趋势一致性） | 收盘价 |
 | `value_ep` | value | EP=1/PE（仅正 PE） | 财务 |
 | `value_bp` | value | BP=1/PB（仅正 PB） | 财务 |
 | `quality_roe` | quality | ROE（正向） | 财务 |
@@ -66,10 +69,13 @@ cd scripts && uv sync
 # 股票池前 30 只，全因子（财务因子需权限，否则自动降级为价格因子）
 uv run python run_factor.py --universe CN_Equity_A --limit 30
 
-# 仅价格因子（动量+低波），无需财务权限
+# 仅价格因子（无需财务权限）：动量+低波，也可加反转/风险调整动量/一致性
 uv run python run_factor.py \
   --symbols 600000.SH,000001.SZ,600519.SH,000858.SZ,600809.SH,601318.SH \
   --factors momentum,low_vol --plot
+uv run python run_factor.py \
+  --symbols 600000.SH,000001.SZ,600519.SH,000858.SZ,600809.SH \
+  --factors momentum,reversal,sharpe_mom
 
 # 指定选股分位与分层数
 uv run python run_factor.py --universe CN_Equity_A --limit 50 --top-quantile 0.2 --layers 5

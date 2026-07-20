@@ -93,13 +93,21 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross \
 
 ## 参数寻优（optimize.py）
 
-`grid_search(df, strategy_cls, param_grid, metric, top_n, n_jobs, ...)`：
+`grid_search(df, strategy_cls, param_grid, metric, top_n, n_jobs, method, n_iter, seed, ...)`：
 
 - 遍历参数网格（缺省用策略类的 `param_grid`）的笛卡尔积，逐组回测。
 - 自动跳过无意义组合（如 `fast >= slow`）。
 - 汇总为 DataFrame，按 `metric`（默认 `sharpe`）降序排序，可取 `top_n`。
 - **多进程并行**：`n_jobs>1`（CLI `--jobs`，默认 CPU 核数）且有效组合数 >= 8 时
   启用 `ProcessPoolExecutor`，结果与串行逐行一致；组合数少时自动保持串行避免进程开销。
+- **随机搜索**：`method="random"`（CLI `--method random`）从全网格中无放回随机采样
+  `n_iter` 组（CLI `--n-iter`，默认 60），`seed`（CLI `--seed`，默认 42）保证可复现；
+  组合数不超过 `n_iter` 时退化为全网格。试验次数更少 → 多重检验惩罚（DSR）更轻、
+  过拟合风险更低，大网格下建议优先随机搜索。
+- **贝叶斯搜索**：`method="bayes"`（CLI `--method bayes`）在离散网格上做 TPE 风格
+  自适应搜索：把已评估组合按指标分为好/坏两组，按参数取值的似然比挑下一批
+  最有希望的候选（零新依赖，固定 seed 可复现，串行/并行结果一致）；同预算下
+  通常找到比随机更优的参数，DSR 惩罚同样按实际评估次数计算。
 
 支持的排序指标即 `compute_metrics` 返回的任意键，如 `sharpe`、`total_return`、
 `annual_return`、`calmar`、`win_rate`。
@@ -109,7 +117,7 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross \
 同一标的一次回测多个策略（默认参数），并排比较绩效：
 
 ```bash
-uv run python run_compare.py --symbol 600000.SH                      # 全部 9 个策略
+uv run python run_compare.py --symbol 600000.SH                      # 全部内置策略
 uv run python run_compare.py --symbol AAPL.US --strategies ma_cross,macd --plot --report
 ```
 
@@ -151,14 +159,30 @@ uv run python run_backtest.py --symbol 600000.SH --strategy kdj --vol-target 0.1
 uv run python run_backtest.py --symbol 600000.SH --strategy kdj --vol-target 0.2 --max-leverage 2.0
 ```
 
+```bash
+# 半 Kelly 连续仓位：f = clip(0.5μ/σ², 0, max_leverage)，滚动窗口估计（默认 60）
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --kelly
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --kelly --kelly-window 90
+```
+
+`--kelly` 与 `--vol-target` 同时给出时以 Kelly 为准；滚动期望为负时仓位归零
+（不反向加杠杆）；账本引擎（`--engine ledger`）暂不支持，会告警忽略。
+
 寻优：
 
 ```bash
 uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross
 uv run python run_optimize.py --symbol AAPL.US --strategy rsi --metric calmar --top 5
+
+# 大网格随机采样 40 组（可复现），DSR 按全部试验计算
+uv run python run_optimize.py --symbol 600000.SH --strategy macd --method random --n-iter 40 --seed 7
+
+# 贝叶斯搜索：同预算自适应聚焦高潜力参数区
+uv run python run_optimize.py --symbol 600000.SH --strategy macd --method bayes --n-iter 40
 ```
 
-参数：`--metric`（默认 sharpe）、`--top`（默认 10）、`--allow-short`、
+参数：`--metric`（默认 sharpe）、`--top`（默认 10）、`--method grid|random|bayes`、
+`--n-iter`（random/bayes 评估组数，默认 60）、`--seed`（默认 42）、`--allow-short`、
 `--stop-loss`、`--take-profit`、`--vol-target`、`--vol-window`、`--max-leverage`，其余与回测一致。
 
 ## 仓位模式总结
@@ -167,7 +191,8 @@ uv run python run_optimize.py --symbol AAPL.US --strategy rsi --metric calmar --
 |------|----------|----------|
 | 满仓多头（默认） | {0, 1} | 无 |
 | 多空 | {-1, 0, 1} | 策略 `--allow-short` |
-| 连续仓位 | [-max_lev, max_lev] 区间连续值 | `--vol-target` |
+| 连续仓位（波动率目标） | [-max_lev, max_lev] 区间连续值 | `--vol-target` |
+| 连续仓位（半 Kelly） | [0, max_lev] 区间连续值 | `--kelly`（优先于 `--vol-target`） |
 
 ## 注意事项与局限
 

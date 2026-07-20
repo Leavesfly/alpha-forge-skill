@@ -19,12 +19,21 @@ import argparse
 import numpy as np
 
 from backtest.metrics import format_report
-from cli_common import make_parser, run_cli, split_symbols
+from cli_common import (
+    add_json_arg,
+    build_next_steps,
+    emit_json,
+    make_logger,
+    make_parser,
+    run_cli,
+    split_symbols,
+)
 from cli_config import parse_args_with_config
 from datafeed import fetch_prices, fetch_universe
 from naming import default_output
 from pairs import hedge_ratio, pair_signals, pair_spread, pair_weights, select_pairs, zscore
 from portfolio import run_portfolio_backtest
+from report import attach_meta
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,10 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
     parser.add_argument("--plot", action="store_true", help="生成配对交易图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/pairs_<标的A>_<标的B>.png 命名")
+    add_json_arg(parser)
     return parser
 
 
-def choose_pair(args):
+def choose_pair(args, log):
     """返回 (pair_prices, a, b, beta, extra_info)。"""
     if args.symbols:
         syms = split_symbols(args.symbols, min_count=2, what="配对交易")
@@ -61,22 +71,24 @@ def choose_pair(args):
         beta = hedge_ratio(np.log(prices[a]), np.log(prices[b]))
         return prices[[a, b]], a, b, beta, None
 
-    print(f"从股票池 {args.universe} 拉取成分并筛选配对...")
+    log(f"从股票池 {args.universe} 拉取成分并筛选配对...")
     symbols = fetch_universe(args.universe, limit=args.limit)
     prices = fetch_prices(symbols, period=args.period, count=args.count)
     pairs = select_pairs(prices, top_n=args.top_pairs, min_corr=args.min_corr)
     if not pairs:
         raise SystemExit("[error] 未筛选到满足条件的配对，可降低 --min-corr 或增大 --limit。")
-    print(f"候选配对（按半衰期升序，共 {len(pairs)} 对）：")
+    log(f"候选配对（按半衰期升序，共 {len(pairs)} 对）：")
     for p in pairs:
-        print(f"  {p.a} ~ {p.b}: 相关性 {p.corr:.3f}, beta {p.beta:.3f}, 半衰期 {p.half_life:.1f} 天")
+        log(f"  {p.a} ~ {p.b}: 相关性 {p.corr:.3f}, beta {p.beta:.3f}, 半衰期 {p.half_life:.1f} 天")
     best = pairs[0]
     return prices[[best.a, best.b]], best.a, best.b, best.beta, best
 
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    pair_prices, a, b, beta, _info = choose_pair(args)
+    json_stdout = args.json == "-"
+    log = make_logger(json_stdout)
+    pair_prices, a, b, beta, _info = choose_pair(args, log)
     pair_prices = pair_prices.dropna()
 
     spread = pair_spread(pair_prices, a, b, beta)
@@ -91,12 +103,12 @@ def main() -> None:
     opens = int(((position.shift(1).fillna(0.0) == 0.0) & (position != 0.0)).sum())
     z = zscore(spread, args.lookback)
 
-    print()
-    print(f"配对：多 {a} / 空 {b}（对冲比率 beta={beta:.3f}）")
-    print(format_report(result.metrics, title=f"配对组合 [{a}~{b}]"))
-    print(f"开仓次数      : {opens}")
-    print(f"当前持仓      : {'多价差' if position.iloc[-1] > 0 else '空价差' if position.iloc[-1] < 0 else '空仓'}"
-          f"（最新 z={z.iloc[-1]:.2f}）")
+    current = "多价差" if position.iloc[-1] > 0 else "空价差" if position.iloc[-1] < 0 else "空仓"
+    log()
+    log(f"配对：多 {a} / 空 {b}（对冲比率 beta={beta:.3f}）")
+    log(format_report(result.metrics, title=f"配对组合 [{a}~{b}]"))
+    log(f"开仓次数      : {opens}")
+    log(f"当前持仓      : {current}（最新 z={z.iloc[-1]:.2f}）")
 
     if args.plot:
         from pairs.plot import plot_pairs
@@ -106,7 +118,38 @@ def main() -> None:
             z, position, result.equity, title=f"配对交易 {a}~{b}",
             entry=args.entry, exit=args.exit, stop=args.stop, output=output,
         )
-        print(f"\n图表已保存：{path}")
+        log(f"\n图表已保存：{path}")
+
+    if args.json is not None:
+        m = dict(result.metrics)
+        payload = attach_meta(
+            {
+                "pair": {"long": a, "short": b, "beta": float(beta)},
+                "period": args.period,
+                "thresholds": {
+                    "entry": args.entry, "exit": args.exit, "stop": args.stop,
+                    "lookback": args.lookback,
+                },
+                "metrics": m,
+                "opens": opens,
+                "current_position": current,
+                "latest_zscore": float(z.iloc[-1]),
+                "summary": (
+                    f"配对交易 {a}~{b}（beta={beta:.3f}）："
+                    f"夏普 {m.get('sharpe', 0):.2f}，最大回撤 {m.get('max_drawdown', 0) * 100:.1f}%，"
+                    f"开仓 {opens} 次，当前{current}（z={z.iloc[-1]:.2f}）。"
+                    f"市场中性策略，回测不代表未来。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "portfolio", "reason": "将配对纳入组合做风险平价配置",
+                     "command": f"run_portfolio.py --symbols {a},{b} --strategy inverse_vol --json"},
+                    {"action": "signal", "reason": "每日监控配对信号",
+                     "command": f"run_signal.py --symbols {a},{b} --strategy ma_cross --json"},
+                ),
+            },
+            command="pairs",
+        )
+        emit_json(args.json, payload, log)
 
 
 if __name__ == "__main__":

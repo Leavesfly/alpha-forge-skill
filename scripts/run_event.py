@@ -16,11 +16,19 @@ import argparse
 
 import pandas as pd
 
-from cli_common import check_symbol, make_parser, run_cli
+from cli_common import (
+    add_json_arg,
+    build_next_steps,
+    check_symbol,
+    emit_json,
+    make_logger,
+    make_parser,
+    run_cli,
+)
 from cli_config import parse_args_with_config
 from datafeed import fetch_ohlcv
 from naming import default_output
-from report import frame_table, print_text
+from report import attach_meta, frame_records, frame_table
 from research.event_study import event_study
 
 
@@ -38,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument("--plot", action="store_true", help="绘制 AAR/CAAR 曲线")
     parser.add_argument("--output", default=None, help="图表输出路径；默认自动命名")
+    add_json_arg(parser)
     return parser
 
 
@@ -56,6 +65,8 @@ def _close_series(symbol: str, args) -> pd.Series:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
+    json_stdout = args.json == "-"
+    log = make_logger(json_stdout)
     if args.benchmark:
         check_symbol(args.benchmark)
     events = [e.strip() for e in args.events.split(",") if e.strip()]
@@ -64,11 +75,11 @@ def main() -> None:
             "[error] --events 不能为空，格式为逗号分隔的日期，如 2025-04-30,2025-08-30"
         )
 
-    print_text(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
+    log(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
     prices = _close_series(args.symbol, args)
     bench = None
     if args.benchmark:
-        print_text(f"拉取基准 {args.benchmark} ...")
+        log(f"拉取基准 {args.benchmark} ...")
         bench = _close_series(args.benchmark, args)
 
     out = event_study(
@@ -77,7 +88,7 @@ def main() -> None:
     table = out["table"]
 
     mode = "超额（相对基准）" if bench is not None else "原始"
-    print_text(
+    log(
         f"\n事件数：{out['n_used']} 个参与统计，{out['n_skipped']} 个因窗口不完整被剔除；"
         f"收益口径：{mode}"
     )
@@ -86,15 +97,17 @@ def main() -> None:
         show,
         title=f"{args.symbol} 事件窗 AAR/CAAR（[{args.pre}, +{args.post}] 交易日）",
         pct_cols=("AAR", "CAAR"),
+        stderr=json_stdout,
     )
     frame_table(
         out["per_event"].reset_index(),
         title="各事件窗口累计（超额）收益",
         pct_cols=("cum_abnormal_return",),
+        stderr=json_stdout,
     )
     caar_end = float(table["CAAR"].iloc[-1])
-    print_text(f"\n结论：事件后至 +{args.post} 日的平均累计{mode}收益为 {caar_end * 100:+.2f}%。")
-    print_text("注意：小样本事件研究噪声很大，事件数 < 10 时结论仅供参考。")
+    log(f"\n结论：事件后至 +{args.post} 日的平均累计{mode}收益为 {caar_end * 100:+.2f}%。")
+    log("注意：小样本事件研究噪声很大，事件数 < 10 时结论仅供参考。")
 
     if args.plot:
         import matplotlib
@@ -123,7 +136,36 @@ def main() -> None:
         fig.tight_layout()
         fig.savefig(str(out_path), dpi=120, bbox_inches="tight")
         plt.close(fig)
-        print_text(f"\n图表已保存：{out_path}")
+        log(f"\n图表已保存：{out_path}")
+
+    if args.json is not None:
+        payload = attach_meta(
+            {
+                "symbol": args.symbol,
+                "benchmark": args.benchmark,
+                "events": events,
+                "window": {"pre": args.pre, "post": args.post},
+                "mode": mode,
+                "n_used": int(out["n_used"]),
+                "n_skipped": int(out["n_skipped"]),
+                "caar_end": caar_end,
+                "table": frame_records(show),
+                "per_event": frame_records(out["per_event"].reset_index()),
+                "summary": (
+                    f"{args.symbol} 事件研究（{out['n_used']} 个事件）："
+                    f"事件后至 +{args.post} 日的平均累计{mode}收益为 {caar_end * 100:+.2f}%。"
+                    f"小样本事件研究噪声很大，事件数<10 时结论仅供参考。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "score", "reason": "用纪律评分判断当前是否适合参与",
+                     "command": f"run_score.py --symbol {args.symbol} --json"},
+                    {"action": "backtest", "reason": "回测策略在事件前后的表现",
+                     "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},
+                ),
+            },
+            command="event",
+        )
+        emit_json(args.json, payload, log)
 
 
 if __name__ == "__main__":

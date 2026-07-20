@@ -54,6 +54,8 @@ equity   = (1 + port_ret).cumprod()
 | `inverse_vol` | 风险平价（逆波动率）：权重与各标的波动率成反比 | `lookback`/`rebalance` |
 | `min_variance` | 最小方差组合：解析解 w ∝ Σ⁻¹·1 | `lookback`/`rebalance` |
 | `max_sharpe` | 最大夏普组合：解析解 w ∝ Σ⁻¹·(μ-rf) | `lookback`/`rebalance` |
+| `hrp` | HRP 层次风险平价：相关距离聚类 + 递归二分配权，不求逆协方差，对估计误差更稳健 | `lookback`/`rebalance` |
+| `min_cvar` | 最小 CVaR：SLSQP 最小化历史尾部均值亏损（尾部风险最小） | `lookback`/`rebalance`/`cvar_alpha` |
 
 ### 组合优化（optimize.py）
 
@@ -61,6 +63,11 @@ equity   = (1 + port_ret).cumprod()
 
 - 最小方差：`w = Σ⁻¹·1 / (1ᵀΣ⁻¹·1)`，波动最小。
 - 最大夏普：`w ∝ Σ⁻¹·(μ-rf)`，风险调整后收益最优。
+- HRP（`hrp`）：相关距离 `√(0.5(1-ρ))` 做层次聚类，准对角化后递归二分、
+  按簇内逆方差分配风险（López de Prado, 2016）；不求逆协方差矩阵，
+  对估计误差比解析解更稳健，标的多/相关性高时优先选它。
+- 最小 CVaR（`min_cvar`）：直接最小化历史收益尾部（`1-cvar_alpha` 分位以下）
+  的均值亏损（SLSQP，失败退化等权）；关注崩盘风险而非日常波动时使用。
 - **仅做多近似**：负权重截断为 0 后归一化（非严格二次规划）；样本协方差在标的多/样本少时不稳，建议控制标的数与足够 `lookback`。
 
 ## CLI 用法
@@ -78,13 +85,15 @@ uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US --strategy inve
 # 等权基准组合
 uv run python run_portfolio.py --symbols 600519.SH,000858.SZ,600809.SH --strategy equal_weight
 
-# 最小方差 / 最大夏普组合优化
+# 最小方差 / 最大夏普 / HRP / 最小 CVaR 组合优化
 uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US,AMZN.US,GOOGL.US --strategy min_variance
 uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US,AMZN.US,GOOGL.US --strategy max_sharpe
+uv run python run_portfolio.py --symbols AAPL.US,MSFT.US,TSLA.US,AMZN.US --strategy hrp
+uv run python run_portfolio.py --symbols 600000.SH,600519.SH,000858.SZ --strategy min_cvar --cvar-alpha 0.95
 ```
 
-参数：`--symbols`（逗号分隔，至少 2 个）、`--strategy`（momentum/equal_weight/inverse_vol/min_variance/max_sharpe）、
-`--period`、`--count`、`--lookback`、`--top-k`、`--rebalance`、`--commission`、`--slippage`、
+参数：`--symbols`（逗号分隔，至少 2 个）、`--strategy`（momentum/equal_weight/inverse_vol/min_variance/max_sharpe/hrp/min_cvar）、
+`--period`、`--count`、`--lookback`、`--top-k`、`--rebalance`、`--cvar-alpha`（min_cvar 置信水平，默认 0.95）、`--commission`、`--slippage`、
 `--plot`、`--output`。
 
 输出组合与等权基准的绩效对比（累计/年化收益、夏普、最大回撤、卡玛等）及调仓次数。

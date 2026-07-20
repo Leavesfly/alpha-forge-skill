@@ -81,6 +81,31 @@ def _low_vol(prices, fundamentals, lookback, lag_days) -> FactorFrame:
     return -prices.pct_change().rolling(lookback).std()
 
 
+def _reversal(prices, fundamentals, lookback, lag_days) -> FactorFrame:
+    """短期反转：近 1 月（≤21 期）收益的相反数（超跌者得高分）。
+
+    A 股短周期均值回归效应显著，与中期动量互补。窗口取
+    min(21, lookback) 避免与动量窗口重叠。
+    """
+    window = min(21, lookback)
+    return -prices.pct_change(window)
+
+
+def _sharpe_mom(prices, fundamentals, lookback, lag_days) -> FactorFrame:
+    """风险调整动量：滚动均值收益 / 滚动波动（涨得稳者得高分）。
+
+    相比纯动量降低高波动个股的排名，择股更偏好趋势平滑的标的。"""
+    ret = prices.pct_change()
+    vol = ret.rolling(lookback).std()
+    return ret.rolling(lookback).mean() / vol.where(vol > 0)
+
+
+def _consistency(prices, fundamentals, lookback, lag_days) -> FactorFrame:
+    """趋势一致性：滚动窗口内上涨天数占比（越稳定上行越好）。"""
+    up = (prices.pct_change() > 0).astype(float)
+    return up.rolling(lookback).mean()
+
+
 def _make_fundamental(
     candidates: list[str],
     invert: bool = False,
@@ -120,6 +145,9 @@ def _make_fundamental(
 FACTORS: dict[str, FactorDef] = {
     "momentum": FactorDef("动量", "price", _momentum),
     "low_vol": FactorDef("低波动", "price", _low_vol),
+    "reversal": FactorDef("短期反转", "price", _reversal),
+    "sharpe_mom": FactorDef("风险调整动量", "price", _sharpe_mom),
+    "consistency": FactorDef("趋势一致性", "price", _consistency),
     "value_ep": FactorDef(
         "价值(EP=1/PE)", "value",
         _make_fundamental(["pe", "pe_ttm", "pe_ratio", "市盈率"], invert=True),

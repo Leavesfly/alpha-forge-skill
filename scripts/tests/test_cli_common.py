@@ -11,10 +11,13 @@ from cli_common import (
     check_symbol,
     emit_json,
     examples_from_doc,
+    log_next_steps,
+    make_parser,
     parse_params,
     run_cli,
     split_symbols,
 )
+from cli_common import _suggest_for_choice_error
 from naming import default_output
 from report.serialize import SCHEMA_VERSION, attach_meta, frame_records
 
@@ -62,6 +65,81 @@ def test_examples_from_doc():
     assert out is not None and out.startswith("示例")
     assert examples_from_doc("只有说明没有命令段") is None
     assert examples_from_doc(None) is None
+
+
+# ---------- 枚举参数拼错的近似建议 ----------
+
+def test_suggest_for_choice_error_close_match():
+    msg = ("argument --strategy: invalid choice: 'macdd' "
+           "(choose from 'ma_cross', 'macd', 'rsi')")
+    out = _suggest_for_choice_error(msg)
+    assert "是否想写：macd" in out
+    assert "run_list.py" in out
+
+
+def test_suggest_for_choice_error_unquoted_choices():
+    # Python 3.12+ 的 argparse 报错中 choices 不带引号
+    msg = "argument --strategy: invalid choice: 'macdd' (choose from ma_cross, macd, rsi)"
+    out = _suggest_for_choice_error(msg)
+    assert "是否想写：macd" in out
+
+
+def test_suggest_for_choice_error_passthrough():
+    msg = "the following arguments are required: --symbol"
+    assert _suggest_for_choice_error(msg) == msg
+
+
+def test_make_parser_invalid_choice_hint(capsys):
+    parser = make_parser("测试")
+    parser.add_argument("--strategy", choices=["ma_cross", "macd", "rsi"])
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--strategy", "macdd"])
+    assert exc_info.value.code == 2
+    assert "是否想写：macd" in capsys.readouterr().err
+
+
+# ---------- 「下一步」提示 ----------
+
+def test_log_next_steps_format():
+    lines: list[str] = []
+    log_next_steps(lambda *a: lines.append(" ".join(map(str, a))), "动作A", "动作B")
+    assert lines == ["\n下一步：动作A；动作B"]
+    log_next_steps(lambda *a: lines.append("x"))  # 无内容时不输出
+    assert len(lines) == 1
+
+
+# ---------- 环境自检（run_list.py --doctor） ----------
+
+def test_doctor_checks_structure(monkeypatch, tmp_path):
+    import datafeed
+    import run_list
+
+    monkeypatch.setenv("ALPHA_FORGE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        datafeed, "fetch_ohlcv", lambda *a, **k: pd.DataFrame({"close": [1.0] * 30})
+    )
+    checks = run_list._doctor_checks()
+    names = [c["name"] for c in checks]
+    for expected in ("Python 版本", "核心依赖", "TICKFLOW_API_KEY", "缓存目录", "数据拉取"):
+        assert expected in names
+    assert all(c["status"] in ("ok", "warn", "fail") for c in checks)
+    assert next(c for c in checks if c["name"] == "数据拉取")["status"] == "ok"
+    assert next(c for c in checks if c["name"] == "缓存目录")["status"] == "ok"
+
+
+def test_doctor_data_fetch_failure_has_hint(monkeypatch, tmp_path):
+    import datafeed
+    import run_list
+
+    def boom(*a, **k):
+        raise RuntimeError("网络不可用")
+
+    monkeypatch.setenv("ALPHA_FORGE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(datafeed, "fetch_ohlcv", boom)
+    checks = run_list._doctor_checks()
+    fetch = next(c for c in checks if c["name"] == "数据拉取")
+    assert fetch["status"] == "fail"
+    assert fetch["hint"]  # 失败项必须附修复建议
 
 
 # ---------- run_cli 退出码 ----------

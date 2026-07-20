@@ -25,6 +25,14 @@ class DonchianStrategy(Strategy):
     def default_params(cls) -> dict:
         return {"entry": 20, "exit": 10, "allow_short": False}
 
+    def validate_params(self) -> None:
+        entry, exit_ = int(self.params["entry"]), int(self.params["exit"])
+        if exit_ > entry:
+            raise ValueError(
+                f"唐奇安通道要求 exit <= entry，当前 entry={entry}, exit={exit_}；"
+                "离场通道应不宽于入场通道。"
+            )
+
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         entry = int(self.params["entry"])
         exit_ = int(self.params["exit"])

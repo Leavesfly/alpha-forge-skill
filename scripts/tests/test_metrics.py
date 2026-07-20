@@ -12,7 +12,10 @@ import pytest
 from backtest.metrics import (
     compute_metrics,
     max_drawdown,
+    max_drawdown_duration,
+    omega_ratio,
     periods_per_year,
+    relative_metrics,
 )
 
 
@@ -76,3 +79,65 @@ def test_calmar_zero_when_no_drawdown():
     m = compute_metrics(returns, equity, period="1d")
     # 无回撤 -> 卡玛比率安全置 0（避免除零）
     assert m["calmar"] == 0.0
+
+
+def test_omega_ratio_known_values():
+    """收益 [0.02, -0.01]：欧米茄 = 0.02 / 0.01 = 2。"""
+    returns = pd.Series([0.02, -0.01])
+    assert omega_ratio(returns) == pytest.approx(2.0)
+    # 全盈利时封顶而非 inf
+    assert omega_ratio(pd.Series([0.01, 0.02])) == pytest.approx(999.0)
+
+
+def test_max_drawdown_duration_known_series():
+    """净值低于前高的最长连续段：index 1-2 共 2 个周期。"""
+    equity = pd.Series([1.0, 0.9, 0.95, 1.1, 1.0])
+    assert max_drawdown_duration(equity) == 2
+    assert max_drawdown_duration(pd.Series([1.0, 1.1, 1.2])) == 0
+
+
+def test_profit_factor_from_trades():
+    """一盈一亏：盈亏比 = 毛利 / 毛损。"""
+    positions = pd.Series([0, 1, 1, 0, 1, 1, 0], dtype=float)
+    returns = pd.Series([0, 0.05, 0.05, 0, -0.03, -0.02, 0], dtype=float)
+    equity = (1.0 + returns).cumprod()
+    m = compute_metrics(returns, equity, period="1d", positions=positions)
+    win = 1.05 * 1.05 - 1.0
+    loss = 1.0 - 0.97 * 0.98
+    assert m["profit_factor"] == pytest.approx(win / loss)
+
+
+def test_compute_metrics_contains_new_keys():
+    """新增指标键存在且为原生 float/int（JSON 友好）。"""
+    rng = np.random.default_rng(1)
+    returns = pd.Series(rng.normal(0, 0.01, 100))
+    equity = (1.0 + returns).cumprod()
+    m = compute_metrics(returns, equity, period="1d")
+    for key in ("omega", "max_dd_duration", "profit_factor", "skew", "kurtosis"):
+        assert key in m
+
+
+def test_relative_metrics_identical_series():
+    """策略与基准完全相同：IR/TE 为 0，beta 为 1，alpha ≈ 0。"""
+    rng = np.random.default_rng(2)
+    b = pd.Series(rng.normal(0.0005, 0.01, 200))
+    rel = relative_metrics(b, b, period="1d")
+    assert rel["information_ratio"] == 0.0
+    assert rel["tracking_error"] == 0.0
+    assert rel["beta"] == pytest.approx(1.0)
+    assert rel["alpha"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_relative_metrics_scaled_beta():
+    """r = 2b 时 beta 应为 2。"""
+    rng = np.random.default_rng(3)
+    b = pd.Series(rng.normal(0.0, 0.01, 300))
+    rel = relative_metrics(2.0 * b, b, period="1d")
+    assert rel["beta"] == pytest.approx(2.0)
+
+
+def test_relative_metrics_insufficient_sample():
+    rel = relative_metrics(pd.Series([0.01]), pd.Series([0.02]))
+    assert rel == {
+        "information_ratio": 0.0, "tracking_error": 0.0, "beta": 0.0, "alpha": 0.0,
+    }

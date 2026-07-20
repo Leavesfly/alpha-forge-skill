@@ -22,8 +22,10 @@ from backtest.engine import run_backtest
 from backtest.rules import TradingRules
 from cli_common import (
     add_json_arg,
+    build_next_steps,
     check_symbol,
     emit_json,
+    log_next_steps,
     make_logger,
     make_parser,
     run_cli,
@@ -126,8 +128,10 @@ def main() -> None:
     params = {"allow_short": True} if args.allow_short else {}
 
     results = {}
+    name_map = {}  # display_name -> 注册名（regime 策略族判断用）
     for name in names:
         strategy = get_strategy(name, **params)
+        name_map[strategy.display_name] = name
         results[strategy.display_name] = run_backtest(
             df,
             strategy,
@@ -163,7 +167,26 @@ def main() -> None:
     best_name = next(iter(ordered))
     log(f"\n{args.sort} 最优：{best_name}"
         f"（{ordered[best_name].metrics.get(args.sort, 0.0):.2f}）"
-        "；样本内比较存在选择性偏差，建议用 run_validate.py 复核。")
+        "；样本内比较存在选择性偏差。")
+
+    # 市场状态：提示当前状态更适合哪一族策略，冠军与状态不符时预警
+    from research.regime import detect_regime, format_regime
+
+    regime = detect_regime(df["close"])
+    log(format_regime(regime))
+    best_key = name_map.get(best_name)
+    regime_warning = None
+    if regime["suited_strategies"] and best_key and best_key not in regime["suited_strategies"]:
+        regime_warning = (
+            f"⚠️ 样本内冠军 {best_name} 不属于当前状态更适合的{regime['suited_family']}，"
+            "状态延续时实盘表现可能不及样本内；建议结合样本外验证判断。"
+        )
+        log(regime_warning)
+    log_next_steps(
+        log,
+        f"对胜出策略寻优 run_optimize.py --symbol {args.symbol} --strategy <策略名>",
+        "样本外复核 run_validate.py（避免「选冠军」的幸存者偏差）",
+    )
 
     config = {
         "复权": args.adjust,
@@ -193,6 +216,8 @@ def main() -> None:
         log(f"HTML 对比报告已保存：{path}")
 
     if args.json is not None:
+        best_strat = next(iter(ordered))
+        best_m = ordered[best_strat].metrics
         payload = attach_meta(
             {
                 "symbol": args.symbol,
@@ -207,6 +232,21 @@ def main() -> None:
                     for name, res in ordered.items()
                 ],
                 "benchmark_metrics": dict(first.benchmark_metrics),
+                "regime": regime,
+                "regime_warning": regime_warning,
+                "summary": (
+                    f"{args.symbol} 多策略对比（{len(names)} 个）："
+                    f"按{args.sort}排序最优为 {best_strat}"
+                    f"（{args.sort}={best_m.get(args.sort, 0):.2f}）。"
+                    f"当前市场状态：{regime['regime_cn']}。"
+                    f"样本内选冠军存在选择性偏差，建议 run_validate 复核。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "optimize", "reason": "对胜出策略寻找最优参数",
+                     "command": f"run_optimize.py --symbol {args.symbol} --strategy {best_strat} --json"},
+                    {"action": "validate", "reason": "样本外复核避免幸存者偏差",
+                     "command": f"run_validate.py --symbol {args.symbol} --strategy {best_strat} --json"},
+                ),
             },
             command="compare",
         )

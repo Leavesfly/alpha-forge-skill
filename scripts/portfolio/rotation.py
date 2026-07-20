@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .optimize import max_sharpe, min_variance
+from .optimize import hrp, max_sharpe, min_cvar, min_variance
 
 
 def _rebalance_dates(n: int, warmup: int, rebalance: int) -> list[int]:
@@ -102,6 +102,8 @@ ROTATIONS = {
     "inverse_vol": inverse_vol,
     "min_variance": min_variance,
     "max_sharpe": max_sharpe,
+    "hrp": hrp,
+    "min_cvar": min_cvar,
 }
 
 

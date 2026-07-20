@@ -1,12 +1,21 @@
-"""数据缓存层测试：复权归一化与带缓存的 K 线读取。"""
+"""数据缓存层测试：复权归一化、带缓存的 K 线读取与增量更新。"""
 
 from __future__ import annotations
 
 import time
 
+import numpy as np
+import pandas as pd
 import pytest
 
-from data.cache import CacheConfig, load_klines, normalize_adjust
+from data.cache import (
+    DEFAULT_TTL,
+    MINUTE_TTL,
+    CacheConfig,
+    default_config,
+    load_klines,
+    normalize_adjust,
+)
 
 from tests.helpers import make_ohlcv
 
@@ -115,3 +124,142 @@ def test_different_adjust_uses_separate_cache(tmp_path):
 
     assert out_q["close"].iloc[-1] == 12
     assert out_h["close"].iloc[-1] == 120
+
+
+def test_default_ttl_graded_by_period(monkeypatch):
+    """TTL 分级：分钟级 30 分钟、日级及以上 1 天。"""
+    monkeypatch.delenv("ALPHA_FORGE_CACHE_TTL", raising=False)
+    assert default_config("5m").ttl_seconds == MINUTE_TTL
+    assert default_config("60m").ttl_seconds == MINUTE_TTL
+    assert default_config("1d").ttl_seconds == DEFAULT_TTL
+    assert default_config("1w").ttl_seconds == DEFAULT_TTL
+    assert default_config("1M").ttl_seconds == DEFAULT_TTL
+
+
+def test_explicit_ttl_env_overrides_grading(monkeypatch):
+    """ALPHA_FORGE_CACHE_TTL 显式设置时全局覆盖分级默认值。"""
+    monkeypatch.setenv("ALPHA_FORGE_CACHE_TTL", "77")
+    assert default_config("5m").ttl_seconds == 77
+    assert default_config("1d").ttl_seconds == 77
+
+
+# ---------------------------------------------------------------- 增量更新
+
+
+def _recent_df(n: int = 30, end_days_ago: int = 3, base: float = 100.0) -> pd.DataFrame:
+    """构造结束于近日的日 K（增量更新依赖「距今天数」估算缺口）。"""
+    end = pd.Timestamp.now().normalize() - pd.Timedelta(days=end_days_ago)
+    dates = pd.date_range(end=end, periods=n, freq="B")
+    close = np.linspace(base, base + n - 1, n)
+    return pd.DataFrame(
+        {
+            "trade_date": dates,
+            "open": close,
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "close": close,
+            "volume": np.full(n, 1_000_000.0),
+        }
+    )
+
+
+def _forbidden_full_fetch():
+    raise AssertionError("增量路径不应触发全量拉取")
+
+
+def test_incremental_merges_tail_without_full_fetch(tmp_path):
+    """陈旧缓存 + fetch_tail_fn：只拉尾部小段合并，不走全量。"""
+    n = 30
+    full = _recent_df(n=n + 2, end_days_ago=1)  # 末尾比缓存多 2 根
+    cached = full.iloc[:n].reset_index(drop=True)
+    cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=3600, enabled=True)
+
+    # 先用新鲜缓存落盘，再改用 ttl=0 使其陈旧
+    load_klines(lambda: cached, "TST.SH", "1d", n, "forward", cfg)
+    stale_cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=0, enabled=True)
+    time.sleep(0.01)
+
+    tail_calls: list[int] = []
+
+    def fetch_tail(k: int) -> pd.DataFrame:
+        tail_calls.append(k)
+        return full.tail(k).reset_index(drop=True)
+
+    out = load_klines(
+        _forbidden_full_fetch, "TST.SH", "1d", n, "forward", stale_cfg,
+        fetch_tail_fn=fetch_tail,
+    )
+    assert len(tail_calls) == 1
+    assert len(out) == n
+    # 尾部已包含新增的最后一根
+    assert float(out["close"].iloc[-1]) == float(full["close"].iloc[-1])
+
+
+def test_incremental_detects_adjustment_revision(tmp_path):
+    """重叠区 close 不一致（复权修订）时回退全量重拉。"""
+    n = 30
+    cached = _recent_df(n=n, end_days_ago=3)
+    cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=3600, enabled=True)
+    load_klines(lambda: cached, "TST.SH", "1d", n, "forward", cfg)
+    stale_cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=0, enabled=True)
+    time.sleep(0.01)
+
+    revised = _recent_df(n=n + 2, end_days_ago=1, base=90.0)  # 历史价全部变了
+    full_calls: list[int] = []
+
+    def full_fetch() -> pd.DataFrame:
+        full_calls.append(1)
+        return revised
+
+    out = load_klines(
+        full_fetch, "TST.SH", "1d", n, "forward", stale_cfg,
+        fetch_tail_fn=lambda k: revised.tail(k).reset_index(drop=True),
+    )
+    assert full_calls == [1]  # 回退全量
+    assert float(out["close"].iloc[0]) == pytest.approx(float(revised["close"].iloc[2]))
+
+
+def test_incremental_no_overlap_falls_back(tmp_path):
+    """尾段未覆盖到缓存末日（无法衔接）时回退全量。"""
+    n = 30
+    cached = _recent_df(n=n, end_days_ago=5)
+    cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=3600, enabled=True)
+    load_klines(lambda: cached, "TST.SH", "1d", n, "forward", cfg)
+    stale_cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=0, enabled=True)
+    time.sleep(0.01)
+
+    future_only = _recent_df(n=3, end_days_ago=0)  # 全部晚于缓存末日
+    full_calls: list[int] = []
+
+    def full_fetch() -> pd.DataFrame:
+        full_calls.append(1)
+        return cached
+
+    load_klines(
+        full_fetch, "TST.SH", "1d", n, "forward", stale_cfg,
+        fetch_tail_fn=lambda k: future_only,
+    )
+    assert full_calls == [1]
+
+
+def test_incremental_disabled_by_env(tmp_path, monkeypatch):
+    """ALPHA_FORGE_INCR_CACHE=0 关闭增量，陈旧缓存直接全量重拉。"""
+    monkeypatch.setenv("ALPHA_FORGE_INCR_CACHE", "0")
+    n = 10
+    cached = _recent_df(n=n, end_days_ago=2)
+    cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=3600, enabled=True)
+    load_klines(lambda: cached, "TST.SH", "1d", n, "forward", cfg)
+    stale_cfg = CacheConfig(cache_dir=tmp_path, ttl_seconds=0, enabled=True)
+    time.sleep(0.01)
+
+    full_calls: list[int] = []
+
+    def full_fetch() -> pd.DataFrame:
+        full_calls.append(1)
+        return cached
+
+    load_klines(
+        full_fetch, "TST.SH", "1d", n, "forward", stale_cfg,
+        fetch_tail_fn=lambda k: cached.tail(k),
+    )
+    assert full_calls == [1]

@@ -23,7 +23,25 @@ uv run python run_signal.py --symbols 600000.SH,600519.SH,AAPL.US \
 
 # 结构化 JSON（便于定时任务/agent 消费）
 uv run python run_signal.py --symbols 600000.SH --strategy turtle --json > signal.json
+
+# 推送到 webhook（钉钉/企微/飞书机器人按 URL 自动适配，其余通用 JSON POST）
+uv run python run_signal.py --symbols 600000.SH,600519.SH --strategy ma_cross \
+    --notify https://oapi.dingtalk.com/robot/send?access_token=xxx --notify-only-changes
 ```
+
+### 通知推送（--notify）
+
+- `--notify <url>` 或环境变量 `ALPHA_FORGE_WEBHOOK`：把今日信号文本推送到 webhook；
+  钉钉（oapi.dingtalk.com）/企微（qyapi.weixin.qq.com）/飞书（open.feishu.cn）
+  机器人按 URL 自动适配消息格式，其余地址用通用 `{title, text}` JSON POST。
+- `--notify-only-changes`：仅当存在买入/卖出动作时才推送，避免每日无意义打扰。
+- 推送失败只在 stderr 告警，不影响信号输出；`--json` 输出含 `notified` 字段。
+- 配合 crontab 每日收盘后定时运行，即可实现「每天自动盯盘 + 有动作才提醒」：
+
+  ```
+  # 每个交易日 15:30 巡检并推送（示例）
+  30 15 * * 1-5 cd /path/to/scripts && ALPHA_FORGE_WEBHOOK=https://... uv run python run_signal.py --symbols 600000.SH --strategy ma_cross --notify-only-changes --no-cache
+  ```
 
 输出字段：
 
@@ -38,7 +56,7 @@ uv run python run_signal.py --symbols 600000.SH --strategy turtle --json > signa
 - 动作由仓位变化方向推导：目标 > 当前 → 买入/加仓；目标 < 当前 → 卖出/减仓；
   持平且有仓 → 持有；持平且空仓 → 观望。
 - 信号基于**已收盘 K 线**计算（盘中运行时最后一根为当日未完成 K 线，注意口径）。
-- 支持全部 9 个策略与 `--params`/`--allow-short`/`--config`。
+- 支持全部内置策略（清单用 `run_list.py` 查看）与 `--params`/`--allow-short`/`--config`。
 
 ## 模拟盘 `run_paper.py`
 
@@ -54,6 +72,9 @@ uv run python run_paper.py --symbol 600000.SH --strategy ma_cross
 
 # 重置状态重新开始
 uv run python run_paper.py --symbol 600000.SH --strategy ma_cross --reset
+
+# 组合级总览：扫描全部模拟盘状态，聚合为账户视图
+uv run python run_paper.py --summary
 ```
 
 每次运行输出：
@@ -67,6 +88,38 @@ uv run python run_paper.py --symbol 600000.SH --strategy ma_cross --reset
 关键参数：`--capital`（初始资金，仅首次生效）、`--market {generic,astock}`（成本预设，
 默认 astock）、`--lot-size`（最小交易单位，astock 默认 100）。
 
+### 组合级总览（--summary，账户风控视角）
+
+`run_paper.py --summary` 扫描 `outputs/paper_*.json` 全部模拟盘状态，拉最新收盘价
+聚合为账户级视图：
+
+- **逐盘明细**：持股/市值/现金/净值/最后执行日（行情拉取失败时用最后成交价估值并标注）；
+- **账户汇总**：总初始资金/总净值/持仓市值/现金占比；
+- **风控提示**：单标的市值占总净值 > 40% 提示集中度偏高；单盘净值 < 0.90
+  提示账面回撤超 10% 建议复核；
+- `--json` 输出 `papers`/`totals`/`symbol_weights`/`risk_warnings` 结构化字段。
+
+每次执行后状态文件还会追加 `equity_history`（日期+净值），便于后续回撤分析。
+
+### 纪律评分模式（--mode score，决策→跟踪闭环）
+
+除信号策略外，模拟盘还可以直接按**纪律评分裁决**纸面执行，追踪「评分纪律本身」
+的执行表现（无需 `--strategy`）：
+
+```bash
+# 每个交易日收盘后运行：跑四层评分 → 按结论调仓 → 记录裁决历史
+uv run python run_paper.py --symbol 600000.SH --mode score
+```
+
+结论→仓位映射：**是**=目标满仓；**否 / 持仓需减风险**=目标空仓（按纪律离场，
+不等回本）；**观察 / 无法评分**=维持现仓（不加仓不减仓）。持仓时会把近似成本
+传入评分引擎，使「持仓需减风险」裁决能被触发；反过来 `run_score.py` 也会自动
+探测该状态文件的持仓（双向联动）。状态文件 `paper_<标的>_score.json` 额外记录
+`verdicts` 每日裁决历史，成交流水附当日结论。
+
+注意：评分模式没有「回测预期基线」对比（评分不是信号策略）；评分有效性请用
+`run_score.py --replay` 的前瞻收益事件研究验证，详见 [scoring.md](scoring.md)。
+
 ### 建议的演练流程
 
 1. 回测 + 稳健性验证（`run_backtest.py` / `run_validate.py`）选定策略与参数；
@@ -78,6 +131,6 @@ uv run python run_paper.py --symbol 600000.SH --strategy ma_cross --reset
 
 - 模拟盘按**收盘价**当日成交（与账本引擎 close 口径一致），不模拟盘中滑点与部分成交；
 - 不处理分红除权现金流与 T+1 可用资金（与账本引擎局限一致）；
-- 状态文件按「标的 + 策略」隔离，改 `--params` 不会自动重置，需 `--reset`。
+- 状态文件按「标的 + 策略（score 模式为 `score`）」隔离，改 `--params` 不会自动重置，需 `--reset`。
 
 **免责声明：以上输出仅供研究参考，不构成投资建议；据此操作风险自负。**

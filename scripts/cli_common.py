@@ -29,12 +29,40 @@ SYMBOL_FORMAT_HINT = (
 
 
 def make_parser(description: str, doc: str | None = None) -> argparse.ArgumentParser:
-    """创建统一风格的参数解析器：--help 末尾附模块 docstring 中的示例段。"""
-    return argparse.ArgumentParser(
+    """创建统一风格的参数解析器：--help 末尾附模块 docstring 中的示例段；
+    枚举参数拼错时附近似建议（如 --strategy macdd -> 「是否想写 macd？」）。"""
+    return _FriendlyParser(
         description=description,
         epilog=examples_from_doc(doc),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+
+class _FriendlyParser(argparse.ArgumentParser):
+    """在 argparse 的 invalid choice 报错后追加近似候选与查询指引。"""
+
+    def error(self, message: str) -> None:  # noqa: A003 - argparse 约定接口
+        super().error(_suggest_for_choice_error(message))
+
+
+# argparse 报错格式：argument --strategy: invalid choice: 'macdd' (choose from 'ma_cross', ...)
+_CHOICE_ERR_RE = re.compile(r"invalid choice: '(?P<value>[^']*)' \(choose from (?P<choices>.+)\)")
+
+
+def _suggest_for_choice_error(message: str) -> str:
+    """从 invalid choice 报错中提取候选集，用 difflib 给出「是否想写 X？」建议。"""
+    m = _CHOICE_ERR_RE.search(message)
+    if not m:
+        return message
+    import difflib
+
+    choices = [c.strip().strip("'\"") for c in m.group("choices").split(",")]
+    close = difflib.get_close_matches(m.group("value"), choices, n=3, cutoff=0.5)
+    hints = []
+    if close:
+        hints.append("是否想写：" + " / ".join(close) + "？")
+    hints.append("全部可选值可用 run_list.py 查看。")
+    return message + "\n" + " ".join(hints)
 
 
 def examples_from_doc(doc: str | None) -> str | None:
@@ -107,6 +135,30 @@ def make_logger(json_stdout: bool) -> Callable[..., None]:
         print(*a, file=sys.stderr if json_stdout else sys.stdout)
 
     return log
+
+
+def log_next_steps(log: Callable[..., None], *steps: str) -> None:
+    """统一格式的「下一步」指引：把学习路径内嵌在使用路径里。
+
+    各 CLI 在结果输出末尾调用，提示用户典型的后续动作（寻优/验证/模拟盘等）。"""
+    if steps:
+        log("\n下一步：" + "；".join(steps))
+
+
+def build_next_steps(*steps: dict) -> list[dict]:
+    """构建结构化下一步动作列表，嵌入 --json 输出供 Agent 程序化链式引导。
+
+    每个 step 为 dict，含 action（动作标识）、reason（为何建议）、command（可执行命令）。
+    Agent 可据此在转述结尾主动提议后续操作，而非依赖解析 stderr 文本。
+
+    用法::
+
+        next_steps = build_next_steps(
+            {"action": "optimize", "reason": "寻找最优参数", "command": "run_optimize.py --symbol 600000.SH --strategy ma_cross"},
+            {"action": "validate", "reason": "样本外验证", "command": "run_validate.py --symbol 600000.SH --strategy ma_cross"},
+        )
+    """
+    return list(steps)
 
 
 def emit_json(dest: str, payload: dict, log: Callable[..., None]) -> None:

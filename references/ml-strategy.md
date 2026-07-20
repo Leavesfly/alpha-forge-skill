@@ -25,10 +25,15 @@
 | 量能 `vol_chg_{5,20}` | 成交量相对均量变化（有量时启用） |
 | 波幅 `hl_range(_ma5)` | (高-低)/收盘（有高低价时启用） |
 
-### 2. 标签（`ml/model.py::build_target`）
+### 2. 标签（`ml/model.py::build_target` / `ml/labeling.py`）
 
-未来 `horizon` 期收益方向作为二分类标签（1=上涨，0=下跌/持平）。标签使用未来价格，
-**仅用于训练**；走步逻辑确保训练标签在测试期开始前已完全实现。
+- **fixed（默认）**：未来 `horizon` 期收益方向作为二分类标签（1=上涨，0=下跌/持平）。
+- **triple（`--label triple`，三重障碍，López de Prado AFML）**：为每个 bar 设
+  止盈线（`pt_mult`×滚动波动率）、止损线（`sl_mult`×波动率）与最长持有期
+  （`horizon`）三道退出，按先触发者定标签，比固定持有期更贴近真实交易的
+  止盈止损行为。
+
+标签使用未来价格，**仅用于训练**；走步逻辑确保训练标签在测试期开始前已完全实现。
 
 ### 3. 走步样本外验证（核心）
 
@@ -100,6 +105,12 @@ uv run python run_ml.py --symbol 600000.SH --model ridge --prob-sizing
 
 # LightGBM 与 Ridge 基线对照（默认行为；--no-baseline 跳过基线）
 uv run python run_ml.py --symbol 600000.SH --model lgbm
+
+# 三重障碍标签：止盈/止损/最长持有期先触发者定标签
+uv run python run_ml.py --symbol 600000.SH --label triple --pt-mult 2 --sl-mult 1
+
+# meta-labeling：二级模型过滤一级策略（ma_cross）的假信号，对比过滤前后 OOS 绩效
+uv run python run_ml.py --symbol 600000.SH --meta ma_cross --count 800
 ```
 
 ### 参数说明
@@ -107,6 +118,9 @@ uv run python run_ml.py --symbol 600000.SH --model lgbm
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `--model` | lgbm | 预测模型：`lgbm` / `ridge` / `logistic` |
+| `--label` | fixed | 标签模式：`fixed`（固定持有期方向）/ `triple`（三重障碍） |
+| `--pt-mult` / `--sl-mult` | 2.0 / 1.0 | triple 止盈/止损障碍宽度（×滚动波动率） |
+| `--meta` | 无 | meta-labeling 模式：指定一级策略名（如 ma_cross），二级模型过滤其假信号 |
 | `--prob-sizing` | 关 | 按预测置信度线性映射为连续仓位 |
 | `--no-baseline` | 关 | 跳过 Ridge 线性基线对照（仅 lgbm 时默认加跑） |
 | `--horizon` | 5 | 预测的未来收益周期数（标签前瞻步长） |
@@ -118,6 +132,19 @@ uv run python run_ml.py --symbol 600000.SH --model lgbm
 
 > 历史不足会报错：至少需要 `warmup(60) + train_window + horizon + test_window` 根 K 线。
 > 免费服务的历史日 K 足以运行本模块，无需 API Key。
+
+## meta-labeling（`--meta <策略>`）
+
+二级模型**不预测方向**，只学习「一级策略已给出的信号按三重障碍执行是否赚钱」：
+
+1. 计算一级策略（如 ma_cross）全历史信号；
+2. 在信号非零的 bar 上用三重障碍规则生成 meta 标签（1=该信号赚钱）；
+3. 走步训练二级分类器（特征 = 技术指标 + 信号方向）；
+4. 样本外仅当二级置信度 > 0.5 + threshold 才放行一级信号，其余置 0；
+5. 同时回测原始与过滤后两套信号（均仅计价 OOS 段），对比过滤是否真有增益。
+
+> 过滤只会把信号置 0，不会无中生有；meta-labeling 只在一级策略本身有正期望时
+> 才可能增益，未提升时应优先换一级策略而非调二级模型。
 
 ## 编程方式调用
 

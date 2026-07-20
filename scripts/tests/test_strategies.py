@@ -103,7 +103,10 @@ def test_turtle_atr_stop_exits_earlier_than_donchian():
     assert first_exit(turtle) <= first_exit(donchian)
 
 
-@pytest.mark.parametrize("name", ["grid", "turtle"])
+@pytest.mark.parametrize(
+    "name",
+    ["grid", "turtle", "keltner", "supertrend", "dual_thrust", "cci", "williams_r"],
+)
 def test_new_strategies_no_lookahead(name, random_walk_df):
     """新策略无前视：截断尾部数据不改变历史信号。"""
     strategy = get_strategy(name)
@@ -112,3 +115,47 @@ def test_new_strategies_no_lookahead(name, random_walk_df):
     pd.testing.assert_series_equal(
         full.iloc[: len(trunc)], trunc, check_names=False
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        ("ma_cross", {"fast": 30, "slow": 10}),
+        ("ma_cross", {"fast": 20, "slow": 20}),
+        ("donchian", {"entry": 10, "exit": 20}),
+        ("turtle", {"entry": 10, "exit": 20}),
+        ("turtle", {"atr_mult": -1.0}),
+        ("keltner", {"atr_mult": 0.0}),
+        ("keltner", {"window": 1}),
+        ("supertrend", {"mult": -3.0}),
+        ("dual_thrust", {"k1": 0.0}),
+        ("dual_thrust", {"n": 0}),
+        ("cci", {"entry": 100, "exit": -100}),
+        ("williams_r", {"lower": -20, "upper": -80}),
+        ("williams_r", {"lower": -120, "upper": -20}),
+    ],
+)
+def test_invalid_params_raise_value_error(name, params):
+    """跨参数校验：非法组合在构造期抛 ValueError（含修改提示）。"""
+    with pytest.raises(ValueError):
+        get_strategy(name, **params)
+
+
+def test_valid_boundary_params_accepted():
+    """边界合法组合不应误杀（donchian/turtle 网格含 entry == exit）。"""
+    get_strategy("donchian", entry=20, exit=20)
+    get_strategy("turtle", entry=20, exit=20, atr_mult=2.0)
+
+
+def test_grid_search_skips_invalid_generic(random_walk_df):
+    """通用非法组合过滤：cci 网格混入 entry >= exit 组合应被跳过。"""
+    from strategies.cci import CCIStrategy
+
+    table = grid_search(
+        random_walk_df,
+        CCIStrategy,
+        param_grid={"period": [14, 20], "entry": [-100, 100], "exit": [100]},
+        metric="sharpe",
+    )
+    assert len(table) > 0
+    assert (table["entry"] < table["exit"]).all()

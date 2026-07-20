@@ -75,6 +75,8 @@ def compute_dca_metrics(
     contribution: pd.Series,
     num_contributions: int,
     cashflow: pd.Series | None = None,
+    dividend_income: float = 0.0,
+    total_dividends: float = 0.0,
 ) -> dict:
     """计算定投绩效指标。
 
@@ -86,13 +88,16 @@ def compute_dca_metrics(
         num_contributions: 定投/交易期数。
         cashflow: 实际现金流（流出为负、流入为正），用于 XIRR；
             缺省时退化为 ``-contribution``（纯买入场景等价）。
+        dividend_income: 现金落袋的累计分红（cash 策略），计入盈亏；
+            再投入策略下为 0（已体现在市值中）。
+        total_dividends: 累计到账现金分红总额（两种策略都记，仅展示）。
 
     Returns:
         指标名 -> 数值 的字典。年化收益率为 XIRR（资金加权）。
     """
     total_invested = float(invested.iloc[-1])
     final_value = float(market_value.iloc[-1])
-    total_profit = final_value - total_invested
+    total_profit = final_value + dividend_income - total_invested
     total_return = total_profit / total_invested if total_invested > 0 else 0.0
 
     # 平均持仓成本 = 累计净投入 / 累计份额（反映实际买入均价效果）
@@ -118,6 +123,7 @@ def compute_dca_metrics(
         "max_drawdown": mdd,
         "avg_cost": avg_cost,
         "num_periods": int(len(market_value)),
+        "total_dividends": float(total_dividends),
     }
 
 
@@ -125,6 +131,7 @@ def compute_lumpsum_metrics(
     close: pd.Series,
     total_invested: float,
     cost_rate: float,
+    dividends: "np.ndarray | None" = None,
 ) -> dict:
     """一次性投入基准：期初一次性投入 total_invested，持有到末期。
 
@@ -134,6 +141,8 @@ def compute_lumpsum_metrics(
         close: 收盘价序列（索引为日期）。
         total_invested: 与定投相同的总投入本金。
         cost_rate: 单边成本率（手续费 + 滑点）。
+        dividends: 对齐到交易日历的每股分红数组（显式分红建模时传入）；
+            基准按「分红现金落袋不再投」计入盈亏，与不复权价口径一致。
 
     Returns:
         与 compute_dca_metrics 同口径的部分指标字典（年化为 CAGR）。
@@ -142,12 +151,16 @@ def compute_lumpsum_metrics(
     shares = total_invested * (1.0 - cost_rate) / price0
     value_curve = shares * close
     final_value = float(value_curve.iloc[-1])
-    total_profit = final_value - total_invested
+    # 显式分红：固定份额 × 每股分红，现金落袋计入盈亏（不再投）
+    dividend_cash = float(shares * dividends.sum()) if dividends is not None else 0.0
+    total_profit = final_value + dividend_cash - total_invested
     total_return = total_profit / total_invested if total_invested > 0 else 0.0
 
     years = _year_span(close.index)
     if years > 0 and final_value > 0 and total_invested > 0:
-        annual_return = float((final_value / total_invested) ** (1.0 / years) - 1.0)
+        annual_return = float(
+            ((final_value + dividend_cash) / total_invested) ** (1.0 / years) - 1.0
+        )
     else:
         annual_return = 0.0
 
@@ -160,6 +173,7 @@ def compute_lumpsum_metrics(
         "total_return": total_return,
         "annual_return": annual_return,
         "max_drawdown": mdd,
+        "total_dividends": dividend_cash,
     }
 
 
@@ -221,6 +235,8 @@ def format_dca_report(metrics: dict, title: str = "定投绩效报告") -> str:
         f"平均持仓成本  : {metrics['avg_cost']:.4f}",
         f"回测周期数    : {metrics['num_periods']}",
     ]
+    if metrics.get("total_dividends", 0.0) > 0:
+        lines.insert(5, f"累计现金分红  : {metrics['total_dividends']:,.2f}")
     return "\n".join(lines)
 
 

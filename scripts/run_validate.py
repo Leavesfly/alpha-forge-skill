@@ -21,10 +21,18 @@ import pandas as pd
 from backtest.costs import CostModel
 from backtest.engine import run_backtest
 from backtest.rules import TradingRules
-from cli_common import check_symbol, make_parser, run_cli
+from cli_common import (
+    add_json_arg,
+    build_next_steps,
+    check_symbol,
+    emit_json,
+    make_logger,
+    make_parser,
+    run_cli,
+)
 from cli_config import parse_args_with_config
 from datafeed import fetch_ohlcv
-from report import frame_table, metrics_table
+from report import attach_meta, frame_records, frame_table, metrics_table
 from research.validation import probability_of_backtest_overfitting
 from research.walk_forward import walk_forward
 from strategies import STRATEGIES
@@ -47,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-board", choices=["main", "star", "chinext", "st"], default=None, help="A 股涨跌停板块")
     parser.add_argument("--pbo", action="store_true", help="额外计算过拟合概率 PBO")
     parser.add_argument("--pbo-splits", type=int, default=10, help="PBO 的 CSCV 分块数，默认 10")
+    add_json_arg(parser)
     return parser
 
 
@@ -57,9 +66,10 @@ def _pbo_returns_matrix(df, strategy_cls, fixed, cost_model, exec_price, trading
     cols = {}
     for combo in itertools.product(*(grid[k] for k in keys)):
         params = dict(zip(keys, combo))
-        if "fast" in params and "slow" in params and params["fast"] >= params["slow"]:
-            continue
-        strat = strategy_cls(**{**fixed, **params})
+        try:
+            strat = strategy_cls(**{**fixed, **params})
+        except ValueError:
+            continue  # 非法参数组合（如 fast >= slow）直接跳过
         res = run_backtest(
             df, strat, period=period,
             cost_model=cost_model, exec_price=exec_price, trading_rules=trading_rules,
@@ -72,17 +82,19 @@ def _pbo_returns_matrix(df, strategy_cls, fixed, cost_model, exec_price, trading
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
+    json_stdout = args.json == "-"
+    log = make_logger(json_stdout)
     strategy_cls = STRATEGIES[args.strategy]
     fixed = {"allow_short": True} if args.allow_short else {}
 
-    print(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根，复权：{args.adjust}）...")
+    log(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根，复权：{args.adjust}）...")
     df = fetch_ohlcv(args.symbol, period=args.period, count=args.count, adjust=args.adjust)
-    print(f"已获取 {len(df)} 根 K 线\n")
+    log(f"已获取 {len(df)} 根 K 线\n")
 
     cost_model = CostModel.preset(args.market)
     trading_rules = TradingRules.astock(args.limit_board) if args.limit_board else None
 
-    print(
+    log(
         f"走步验证：train={args.train_window} / test={args.test_window} / "
         f"{'锚定' if args.anchored else '滚动'}，选参指标={args.metric}\n"
     )
@@ -99,32 +111,72 @@ def main() -> None:
             "基准 Buy&Hold（同区间）": wf.benchmark_metrics,
         },
         title=f"{args.symbol} {strategy_cls.display_name} 走步样本外验证",
+        stderr=json_stdout,
     )
-    print(f"\n共 {len(wf.folds)} 个走步折；各折选参与样本外收益：")
-    frame_table(wf.folds)
+    log(f"\n共 {len(wf.folds)} 个走步折；各折选参与样本外收益：")
+    frame_table(wf.folds, stderr=json_stdout)
 
     oos = wf.oos_metrics
     bench = wf.benchmark_metrics
     verdict = "跑赢" if oos["sharpe"] > bench["sharpe"] else "跑输"
-    print(f"\n结论：样本外夏普 {oos['sharpe']:.2f} vs 基准 {bench['sharpe']:.2f}，策略{verdict}基准。")
+    log(f"\n结论：样本外夏普 {oos['sharpe']:.2f} vs 基准 {bench['sharpe']:.2f}，策略{verdict}基准。")
 
+    pbo_out = None
     if args.pbo:
-        print("\n计算过拟合概率 PBO（组合对称交叉验证 CSCV）...")
+        log("\n计算过拟合概率 PBO（组合对称交叉验证 CSCV）...")
         matrix = _pbo_returns_matrix(
             df, strategy_cls, fixed, cost_model, args.exec_price, trading_rules, args.period
         )
         if matrix.shape[1] < 2:
-            print("  参数组合不足 2 个，跳过 PBO。")
+            log("  参数组合不足 2 个，跳过 PBO。")
         else:
             out = probability_of_backtest_overfitting(matrix, n_splits=args.pbo_splits)
-            print(f"  组合数（配置）: {matrix.shape[1]}")
-            print(f"  CSCV 组合数   : {out['n_combinations']}")
-            print(f"  PBO           : {out['pbo']:.2%}")
+            pbo_out = {
+                "n_configs": int(matrix.shape[1]),
+                "n_combinations": int(out["n_combinations"]),
+                "pbo": float(out["pbo"]),
+            }
+            log(f"  组合数（配置）: {matrix.shape[1]}")
+            log(f"  CSCV 组合数   : {out['n_combinations']}")
+            log(f"  PBO           : {out['pbo']:.2%}")
             if out["pbo"] > 0.5:
-                print("  ⚠️  PBO > 50%：样本内最优在样本外多半沦为下半区，过拟合风险高。")
+                log("  ⚠️  PBO > 50%：样本内最优在样本外多半沦为下半区，过拟合风险高。")
             else:
-                print("  ✅ PBO <= 50%：样本内择优在样本外仍有一定延续性。")
+                log("  ✅ PBO <= 50%：样本内择优在样本外仍有一定延续性。")
+
+    if args.json is not None:
+        pbo_str = ""
+        if pbo_out:
+            pbo_str = f"PBO={pbo_out['pbo']:.0%}（{'过拟合风险高' if pbo_out['pbo'] > 0.5 else '延续性尚可'}）。"
+        payload = attach_meta(
+            {
+                "symbol": args.symbol,
+                "strategy": args.strategy,
+                "period": args.period,
+                "train_window": args.train_window,
+                "test_window": args.test_window,
+                "anchored": bool(args.anchored),
+                "oos_metrics": dict(wf.oos_metrics),
+                "benchmark_metrics": dict(wf.benchmark_metrics),
+                "folds": frame_records(wf.folds),
+                "verdict": verdict,
+                "pbo": pbo_out,
+                "summary": (
+                    f"{args.symbol} {args.strategy} 走步样本外验证："
+                    f"OOS 夏普 {oos['sharpe']:.2f} vs 基准 {bench['sharpe']:.2f}，策略{verdict}基准。"
+                    f"{pbo_str}以样本外为准，回测不代表未来。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "backtest", "reason": "用验证过的参数复跑并出报告",
+                     "command": f"run_backtest.py --symbol {args.symbol} --strategy {args.strategy} --report --json"},
+                    {"action": "paper", "reason": "开始纸面跟踪验证过的策略",
+                     "command": f"run_paper.py --symbol {args.symbol} --strategy {args.strategy} --json"},
+                ),
+            },
+            command="validate",
+        )
+        emit_json(args.json, payload, log)
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

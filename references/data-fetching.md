@@ -52,13 +52,14 @@ uv run python your_script.py  # 运行你的脚本
 
 ### 数据源与兜底降级
 
-回测类 CLI（经 `datafeed.fetch_ohlcv`）采用多数据源链：
+回测类 CLI（经 `datafeed.fetch_ohlcv`）采用多数据源链（按顺序尝试，前一源失败自动降级并在 stderr 告警）：
 
 - **主源 TickFlow**：多市场全周期；
-- **兜底 akshare**：仅 A 股日/周/月 K（免费无需 Key）；TickFlow 拉取失败且标的在覆盖范围内时自动降级，并在 stderr 告警；
-- 环境变量 `ALPHA_FORGE_DATA_SOURCE=tickflow|akshare` 可强制只用单源；不同源的本地缓存互不混用（缓存键含源标签）。
+- **兜底 baostock / akshare**：仅 A 股日/周/月 K（免费无需 Key）；
+- **兜底 yfinance**：仅港股/美股日/周/月 K（免费无需 Key，如 `AAPL.US`、`00700.HK`；不支持后复权）；
+- 环境变量 `ALPHA_FORGE_DATA_SOURCE=tickflow|baostock|akshare|yfinance` 可强制只用单源；不同源的本地缓存互不混用（缓存键含源标签）。
 
-两个源均输出列名归一的升序 DataFrame（`trade_date/open/high/low/close/volume`），回测链路无需感知差异。
+各源均输出列名归一的升序 DataFrame（`trade_date/open/high/low/close/volume`），回测链路无需感知差异。
 
 ## 常用 K 线周期
 
