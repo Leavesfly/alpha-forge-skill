@@ -8,16 +8,28 @@
 
 - **多市场数据**：A 股（SH/SZ/BJ）、港股（HK）、美股（US）、国内期货（SHF/DCE/ZCE/CFX/INE/GFE）统一代码格式，可混合查询。
 - **丰富数据类型**：实时行情、历史 K 线（日内分钟级至年线）、日内分时、财务数据（三大报表 + 核心指标）、标的池。
-- **内置量化策略**：双均线交叉、MACD、RSI 超买超卖、布林带、动量、唐奇安通道突破、KDJ。
-- **轻量回测引擎**：向量化实现，信号 `shift(1)` 防前视偏差，支持**多空**、**止损/止盈**风控与**波动率目标连续仓位**，内置手续费/滑点成本模型与 Buy & Hold 基准对比。
+- **内置量化策略**：双均线交叉、MACD、RSI 超买超卖、布林带、动量、唐奇安通道突破、KDJ、网格交易、海龟交易（共 9 个）。
+- **轻量回测引擎**：向量化实现，信号 `shift(1)` 防前视偏差，支持**多空**、**止损/止盈**风控与**波动率目标连续仓位**，内置手续费/滑点成本模型与 Buy & Hold 基准对比；另提供**账本引擎**（现金 + 整数股、A 股一手 100 股约束，`--engine ledger`）。
+- **多策略对比**：`run_compare.py` 一条命令对比多个策略，并排绩效表 + 净值叠加图 + HTML 对比报告。
 - **多标的组合回测**：截面轮动（动量/等权/风险平价）与组合优化（最小方差/最大夏普），按周期调仓，与等权基准对比。
 - **多因子选股**：五类因子（价值/质量/规模/动量/波动率）去极值标准化打分合成、分位选股，并以分层回测验证因子有效性。
 - **配对交易**：市场中性统计套利，自动筛选/手动指定配对，价差 z-score 开平仓。
-- **机器学习策略**：技术指标特征 + LightGBM 方向预测，走步（walk-forward）重训练并只在样本外（OOS）段计价，天然规避前视与过拟合。
+- **机器学习策略**：技术指标特征 + 可插拔模型（LightGBM/Ridge/Logistic，`--model`）方向预测，走步（walk-forward）重训练并只在样本外（OOS）段计价；支持置信度连续仓位（`--prob-sizing`）与 Ridge 线性基线过拟合对照。
 - **新闻情绪交易**：akshare 抓 A 股新闻 + AI（agent LLM）半自动情绪打分（agent-in-the-loop），情绪信号回测。
 - **定投（定期定额/DCA）**：按周期（日/周/月）注入现金、份额累积，现金流账本建模，资金加权 XIRR 计量；内置智能定投（分档加码）、超跌回撤加码、价值平均等增强模式，并与一次性投入、纯定投双基准对比。
 - **绩效与可视化**：累计/年化收益、夏普、索提诺、最大回撤、卡玛比率、胜率等指标；净值曲线/回撤/买卖点图表。
-- **参数寻优**：策略参数网格搜索，按任意指标排序。
+- **交易保真度**：可组合成本模型（A 股卖出印花税 + 双边过户费）、A 股涨跌停/停牌「不可成交」建模、次日开盘成交约定（`--exec-price open`）。
+- **数据缓存、复权与多数据源**：K 线本地缓存（Parquet，缺 pyarrow 时回退 pickle）+ 前/后/不复权口径显式化；TickFlow 主源失败时 A 股日/周/月 K 自动降级 akshare 兜底。
+- **压力测试**：历史情景重放（2015 股灾/2018 熊市/2020-03 等预置窗口）+ 蒙特卡洛冲击（单日冲击注入/波动放大/bootstrap 回撤分位数），`--stress` 一键开启。
+- **稳健性验证**：走步（walk-forward）样本外重寻优、Deflated Sharpe Ratio（多重检验惩罚）、PBO 过拟合概率（组合对称交叉验证 CSCV）。
+- **风险管理**：VaR/CVaR/下行偏差/尾部比率/溃疡指数、仓位暴露约束、回撤熔断、收益贡献与多因子回归归因。
+- **因子研究平台**：IC/IR、t 值、因子衰减、因子相关性矩阵、正交化（中性化）。
+- **研究报告与集成**：自包含 HTML 研究报告（tear sheet，含压力测试与假设局限区块）、CLI `--json` 结构化输出、rich 终端表格与进度条、TOML 配置文件（`--config`，全部 CLI 支持，显式命令行优先）。
+- **Agent 友好**：`--json` 输出顶层固定含 `schema`/`command`/`generated_at` 元信息（stdout 纯净，进度转 stderr）；退出码 0/1/2/130 规范化，错误统一 `[error] ` 前缀并附修复建议；所有 `--help` 带可复制示例。
+- **实盘前置**：每日信号服务（`run_signal.py`，目标仓位 + 调仓动作）、模拟盘纸面交易与偏差追踪（`run_paper.py`，状态持久化 + 幂等）；**不做自动下单/券商对接**。
+- **事件研究**：`run_event.py` 给定事件日算事件窗 AAR/CAAR（可选基准超额）。
+- **测试与 CI**：pytest 回归测试（重点覆盖防前视/成本/指标/缓存/并行一致性/账本引擎），GitHub Actions 多版本 CI。
+- **参数寻优**：策略参数网格搜索（多核并行，`--jobs`），按任意指标排序，并给出过拟合诊断（DSR）。
 
 ## 目录结构
 
@@ -32,30 +44,45 @@ alpha-forge-skill/
 │   ├── portfolio.md             # 多标的组合回测与轮动
 │   ├── multi-factor.md          # 多因子选股与分层回测
 │   ├── pairs-trading.md         # 配对交易（市场中性）
-│   ├── ml-strategy.md           # 机器学习策略（LightGBM + 走步样本外）
+│   ├── ml-strategy.md           # 机器学习策略（可插拔模型 + 走步样本外）
 │   ├── sentiment.md             # 新闻情绪交易（akshare + AI 打分）
 │   ├── dca.md                   # 定投（定期定额/DCA，现金流回测 + XIRR）
-│   └── use-cases.md             # 新手引导动线 + 端到端典型用例
-├── outputs/                     # --plot 图表与新闻/打分中间文件（与 scripts/ 平级，自动创建、已忽略）
+│   ├── stress-testing.md        # 压力测试与 TOML 配置文件
+│   ├── live-signal.md           # 信号服务与模拟盘（实盘前置）
+│   └── use-cases.md             # 新手引导动线 + 典型用例 + Agent 调用指南
+├── outputs/                     # --plot 图表与新闻/打分/模拟盘状态文件（与 scripts/ 平级，自动创建、已忽略）
 └── scripts/                     # 可运行的回测工具代码
-    ├── pyproject.toml           # 依赖（tickflow / pandas / numpy / matplotlib / lightgbm / akshare）
-    ├── datafeed.py              # 统一数据获取（含股票池/财务）
-    ├── run_backtest.py          # 回测 CLI
-    ├── run_optimize.py          # 参数寻优 CLI
-    ├── run_portfolio.py         # 多标的组合/优化 CLI
-    ├── run_factor.py            # 多因子选股 CLI
+    ├── pyproject.toml           # 依赖（tickflow / pandas / numpy / matplotlib / rich / lightgbm / scikit-learn / akshare；dev: pytest）
+    ├── datafeed.py              # 统一数据获取（含缓存/复权/多源降级/股票池/财务）
+    ├── cli_common.py            # CLI 公共工具（参数校验/错误处理/JSON 输出/退出码）
+    ├── cli_config.py            # TOML 配置文件注入（--config，显式命令行优先）
+    ├── run_backtest.py          # 回测 CLI（含成本/规则/成交价/账本引擎/--stress/--json/--report）
+    ├── run_optimize.py          # 参数寻优 CLI（多核并行 + DSR 过拟合诊断）
+    ├── run_compare.py           # 多策略对比 CLI（并排指标表 + 净值叠加图 + HTML 报告）
+    ├── run_validate.py          # 稳健性验证 CLI（走步样本外 + PBO）
+    ├── run_portfolio.py         # 多标的组合/优化 CLI（含暴露约束/风险/归因/--stress）
+    ├── run_factor.py            # 多因子选股 CLI（含 IC/IR/衰减/相关性）
     ├── run_pairs.py             # 配对交易 CLI
-    ├── run_ml.py                # 机器学习策略 CLI（走步样本外）
+    ├── run_ml.py                # 机器学习策略 CLI（--model/--prob-sizing + 线性基线对照）
     ├── run_sentiment.py         # 新闻情绪交易 CLI（两阶段 agent-in-the-loop）
     ├── run_dca.py               # 定投（定期定额）回测 CLI（现金流账本 + XIRR）
-    ├── strategies/              # 策略库（base + 7 策略 + 注册表）
-    ├── backtest/                # 回测引擎、绩效指标、可视化、寻优
+    ├── run_signal.py            # 每日信号服务 CLI（目标仓位 + 调仓动作，不下单）
+    ├── run_paper.py             # 模拟盘 CLI（纸面交易 + 偏差追踪）
+    ├── run_event.py             # 事件研究 CLI（AAR/CAAR）
+    ├── examples/                # 示例 TOML 配置（backtest.toml）
+    ├── strategies/              # 策略库（base + 9 策略 + 注册表）
+    ├── backtest/                # 回测引擎（向量化 + 账本）、成本模型、A股交易规则、指标、可视化、并行寻优
     ├── portfolio/               # 组合回测引擎、轮动/优化、可视化
-    ├── factors/                 # 因子库、预处理合成、选股与分层回测
+    ├── factors/                # 因子库、预处理合成、选股、分层回测、IC/IR 研究
     ├── pairs/                   # 配对筛选、价差信号、可视化
-    ├── ml/                      # 特征工程、LightGBM 走步训练、可视化
+    ├── ml/                      # 特征工程、可插拔模型走步训练、可视化
     ├── sentiment/               # 新闻抓取、情绪打分契约、情绪信号回测
-    └── dca/                     # 定投现金流账本、XIRR 指标、可视化
+    ├── dca/                     # 定投现金流账本、XIRR 指标、可视化
+    ├── data/                    # K 线本地缓存、复权口径、多数据源抽象（TickFlow/akshare）
+    ├── research/                # 走步验证、Deflated Sharpe、PBO、事件研究
+    ├── risk/                    # VaR/CVaR、暴露约束、回撤熔断、业绩归因、压力测试
+    ├── report/                  # 结构化 JSON、自包含 HTML 报告、rich 终端渲染
+    └── tests/                   # pytest 回归测试套件
 ```
 
 ## 快速开始
@@ -100,8 +127,17 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross
 # 回测并生成图表
 uv run python run_backtest.py --symbol 600000.SH --strategy macd --plot
 
-# 参数寻优（按夏普比率排序）
+# 参数寻优（按夏普比率排序，多核并行）
 uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross
+
+# 多策略对比（缺省全部 9 个策略，并排指标表 + 净值叠加图）
+uv run python run_compare.py --symbol 600000.SH --plot
+
+# 账本引擎：现金 + 整数股（A 股一手 100 股），10 万本金真实建仓约束
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --engine ledger --market astock
+
+# 压力测试：历史情景重放 + 蒙特卡洛冲击
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --stress
 
 # 多标的组合动量轮动
 uv run python run_portfolio.py --symbols 600000.SH,000001.SZ,600519.SH --strategy momentum
@@ -112,7 +148,7 @@ uv run python run_factor.py --symbols 600000.SH,000001.SZ,600519.SH,000858.SZ,60
 # 配对交易（市场中性统计套利）
 uv run python run_pairs.py --symbols 600000.SH,601398.SH
 
-# 机器学习策略（LightGBM 方向预测 + 走步样本外，免费日 K 即可）
+# 机器学习策略（可插拔模型 + 走步样本外，免费日 K 即可；无 libomp 可用 --model ridge）
 uv run python run_ml.py --symbol 600000.SH --count 800 --plot
 
 # 新闻情绪交易（三步：抓新闻 → agent 打分 → 回测）
@@ -124,6 +160,48 @@ uv run python run_sentiment.py --symbol 600000.SH --stage backtest --plot
 ```bash
 # 定投（定期定额）：每月定投 + 资金加权 IRR 与一次性投入对比（免费日 K 即可；增强模式见 --mode smart/dip/value_avg）
 uv run python run_dca.py --symbol 600000.SH --freq monthly --amount 1000 --plot
+
+# 每日信号服务：多标的批量输出目标仓位与调仓动作（不下单）
+uv run python run_signal.py --symbols 600000.SH,600519.SH --strategy ma_cross --no-cache
+
+# 模拟盘：虚拟资金纸面交易，追踪与回测预期的偏差（同日重跑幂等，--reset 重置）
+uv run python run_paper.py --symbol 600000.SH --strategy ma_cross
+
+# 事件研究：给定事件日算事件窗 AAR/CAAR（可选 --benchmark 基准超额）
+uv run python run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30 --plot
+```
+
+### 5. 交易保真度、稳健性验证与报告
+
+```bash
+# A 股真实成本 + 涨跌停规则 + 次日开盘成交，并生成自包含 HTML 报告
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross \
+    --market astock --limit-board main --exec-price open --report
+
+# 结构化 JSON 输出（便于 agent 解析；进度信息自动转 stderr）
+uv run python run_backtest.py --symbol AAPL.US --strategy macd --json > result.json
+
+# 走步样本外验证 + PBO 过拟合概率
+uv run python run_validate.py --symbol 600000.SH --strategy ma_cross --pbo --count 800
+
+# 组合暴露约束 + 风险报告 + 收益归因
+uv run python run_portfolio.py --symbols 600000.SH,000001.SZ,600519.SH \
+    --strategy momentum --max-weight 0.5 --risk --attribution
+
+# 因子 IC/IR、衰减与相关性分析
+uv run python run_factor.py --symbols 600000.SH,000001.SZ,600519.SH,000858.SZ,600809.SH \
+    --factors momentum,low_vol --ic
+
+# 从 TOML 配置文件读参数（显式命令行参数优先）
+uv run python run_backtest.py --config examples/backtest.toml
+```
+
+### 6. 运行测试
+
+```bash
+cd scripts
+uv sync --group dev   # 安装开发依赖（pytest）
+uv run pytest tests/ -q
 ```
 
 ## 内置策略
@@ -137,6 +215,8 @@ uv run python run_dca.py --symbol 600000.SH --freq monthly --amount 1000 --plot
 | `momentum` | 动量 | 过去 N 期收益为正做多 |
 | `donchian` | 唐奇安通道突破 | 突破 N 日高点做多，跌破离场 |
 | `kdj` | KDJ | K 上穿 D 做多，下穿平多 |
+| `grid` | 网格交易 | 以均线为基准分档，跌加仓涨减仓（连续仓位，适合震荡市） |
+| `turtle` | 海龟交易 | 唐奇安突破入场 + ATR 止损（N 值风控） |
 
 ## 文档
 
@@ -149,16 +229,18 @@ uv run python run_dca.py --symbol 600000.SH --freq monthly --amount 1000 --plot
 | [references/portfolio.md](references/portfolio.md) | 多标的组合回测、截面轮动与组合优化（最小方差/最大夏普） |
 | [references/multi-factor.md](references/multi-factor.md) | 多因子选股与分层回测 |
 | [references/pairs-trading.md](references/pairs-trading.md) | 配对交易（市场中性统计套利） |
-| [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + LightGBM 方向预测 + 走步样本外验证 |
+| [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + 可插拔模型（LightGBM/Ridge/Logistic）方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
 | [references/dca.md](references/dca.md) | 定投（定期定额/DCA）：现金流账本回测、资金加权 XIRR、智能定投/超跌加码/价值平均等增强模式、双基准对比 |
-| [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6）+ 端到端典型用例与结果解读 |
+| [references/stress-testing.md](references/stress-testing.md) | 压力测试（历史情景重放 + 蒙特卡洛冲击）与 TOML 配置文件（--config） |
+| [references/live-signal.md](references/live-signal.md) | 实盘前置：每日信号服务（run_signal）与模拟盘纸面交易 + 偏差追踪（run_paper） |
+| [references/use-cases.md](references/use-cases.md) | 新手引导动线（Level 0→6）+ 端到端典型用例 + Agent 结构化调用指南（JSON 约定/退出码/批量实验） |
 
 ## 环境要求
 
 - Python 3.10+（SDK 支持 3.9+）
 - [uv](https://docs.astral.sh/uv/) 包管理器
-- 机器学习与新闻情绪模块额外依赖 `lightgbm`、`akshare`（`uv sync` 自动安装）；macOS 上 LightGBM 需 OpenMP 运行库，若报错 `libomp.dylib` 请执行 `brew install libomp`。
+- 机器学习与新闻情绪模块额外依赖 `lightgbm`、`scikit-learn`、`akshare`（`uv sync` 自动安装）；macOS 上 LightGBM 需 OpenMP 运行库，若报错 `libomp.dylib` 请执行 `brew install libomp`，或改用 `--model ridge/logistic`。
 
 ## 免责声明
 

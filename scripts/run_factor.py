@@ -18,13 +18,23 @@ from __future__ import annotations
 import argparse
 
 from backtest.metrics import format_report
+from cli_common import make_parser, run_cli, split_symbols
+from cli_config import parse_args_with_config
 from datafeed import fetch_fundamentals, fetch_prices, fetch_universe
-from factors import FACTORS, run_factor_model
+from factors import (
+    FACTORS,
+    compute_factor,
+    compute_ic,
+    factor_correlation,
+    factor_decay,
+    ic_summary,
+    run_factor_model,
+)
 from naming import default_output
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Alpha Forge 多因子选股与分层回测")
+    parser = make_parser("Alpha Forge 多因子选股与分层回测", __doc__)
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--universe", help="股票池名称，如 CN_Equity_A / US_Equity / HK_Equity")
     src.add_argument("--symbols", help="标的代码，逗号分隔（与 --universe 二选一）")
@@ -43,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
     parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
     parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    parser.add_argument("--ic", action="store_true", help="额外输出因子 IC/IR、衰减与相关性分析")
+    parser.add_argument("--ic-horizon", type=int, default=5, help="IC 前瞻收益周期，默认 5")
     parser.add_argument("--plot", action="store_true", help="生成多因子回测图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/factor_<股票池或标的数>.png 命名")
     return parser
@@ -50,17 +62,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_symbols(args) -> list[str]:
     if args.symbols:
-        return [s.strip() for s in args.symbols.split(",") if s.strip()]
+        return split_symbols(args.symbols, min_count=3, what="多因子选股")
     return fetch_universe(args.universe, limit=args.limit)
 
 
+def _report_ic(prices, fundamentals, factors_used, args) -> None:
+    """计算并打印各因子的 IC/IR、衰减与相关性。"""
+    frames = {}
+    for name in factors_used:
+        frame = compute_factor(name, prices, fundamentals, args.lookback, args.lag_days)
+        if frame is not None:
+            frames[name] = frame.reindex(index=prices.index, columns=prices.columns)
+    if not frames:
+        print("\n[IC] 无可用因子帧，跳过 IC 分析。")
+        return
+
+    print(f"\n===== 因子 IC/IR 分析（前瞻 {args.ic_horizon} 期，Spearman）=====")
+    print(f"{'因子':<12}{'IC均值':>10}{'IC_IR':>10}{'t值':>10}{'胜率':>10}")
+    for name, frame in frames.items():
+        summ = ic_summary(compute_ic(frame, prices, horizon=args.ic_horizon))
+        print(
+            f"{name:<12}{summ['ic_mean']:>10.4f}{summ['ic_ir']:>10.3f}"
+            f"{summ['t_stat']:>10.2f}{summ['hit_rate'] * 100:>9.1f}%"
+        )
+
+    horizons = (1, 5, 10, 20)
+    print("\n===== 因子衰减（IC 均值 @ 不同前瞻期）=====")
+    print("因子".ljust(10) + "".join(f"{f'h={h}':>10}" for h in horizons))
+    for name, frame in frames.items():
+        decay = factor_decay(frame, prices, horizons=horizons)
+        cells = "".join(f"{decay.loc[h, 'ic_mean']:>10.4f}" for h in horizons)
+        print(name.ljust(10) + cells)
+
+    if len(frames) > 1:
+        print("\n===== 因子相关性矩阵（平均横截面 Spearman）=====")
+        print(factor_correlation(frames).round(2).to_string())
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_args_with_config(build_parser())
     factors = [f.strip() for f in args.factors.split(",") if f.strip()] or None
 
     symbols = resolve_symbols(args)
     if len(symbols) < 3:
-        raise SystemExit("多因子选股至少需要 3 个标的。")
+        raise SystemExit("[error] 多因子选股至少需要 3 个标的（--symbols 逗号分隔，或用 --universe 指定股票池）。")
     print(f"标的数量：{len(symbols)}")
 
     print(f"拉取 {args.period} K 线（{args.count} 根）...")
@@ -111,6 +156,9 @@ def main() -> None:
     for sym, score in result.latest_picks.items():
         print(f"  {sym}: 综合得分 {score:+.3f}")
 
+    if args.ic:
+        _report_ic(prices, fundamentals, result.factors_used, args)
+
     if args.plot:
         from factors.plot import plot_factor
 
@@ -122,4 +170,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

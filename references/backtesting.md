@@ -43,6 +43,24 @@ equity    = (1 + strat_ret).cumprod()           # 策略净值
 `returns`、`equity`、`benchmark_equity`、`metrics`、`benchmark_metrics`，
 并提供 `trades` 属性返回开平仓记录。
 
+## 账本引擎（ledger.py）
+
+`run_backtest_ledger(...)` 提供更高保真度的回测通道（CLI：`--engine ledger`）：
+
+- **真实账本**：以「现金余额 + 持股数」逐日演进，而非收益率相乘；
+- **整数股/一手约束**：`--lot-size`（`--market astock` 时默认 100），小资金可能买不足一手（会告警）；
+- **初始资金真实生效**：`--capital`（默认 100 万）影响可建仓数量与取整误差；
+- 信号管线（防前视、止损止盈、波动率目标、涨跌停/停牌、成交价约定）与向量化引擎一致；
+  无摩擦时两引擎净值近似一致（回归测试保证）。
+
+```bash
+# A 股一手 100 股 + 真实成本 + 10 万本金的账本回测
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross \
+    --engine ledger --market astock --capital 100000
+```
+
+已知局限：分红除权现金流未建模（依赖复权价格近似）；未建模 T+1 可用资金与保证金。
+
 ## 绩效指标（metrics.py）
 
 `compute_metrics(returns, equity, period, positions, risk_free)` 返回：
@@ -75,14 +93,31 @@ equity    = (1 + strat_ret).cumprod()           # 策略净值
 
 ## 参数寻优（optimize.py）
 
-`grid_search(df, strategy_cls, param_grid, metric, top_n, ...)`：
+`grid_search(df, strategy_cls, param_grid, metric, top_n, n_jobs, ...)`：
 
 - 遍历参数网格（缺省用策略类的 `param_grid`）的笛卡尔积，逐组回测。
 - 自动跳过无意义组合（如 `fast >= slow`）。
 - 汇总为 DataFrame，按 `metric`（默认 `sharpe`）降序排序，可取 `top_n`。
+- **多进程并行**：`n_jobs>1`（CLI `--jobs`，默认 CPU 核数）且有效组合数 >= 8 时
+  启用 `ProcessPoolExecutor`，结果与串行逐行一致；组合数少时自动保持串行避免进程开销。
 
 支持的排序指标即 `compute_metrics` 返回的任意键，如 `sharpe`、`total_return`、
 `annual_return`、`calmar`、`win_rate`。
+
+## 多策略对比（run_compare.py）
+
+同一标的一次回测多个策略（默认参数），并排比较绩效：
+
+```bash
+uv run python run_compare.py --symbol 600000.SH                      # 全部 9 个策略
+uv run python run_compare.py --symbol AAPL.US --strategies ma_cross,macd --plot --report
+```
+
+- 终端输出按 `--sort`（默认 sharpe）排序的并排指标表（含基准列）；
+- `--plot` 生成净值叠加图（`backtest.plot.plot_compare`）；
+- `--report` 生成自包含 HTML 对比报告（`report.render_compare_report`）；
+- `--json` 输出结构化结果；支持全部保真度参数（`--market/--exec-price/--limit-board/--adjust` 等）。
+- 注意：同标的多策略挑最优存在选择性偏差，结论应用 `run_validate.py` 样本外复核。
 
 ## CLI 用法
 

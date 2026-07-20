@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import argparse
 
+from cli_common import check_symbol, make_parser, run_cli
+from cli_config import parse_args_with_config
 from datafeed import fetch_ohlcv
 from dca import format_dca_report, format_lumpsum_report, run_dca_backtest
 from naming import default_output
@@ -43,7 +45,7 @@ MODE_DESC = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Alpha Forge 定投（定期定额）回测")
+    parser = make_parser("Alpha Forge 定投（定期定额）回测", __doc__)
     parser.add_argument("--symbol", required=True, help="标的代码，如 600000.SH")
     parser.add_argument(
         "--freq",
@@ -71,7 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_args_with_config(build_parser())
+    check_symbol(args.symbol)
 
     print(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
     df = fetch_ohlcv(args.symbol, period=args.period, count=args.count)
@@ -111,4 +114,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

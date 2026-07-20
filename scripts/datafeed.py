@@ -1,73 +1,127 @@
-"""TickFlow 数据获取辅助。
+"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + akshare 兜底）。
 
-统一从 TickFlow 拉取 K 线为回测所需的 OHLCV DataFrame。
-默认使用免费服务（历史日 K 足以回测）；配置了 TICKFLOW_API_KEY 时
-可自动切换到完整服务以支持分钟级数据。
+统一拉取 K 线为回测所需的 OHLCV DataFrame。默认优先 TickFlow
+（免费服务历史日 K 足以回测，配置 TICKFLOW_API_KEY 后支持分钟级）；
+TickFlow 不可用且标的为 A 股日/周/月 K 时自动降级 akshare。
+环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|akshare`` 可强制指定单源。
 """
 
 from __future__ import annotations
 
 import os
+import re
+import sys
 
 import pandas as pd
 from tickflow import TickFlow
 
-# 需要 TICKFLOW_API_KEY 的接口在报错/告警时统一附带此指引，
-# 提醒用户去哪里申请、如何设置与验证。
-API_KEY_HELP = (
-    "如何获取并配置 TICKFLOW_API_KEY：\n"
-    "  1. 前往 https://tickflow.org 注册并在控制台申请 API Key；\n"
-    '  2. 设置环境变量（macOS/Linux）：export TICKFLOW_API_KEY="your-api-key"；\n'
-    "     持久化写入 shell 配置：\n"
-    "       echo 'export TICKFLOW_API_KEY=\"your-api-key\"' >> ~/.zshrc && source ~/.zshrc\n"
-    "  3. 验证：执行 echo $TICKFLOW_API_KEY 应输出你的 Key。"
+from data import load_klines, normalize_adjust
+from data.sources import (
+    API_KEY_HELP,
+    get_sources,
+    get_tickflow_client,
+    source_label,
 )
 
+# 向后兼容：旧代码从 datafeed 导入 get_client
+get_client = get_tickflow_client
 
-def _needs_api_key(period: str) -> bool:
-    """分钟级周期需要完整服务。"""
-    return period.endswith("m")
+# 标的代码统一格式：代码.市场后缀（与 cli_common 保持一致）
+_SYMBOL_RE = re.compile(r"^[0-9A-Za-z]+\.[A-Za-z]{2,4}$")
 
 
-def get_client(period: str = "1d") -> TickFlow:
-    """根据周期与环境变量选择 TickFlow 客户端。"""
-    has_key = bool(os.environ.get("TICKFLOW_API_KEY"))
-    if has_key:
-        return TickFlow()
-    if _needs_api_key(period):
+def _check_symbol(symbol: str) -> None:
+    """校验标的代码格式，提前拦截低级错误而非等到网络请求失败。"""
+    if not _SYMBOL_RE.match((symbol or "").strip()):
         raise RuntimeError(
-            f"周期 {period} 需要实时/分钟数据，请先配置环境变量 TICKFLOW_API_KEY 后重试。\n"
-            + API_KEY_HELP
+            f"标的代码不合法：'{symbol}'。格式应为「代码.市场后缀」，如 600000.SH（A股）/ "
+            "AAPL.US（美股）/ 00700.HK（港股）/ cu2501.SHF（期货）；"
+            "完整后缀见 references/data-fetching.md。"
         )
-    return TickFlow.free()
+
+
+def _fetch_ohlcv_raw(
+    symbol: str,
+    period: str,
+    count: int,
+    adjust: str,
+) -> pd.DataFrame:
+    """按数据源优先级拉取单标的 K 线（不经缓存）。
+
+    主源失败且存在可用兜底源时自动降级（stderr 告警）；
+    全部失败时抛出汇总错误。
+    """
+    sources = [s for s in get_sources() if s.supports(symbol, period)]
+    if not sources:
+        raise RuntimeError(
+            f"没有数据源支持 {symbol} {period}（akshare 兜底仅限 A 股日/周/月 K）。"
+        )
+    errors: list[str] = []
+    for i, source in enumerate(sources):
+        try:
+            df = source.fetch(symbol, period, count, adjust)
+            if i > 0:
+                print(
+                    f"[warn] 主源失败，已降级使用 {source.name} 数据源："
+                    f"{'; '.join(errors)}",
+                    file=sys.stderr,
+                )
+            return df
+        except Exception as exc:
+            errors.append(f"{source.name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        f"拉取 {symbol} {period} K 线失败（已尝试 {len(sources)} 个数据源）：\n  "
+        + "\n  ".join(errors)
+    )
 
 
 def fetch_ohlcv(
     symbol: str,
     period: str = "1d",
     count: int = 500,
+    adjust: str = "forward",
+    use_cache: bool = True,
 ) -> pd.DataFrame:
-    """拉取单标的 K 线并返回按时间升序的 OHLCV DataFrame。
+    """拉取单标的 K 线并返回按时间升序的 OHLCV DataFrame（带本地缓存）。
+
+    Args:
+        symbol: 标的代码。
+        period: K 线周期。
+        count: 拉取的 K 线数量。
+        adjust: 复权口径，``forward``/``qfq``（前复权，默认，回测推荐）、
+            ``backward``/``hfq``（后复权）、``none``（不复权）。
+        use_cache: 是否使用本地缓存（命中且新鲜则不走网络）。
 
     Returns:
         至少包含 ``close`` 列的 DataFrame。
+
+    Raises:
+        RuntimeError: 标的代码格式非法、所有数据源均失败或返回空数据时，
+            错误信息包含可操作的排查建议。
     """
-    tf = get_client(period)
-    df = tf.klines.get(symbol, period=period, count=count, as_dataframe=True)
-
+    _check_symbol(symbol)
+    adj = normalize_adjust(adjust)
+    if not use_cache:
+        df = _fetch_ohlcv_raw(symbol, period, count, adj)
+    else:
+        df = load_klines(
+            lambda: _fetch_ohlcv_raw(symbol, period, count, adj),
+            symbol=symbol,
+            period=period,
+            count=count,
+            adjust=adj,
+            source=source_label(),
+        )
     if df is None or len(df) == 0:
-        raise RuntimeError(f"未获取到 {symbol} 的 K 线数据，请检查代码与周期。")
-
+        raise RuntimeError(
+            f"{symbol} {period} 返回 0 根 K 线。请检查：① 代码与市场后缀是否匹配；"
+            "② 该标的是否已退市/停牌；③ 周期是否需要 API Key（分钟线）。"
+        )
     if "close" not in df.columns:
         raise RuntimeError(
-            f"返回数据缺少 close 列，实际列：{list(df.columns)}"
+            f"{symbol} 返回数据缺少 close 列（实际列：{list(df.columns)}），"
+            "无法用于回测；可能是数据源异常，可加 --no-cache 重试。"
         )
-
-    # 保证按时间升序
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            df = df.sort_values(col).reset_index(drop=True)
-            break
     return df
 
 
@@ -83,6 +137,7 @@ def fetch_prices(
     symbols: list[str],
     period: str = "1d",
     count: int = 500,
+    adjust: str = "forward",
 ) -> pd.DataFrame:
     """拉取多标的收盘价并按共同交易日对齐。
 
@@ -90,13 +145,18 @@ def fetch_prices(
         symbols: 标的代码列表。
         period: K 线周期。
         count: 每个标的拉取的 K 线数量。
+        adjust: 复权口径（默认前复权）。
 
     Returns:
         收盘价 DataFrame（索引为日期，列为标的代码），已按共同日期内连接对齐。
     """
     series: dict[str, pd.Series] = {}
     for sym in symbols:
-        df = fetch_ohlcv(sym, period=period, count=count)
+        try:
+            df = fetch_ohlcv(sym, period=period, count=count, adjust=adjust)
+        except Exception as exc:
+            # 多标的场景下明确指出是哪个标的失败，便于定位
+            raise RuntimeError(f"拉取 {sym} 失败：{exc}") from exc
         date_col = _date_column(df)
         idx = pd.to_datetime(df[date_col]) if date_col else pd.RangeIndex(len(df))
         series[sym] = pd.Series(df["close"].astype(float).values, index=idx)
@@ -104,7 +164,8 @@ def fetch_prices(
     prices = pd.DataFrame(series).dropna(how="any").sort_index()
     if prices.empty or prices.shape[1] < 2:
         raise RuntimeError(
-            "多标的价格对齐后为空或不足 2 个标的，请检查代码、周期与共同交易日。"
+            "多标的价格对齐后为空或不足 2 个标的。常见原因：① 跨市场标的交易日历重叠过少；"
+            "② 某标的上市时间过短；可减小 --count 或更换标的组合。"
         )
     return prices
 

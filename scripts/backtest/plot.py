@@ -53,6 +53,40 @@ def plot_result(
     return out_path
 
 
+def plot_compare(
+    results: dict[str, BacktestResult],
+    symbol: str = "",
+    output: str = "../outputs/compare.png",
+) -> str:
+    """多策略净值叠加对比图（含基准），保存为图片并返回路径。
+
+    Args:
+        results: {策略显示名: BacktestResult}；基准取第一个结果的 Buy & Hold。
+        symbol: 标的代码（标题展示）。
+        output: 输出路径。
+    """
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for name, res in results.items():
+        ax.plot(res.equity.index, res.equity.values, label=name, linewidth=1.4)
+    first = next(iter(results.values()))
+    be = first.benchmark_equity
+    ax.plot(be.index, be.values, label="基准(Buy&Hold)", color="#7f8c8d", linestyle="--")
+    ax.set_title(f"{symbol} 多策略净值对比".strip())
+    ax.set_ylabel("净值")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if hasattr(first.equity.index, "to_pydatetime"):
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+
+    fig.tight_layout()
+    out_path = Path(output).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = str(out_path)
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def _plot_equity(ax, result: BacktestResult) -> None:
     ax.plot(result.equity.index, result.equity.values, label="策略净值", color="#c0392b")
     ax.plot(

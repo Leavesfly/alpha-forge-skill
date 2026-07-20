@@ -1,0 +1,11 @@
+# Alpha Forge 回测配置示例：uv run python run_backtest.py --config examples/backtest.toml
+# 键名与 CLI 参数一致（exec-price / exec_price 均可）；显式命令行参数优先于本文件。
+
+symbol = "600000.SH"
+strategy = "ma_cross"
+count = 800
+market = "astock"
+exec-price = "open"
+limit-board = "main"
+adjust = "forward"
+stop-loss = 0.05

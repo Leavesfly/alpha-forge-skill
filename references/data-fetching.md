@@ -50,6 +50,16 @@ uv run python your_script.py  # 运行你的脚本
 - **美股（US）**：已支持。实时行情、全量历史日 K 线（支持前复权/后复权）、除权因子、标的池（`US_Equity`）。
 - **港股（HK）**：已支持。实时行情、全量历史日 K 线（支持前复权/后复权）、除权因子、标的池（`HK_Equity`）。
 
+### 数据源与兜底降级
+
+回测类 CLI（经 `datafeed.fetch_ohlcv`）采用多数据源链：
+
+- **主源 TickFlow**：多市场全周期；
+- **兜底 akshare**：仅 A 股日/周/月 K（免费无需 Key）；TickFlow 拉取失败且标的在覆盖范围内时自动降级，并在 stderr 告警；
+- 环境变量 `ALPHA_FORGE_DATA_SOURCE=tickflow|akshare` 可强制只用单源；不同源的本地缓存互不混用（缓存键含源标签）。
+
+两个源均输出列名归一的升序 DataFrame（`trade_date/open/high/low/close/volume`），回测链路无需感知差异。
+
 ## 常用 K 线周期
 
 | 类型 | 周期代码 | 说明 |

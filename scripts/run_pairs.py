@@ -19,6 +19,8 @@ import argparse
 import numpy as np
 
 from backtest.metrics import format_report
+from cli_common import make_parser, run_cli, split_symbols
+from cli_config import parse_args_with_config
 from datafeed import fetch_prices, fetch_universe
 from naming import default_output
 from pairs import hedge_ratio, pair_signals, pair_spread, pair_weights, select_pairs, zscore
@@ -26,7 +28,7 @@ from portfolio import run_portfolio_backtest
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Alpha Forge 配对交易（市场中性统计套利）")
+    parser = make_parser("Alpha Forge 配对交易（市场中性统计套利）", __doc__)
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--symbols", help="手动指定一对标的，逗号分隔，如 600000.SH,601398.SH")
     src.add_argument("--universe", help="股票池名称，自动筛选配对，如 CN_Equity_A")
@@ -49,9 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
 def choose_pair(args):
     """返回 (pair_prices, a, b, beta, extra_info)。"""
     if args.symbols:
-        syms = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        syms = split_symbols(args.symbols, min_count=2, what="配对交易")
         if len(syms) != 2:
-            raise SystemExit("手动模式需恰好 2 个标的，例如 --symbols 600000.SH,601398.SH")
+            raise SystemExit(
+                "[error] 手动模式需恰好 2 个标的，例如 --symbols 600000.SH,601398.SH"
+            )
         prices = fetch_prices(syms, period=args.period, count=args.count)
         a, b = syms[0], syms[1]
         beta = hedge_ratio(np.log(prices[a]), np.log(prices[b]))
@@ -62,7 +66,7 @@ def choose_pair(args):
     prices = fetch_prices(symbols, period=args.period, count=args.count)
     pairs = select_pairs(prices, top_n=args.top_pairs, min_corr=args.min_corr)
     if not pairs:
-        raise SystemExit("未筛选到满足条件的配对，可降低 --min-corr 或增大 --limit。")
+        raise SystemExit("[error] 未筛选到满足条件的配对，可降低 --min-corr 或增大 --limit。")
     print(f"候选配对（按半衰期升序，共 {len(pairs)} 对）：")
     for p in pairs:
         print(f"  {p.a} ~ {p.b}: 相关性 {p.corr:.3f}, beta {p.beta:.3f}, 半衰期 {p.half_life:.1f} 天")
@@ -71,7 +75,7 @@ def choose_pair(args):
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_args_with_config(build_parser())
     pair_prices, a, b, beta, _info = choose_pair(args)
     pair_prices = pair_prices.dropna()
 
@@ -106,4 +110,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_cli(main)

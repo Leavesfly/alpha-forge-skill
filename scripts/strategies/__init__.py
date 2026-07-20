@@ -8,11 +8,13 @@ from __future__ import annotations
 from .base import Strategy
 from .bollinger import BollingerStrategy
 from .donchian import DonchianStrategy
+from .grid_trading import GridStrategy
 from .kdj import KDJStrategy
 from .macd import MACDStrategy
 from .ma_cross import MACrossStrategy
 from .momentum import MomentumStrategy
 from .rsi import RSIStrategy
+from .turtle import TurtleStrategy
 
 #: 策略名称 -> 策略类 的注册表
 STRATEGIES: dict[str, type[Strategy]] = {
@@ -23,6 +25,8 @@ STRATEGIES: dict[str, type[Strategy]] = {
     MomentumStrategy.name: MomentumStrategy,
     DonchianStrategy.name: DonchianStrategy,
     KDJStrategy.name: KDJStrategy,
+    GridStrategy.name: GridStrategy,
+    TurtleStrategy.name: TurtleStrategy,
 }
 
 
@@ -45,4 +49,6 @@ __all__ = [
     "MomentumStrategy",
     "DonchianStrategy",
     "KDJStrategy",
+    "GridStrategy",
+    "TurtleStrategy",
 ]

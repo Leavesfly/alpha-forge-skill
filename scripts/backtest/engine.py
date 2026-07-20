@@ -18,7 +18,9 @@ import pandas as pd
 
 from strategies.base import Strategy
 
+from .costs import CostModel
 from .metrics import compute_metrics, periods_per_year
+from .rules import TradingRules, apply_tradability, tradable_masks
 
 
 @dataclass
@@ -63,6 +65,9 @@ def run_backtest(
     vol_target: float | None = None,
     vol_window: int = 20,
     max_leverage: float = 1.0,
+    cost_model: CostModel | None = None,
+    exec_price: str = "close",
+    trading_rules: TradingRules | None = None,
 ) -> BacktestResult:
     """执行回测。
 
@@ -81,6 +86,10 @@ def run_backtest(
             {-1,0,1} 信号缩放为连续仓位。None 关闭（满仓模式）。
         vol_window: 波动率估计的滚动窗口（周期数）。
         max_leverage: 仓位上限（默认 1.0，即不加杠杆）。
+        cost_model: 交易成本模型；None 时用 commission/slippage 构造（兼容旧行为）。
+        exec_price: 成交价约定，``close``（收盘成交，默认）或 ``open``（次日开盘成交，
+            隔夜跳空归旧持仓、日内归新持仓，更贴近现实）。
+        trading_rules: A 股交易规则（涨跌停/停牌）；None 时不施加成交约束。
 
     Returns:
         BacktestResult。多空由策略信号 {-1, 0, 1} 决定，引擎自动处理做空盈亏。
@@ -100,14 +109,34 @@ def run_backtest(
     # 次日生效，避免使用未来信息
     positions = signals.shift(1).fillna(0.0)
 
+    # A 股交易规则：涨跌停/停牌导致的不可成交，修正为实际可达成的持仓
+    if trading_rules is not None:
+        buy_blocked, sell_blocked = tradable_masks(df, trading_rules)
+        positions = apply_tradability(positions, buy_blocked, sell_blocked)
+
     price_ret = close.pct_change().fillna(0.0)
 
-    # 持仓变动带来的交易成本（手续费 + 滑点，双边合计）
-    cost_rate = commission + slippage
-    turnover = positions.diff().abs().fillna(positions.abs())
-    trade_cost = turnover * cost_rate
+    # 交易成本：默认由 commission/slippage 构造，兼容旧引擎（对称双边比例）
+    model = cost_model or CostModel(commission=commission, slippage=slippage)
+    dpos = positions.diff().fillna(positions)
+    buy_turnover = dpos.clip(lower=0.0)
+    sell_turnover = (-dpos).clip(lower=0.0)
+    trade_cost = model.costs(buy_turnover, sell_turnover)
 
-    strat_ret = positions * price_ret - trade_cost
+    # 逐周期毛收益：按成交价约定计算
+    if exec_price == "open" and "open" in df.columns:
+        open_ = df["open"].astype(float)
+        prev_close = close.shift(1)
+        old_pos = positions.shift(1).fillna(0.0)
+        gap_ret = (open_ / prev_close - 1.0).fillna(0.0)  # 隔夜跳空由旧持仓承担
+        intra_ret = (close / open_ - 1.0).fillna(0.0)  # 日内由新持仓承担
+        gross = (1.0 + old_pos * gap_ret) * (1.0 + positions * intra_ret) - 1.0
+    else:
+        if exec_price == "open":
+            print("[warn] 数据缺少 open 列，exec_price=open 退化为收盘价成交。")
+        gross = positions * price_ret
+
+    strat_ret = gross - trade_cost
     equity = (1.0 + strat_ret).cumprod()
 
     benchmark_ret = price_ret
