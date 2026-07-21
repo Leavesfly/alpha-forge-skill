@@ -13,6 +13,7 @@ from .engine import ScoreResult
 #: 层级中文名映射
 LAYER_CN = {
     "data": "数据检查",
+    "fundamental": "基本面否决",
     "alpha": "ALPHA 加权",
     "veto": "风险否决",
     "confirm": "技术确认",

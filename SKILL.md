@@ -1,6 +1,6 @@
 ---
 name: alpha-forge-skill
-description: A股/港股/美股量化研究与交易辅助。获取行情K线/财务数据，内置 14 个经典策略（双均线/MACD/RSI/布林/海龟/动量/网格等）+ 回测引擎 + 并行参数寻优（网格/随机/贝叶斯）+ 压力测试 + 多标的组合轮动与优化（含 HRP/最小CVaR）+ 多因子选股 + 配对交易 + 机器学习预测（含三重障碍标注/meta-labeling 信号过滤）+ 新闻情绪 + 定投DCA（含分红建模）+ 纪律评分决策层（能不能买/该不该卖/买多少）+ CAN SLIM 欧奈尔成长股清单（港美股基本面自动兜底）+ 市场状态识别 + 统一持仓账户 + 全市场扫描 + 每日信号（支持 webhook 推送）与模拟盘（含组合级总览）。对话式触发：“XX现在能买吗/值不值得买”“持仓该不该卖/减仓”“买多少合适”“帮我记一下持仓”“最近有什么值得买的”“这只股符不符合 CAN SLIM”“这只股用什么策略好”“帮我回测/调参/做组合/定投”“每天帮我盯盘看该买该卖”。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
+description: A股/港股/美股量化研究与交易辅助。获取行情K线/财务数据，内置 14 个经典策略（双均线/MACD/RSI/布林/海龟/动量/网格等）+ 回测引擎 + 并行参数寻优（网格/随机/贝叶斯）+ 压力测试 + 多标的组合轮动与优化（含 HRP/最小CVaR）+ 多因子选股 + 配对交易 + 机器学习预测（含三重障碍标注/meta-labeling 信号过滤）+ 新闻情绪 + 定投DCA（含分红建模）+ 纪律评分决策层（能不能买/该不该卖/买多少）+ CAN SLIM 欧奈尔成长股清单（港美股基本面自动兜底）+ 低估值/潜力机会全市场筛选（PE/PB/ROE/负债/分红/增速六维硬阈值漏斗）+ 市场状态识别 + 统一持仓账户 + 全市场扫描 + 每日信号（支持 webhook 推送）与模拟盘（含组合级总览）。对话式触发："XX现在能买吗/值不值得买""持仓该不该卖/减仓""买多少合适""帮我记一下持仓""最近有什么值得买的""有没有低估值的股票/高分红的股票""这只股符不符合 CAN SLIM""这只股用什么策略好""帮我回测/调参/做组合/定投""每天帮我盯盘看该买该卖"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
@@ -24,7 +24,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：技术指标特征 + 可插拔模型（LightGBM/Ridge/Logistic）方向预测 + 走步样本外验证 |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：akshare 抓新闻 + AI（agent LLM）情绪打分 + 情绪信号回测 |
 | [references/dca.md](references/dca.md) | 定投（定期定额/DCA）：现金流账本回测、资金加权 XIRR、智能定投/超跌加码/价值平均等增强模式、双基准对比 |
-| [references/scoring.md](references/scoring.md) | 纪律评分与市场扫描：四层否决式评分、结论五态、ATR 交易计划、回放验证、事件风险降级、持仓联动 |
+| [references/scoring.md](references/scoring.md) | 纪律评分与市场扫描：分层否决式评分（含基本面否决/动态阈值/ADX 趋势感知）、结论五态、ATR 交易计划、回放验证、事件风险降级、持仓联动 |
 | [references/canslim.md](references/canslim.md) | CAN SLIM 检查清单：欧奈尔七项法则的纪律化核查（当季/年度 EPS 增长、新高、量能、相对强度、大势否决）与横截面 RS 排名 |
 | [references/stress-testing.md](references/stress-testing.md) | 压力测试（历史情景重放 + 蒙特卡洛冲击）与 TOML 配置文件（--config） |
 | [references/live-signal.md](references/live-signal.md) | 实盘前置：每日信号服务（run_signal）与模拟盘纸面交易 + 偏差追踪（run_paper） |
@@ -42,7 +42,8 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 结论五态中文（verdict_cn）+ 哪一层给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
 | “我持有 XX，成本 N，该不该卖/减仓” | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
 | “帮我记一下持仓 / 我的持仓怎么样了” | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
-| “最近有什么值得买的 / 帮我从这几只里挑一挑” | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
+| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
+| "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
@@ -127,7 +128,8 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | run_optimize | “最优参数的可靠性需要验证，要跑一下样本外吗？”（→ validate） |
 | run_compare | “冠军策略可能有偏差，建议做个样本外验证。”（→ validate） |
 | run_validate | “策略验证通过，要开始纸面跟踪吗？”（→ paper） |
-| run_scan | “达标候选建议逐个复核，要看第一名的详细评分吗？”（→ score） |
+| run_scan | "达标候选建议逐个复核，要看第一名的详细评分吗？"（→ score） |
+| run_screener | "筛出的低估候选建议做技术面复核，要看第一名的纪律评分吗？"（→ score） |
 | run_dca | “要不要试试智能定投模式，看能否提升收益？”（→ smart） |
 
 ### 优雅降级与预判式错误规避
@@ -144,7 +146,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 ### JSON 输出新增字段（Agent 程序化消费）
 
-全部 20 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
+全部 21 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
 
 - **`summary`**：1–2 句自然语言结论，Agent 可直接引用或改写后转述给用户。
 - **`next_steps`**：结构化后续动作列表，每项含 `action`（动作标识）、`reason`（为何建议）、`command`（可执行命令）。Agent 据此程序化链式引导，无需解析 stderr 文本。
@@ -408,7 +410,7 @@ uv run python run_backtest.py --symbol AAPL.US --strategy macd --json > result.j
 
 - **`--help` 带示例**：每个命令的 `--help` 末尾附可直接复制的运行示例。
 - **`--config <TOML>` 全覆盖**：配置文件注入默认值，显式命令行参数优先；未知键报错并给出近似建议与可用键列表。
-- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 20 个命令（backtest/optimize/compare/portfolio/signal/dca/score/scan/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/dashboard/verify）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
+- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 21 个命令（backtest/optimize/compare/portfolio/signal/dca/score/scan/screener/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/dashboard/verify）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
 - **`run_list.py` 能力清单**：一条命令列出全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，`--json` 供 agent 发现能力：`uv run python run_list.py --json`。
 - **`run_dashboard.py` 统一 Dashboard**：聚合真实持仓 + 全部模拟盘 + 可选今日信号于一页自包含 HTML（`--symbols` 附信号，`--json` 结构化）；含集中度/回撤风控提示。
 - **规范退出码**：0=成功，1=运行错误（数据/网络），2=参数错误，130=用户中断；失败信息以 `[error] ` 前缀输出 stderr，含可操作的修复建议（如标的代码格式、数据排查方向）；非法策略参数组合（如 fast>=slow）会在启动期报友好错误。
@@ -606,6 +608,31 @@ uv run python run_canslim.py --symbol AAPL.US --fundamentals-csv aapl_eps.csv
 
 > M（大势）不满足直接「否」——欧奈尔纪律为大势不对不买；阈值为原著预设未经 A 股样本外验证。详见 [references/canslim.md](references/canslim.md)。
 
+### 低估值/潜力机会全市场筛选
+
+基于基本面硬阈值的价值发现：六维筛选（PE/PB/ROE/负债率/股息率/净利润增速）+
+综合评分排序。A 股走 akshare 免费批量接口（无需 API Key），两阶段漏斗
+（Phase 1 全市场快照过滤 → Phase 2 逐只深度过滤）；港美股走 yfinance 逐只：
+
+```bash
+# A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 市值>30亿）
+uv run python run_screener.py
+
+# 高分红低估值策略（股息率>3%, PE<15, PB<2）
+uv run python run_screener.py --max-pe 15 --max-pb 2 --min-div 3
+
+# 成长+质量策略（ROE>15%, 增速>20%, 负债<60%）
+uv run python run_screener.py --min-roe 15 --min-growth 20 --max-debt 60
+
+# 港美股手动列表筛选
+uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
+
+# 按 ROE 排序，输出前 20 名
+uv run python run_screener.py --sort roe --top 20
+```
+
+> 筛选基于公开财务快照（最近报告期），不构成投资建议；与 `run_scan.py`（趋势动量纪律过滤）和 `run_factor.py`（多因子截面排名）互补——本命令定位是"哪些被低估"，建议对候选再跑 `run_score.py` 做技术面复核。
+
 ### 统一持仓账户（跨命令联动）
 
 真实持仓登记在 `outputs/account.json`，各命令自动联动（仅登记，不做交易执行）：
@@ -689,6 +716,7 @@ uv run python run_event.py --symbol 600519.SH --events 2025-04-25 \
 | CAN SLIM 清单核查 | `run_canslim.py` 欧奈尔七项法则逐项核查，多标的横截面 RS 百分位排名 |
 | 持仓登记与体检 | `run_account.py --set` 登记持仓，run_score/run_scan 自动联动（带入成本/标注已持有） |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量评分，达标/降级候选分列 |
+| 低估值/潜力筛选 | `run_screener.py` 六维基本面硬阈值漏斗（PE/PB/ROE/负债/分红/增速），A 股免费全市场扫描 |
 | 组合优化 | `run_portfolio.py --strategy min_variance/max_sharpe` |
 | 每日信号跟踪 | `run_signal.py` 批量输出目标仓位与调仓动作 |
 | 模拟盘演练 | `run_paper.py` 虚拟资金纸面交易，追踪与回测预期的偏差 |

@@ -16,6 +16,7 @@ from strategies.rsi import compute_rsi
 __all__ = [
     "compute_rsi",
     "compute_kdj",
+    "adx",
     "atr",
     "macd",
     "efficiency_ratio",
@@ -62,3 +63,50 @@ def efficiency_ratio(close: pd.Series, window: int = 20) -> pd.Series:
 def annualized_vol(close: pd.Series, window: int = 60, ann: float = 252.0) -> pd.Series:
     """滚动年化波动率（日收益标准差 × √年化系数）。"""
     return close.pct_change().rolling(window).std(ddof=0) * np.sqrt(ann)
+
+
+def adx(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Wilder ADX(14)：衡量趋势强度（不分方向），0~100。
+
+    计算流程：TR / +DM / -DM → Wilder 平滑 → +DI / -DI →
+    DX = |+DI - -DI| / (+DI + -DI) × 100 → ADX = DX 的 Wilder 平滑。
+    ADX >= 25 通常视为有趋势，>= 30 为强趋势。
+
+    无 high/low 列时退化为收盘价（此时 +DM/-DM 基于 close 差分）。
+    """
+    close = df["close"].astype(float)
+    high = df["high"].astype(float) if "high" in df.columns else close
+    low = df["low"].astype(float) if "low" in df.columns else close
+
+    # True Range
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+
+    # Directional Movement
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(
+        np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+        index=close.index,
+    )
+    minus_dm = pd.Series(
+        np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+        index=close.index,
+    )
+
+    # Wilder 平滑（等价于 alpha=1/window 的 EWM）
+    atr_smooth = tr.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    plus_dm_smooth = plus_dm.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    minus_dm_smooth = minus_dm.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+
+    # +DI / -DI
+    plus_di = 100.0 * plus_dm_smooth / atr_smooth.replace(0, np.nan)
+    minus_di = 100.0 * minus_dm_smooth / atr_smooth.replace(0, np.nan)
+
+    # DX → ADX
+    di_sum = plus_di + minus_di
+    dx = 100.0 * (plus_di - minus_di).abs() / di_sum.replace(0, np.nan)
+    adx_series = dx.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    return adx_series

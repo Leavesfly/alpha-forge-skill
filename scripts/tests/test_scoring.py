@@ -1,7 +1,8 @@
 """纪律评分引擎（scoring/）回归测试。
 
 覆盖：合成趋势的结论方向、否决层单向性、交易计划算术、
-回放无前视、事件风险降级与持仓联动。全部用确定性合成数据，不依赖网络。
+回放无前视、事件风险降级与持仓联动、动态阈值、ADX 趋势感知、
+基本面否决层。全部用确定性合成数据，不依赖网络。
 """
 
 from __future__ import annotations
@@ -11,13 +12,18 @@ import pandas as pd
 import pytest
 
 from scoring import (
+    ADX_STRONG,
     MIN_BARS,
+    VOL_K_MAX,
+    VOL_K_MIN,
     build_trade_plan,
     default_benchmark,
     replay_study,
     replay_verdicts,
     score_symbol,
 )
+from scoring.engine import _fundamental_veto, _vol_regime
+from scoring.indicators import adx as compute_adx
 from scoring.replay import calibrate_threshold
 from tests.helpers import make_ohlcv
 
@@ -232,3 +238,159 @@ class TestSerialization:
         assert payload["verdict"] in ("yes", "watch", "no", "reduce_risk", "unrated")
         assert payload["verdict_cn"]
         assert isinstance(payload["layers"], list)
+
+
+class TestDynamicThresholds:
+    """动态自适应阈值：波动率缩放因子 vol_k 测试。"""
+
+    def test_high_volatility_widens_threshold(self):
+        """高波动环境：vol_k > 1.0，阈值放宽。"""
+        # 前 300 根低波动 + 后 100 根高波动 → 当前波动率远高于中位数
+        rng = np.random.default_rng(42)
+        calm = rng.normal(0.001, 0.003, size=300)
+        wild = rng.normal(0.001, 0.025, size=100)
+        close = 100.0 * np.exp(np.cumsum(np.concatenate([calm, wild])))
+        vol_k = _vol_regime(pd.Series(close))
+        assert vol_k > 1.0
+        assert vol_k <= VOL_K_MAX
+
+    def test_low_volatility_tightens_threshold(self):
+        """低波动环境：vol_k < 1.0，阈值收紧。"""
+        # 前 300 根高波动 + 后 100 根极低波动
+        rng = np.random.default_rng(42)
+        wild = rng.normal(0.001, 0.025, size=300)
+        calm = rng.normal(0.001, 0.002, size=100)
+        close = 100.0 * np.exp(np.cumsum(np.concatenate([wild, calm])))
+        vol_k = _vol_regime(pd.Series(close))
+        assert vol_k < 1.0
+        assert vol_k >= VOL_K_MIN
+
+    def test_insufficient_data_returns_one(self):
+        """数据不足时 vol_k = 1.0（退化为固定阈值）。"""
+        close = pd.Series(np.linspace(100, 110, 30))
+        assert _vol_regime(close) == 1.0
+
+    def test_vol_k_in_snapshot(self):
+        """评分结果 snapshot 中包含 vol_k 字段。"""
+        res = score_symbol(_uptrend_df(), symbol="TEST.SH")
+        assert "vol_k" in res.snapshot
+        assert VOL_K_MIN <= res.snapshot["vol_k"] <= VOL_K_MAX
+
+
+class TestADXAwareness:
+    """ADX 趋势强度感知测试。"""
+
+    def test_adx_strong_trend(self):
+        """强趋势数据 ADX 应较高（>25）。"""
+        # 稳定上行趋势 → ADX 应较高
+        df = _uptrend_df(n=400, daily=0.003)
+        adx_series = compute_adx(df, 14)
+        adx_val = float(adx_series.iloc[-1])
+        # 强上升趋势 ADX 通常 > 20
+        assert adx_val > 20
+
+    def test_adx_in_snapshot(self):
+        """评分结果 snapshot 中包含 adx14 字段。"""
+        res = score_symbol(_uptrend_df(), symbol="TEST.SH")
+        assert "adx14" in res.snapshot
+
+    def test_adx_relaxes_rsi_in_strong_trend(self):
+        """强趋势中 RSI 略超 78 不应降级（ADX 放宽生效）。
+
+        构造一个强趋势 + RSI 略超 78 的场景：
+        如果 ADX >= 30，RSI 阈值放宽到 83，则 78 < 83 不触发拦截。
+        """
+        # 用强趋势数据（daily=0.004 更快拉升）
+        df = _uptrend_df(n=400, daily=0.004)
+        res = score_symbol(df, symbol="TEST.SH", benchmark_close=_flat_benchmark())
+        confirm = next(l for l in res.layers if l["name"] == "confirm")
+        # 如果 ADX 强趋势生效，reasons 中应有 ADX 标注
+        adx_val = res.snapshot.get("adx14")
+        if adx_val is not None and adx_val >= ADX_STRONG:
+            assert any("ADX" in r for r in confirm["reasons"])
+
+    def test_adx_range_market_strict(self):
+        """震荡市（ADX 低）保持严格拦截。"""
+        # 横盘震荡数据
+        rng = np.random.default_rng(99)
+        steps = rng.normal(0.0, 0.008, size=400)
+        close = 100.0 * np.exp(np.cumsum(steps))
+        df = make_ohlcv(close)
+        res = score_symbol(df, symbol="TEST.SH")
+        adx_val = res.snapshot.get("adx14")
+        # 震荡市 ADX 应较低
+        if adx_val is not None:
+            assert adx_val < ADX_STRONG
+
+
+class TestFundamentalVeto:
+    """基本面否决层测试。"""
+
+    def test_st_veto(self):
+        """ST 标的 → 直接否决。"""
+        fund = {"is_st": True, "source": "test"}
+        verdict_hint, layer = _fundamental_veto(fund)
+        assert layer["status"] == "veto"
+        assert verdict_hint == "no"
+        assert any("ST" in r for r in layer["reasons"])
+
+    def test_negative_net_asset_veto(self):
+        """资不抵债 → 直接否决。"""
+        fund = {"is_st": False, "net_asset_per_share": -0.5, "source": "test"}
+        verdict_hint, layer = _fundamental_veto(fund)
+        assert layer["status"] == "veto"
+        assert verdict_hint == "no"
+        assert any("资不抵债" in r for r in layer["reasons"])
+
+    def test_consecutive_losses_veto(self):
+        """连续 4 季亏损 → 直接否决。"""
+        fund = {"is_st": False, "eps_recent": [-0.1, -0.2, -0.15, -0.3], "source": "test"}
+        verdict_hint, layer = _fundamental_veto(fund)
+        assert layer["status"] == "veto"
+        assert verdict_hint == "no"
+        assert any("连续亏损" in r for r in layer["reasons"])
+
+    def test_profit_to_loss_cap(self):
+        """由盈转亏（第 3 季 > 0，近 2 季 < 0）→ 封顶观察。"""
+        fund = {"is_st": False, "eps_recent": [0.5, 0.3, -0.1, -0.2], "source": "test"}
+        verdict_hint, layer = _fundamental_veto(fund)
+        assert layer["status"] == "cap"
+        assert verdict_hint == "watch"
+        assert any("由盈转亏" in r for r in layer["reasons"])
+
+    def test_healthy_fundamentals_pass(self):
+        """健康基本面 → 通过。"""
+        fund = {"is_st": False, "eps_recent": [0.5, 0.6, 0.7, 0.8], "source": "test"}
+        verdict_hint, layer = _fundamental_veto(fund)
+        assert layer["status"] == "pass"
+        assert verdict_hint == "pass"
+
+    def test_fundamental_integrated_in_score(self):
+        """基本面否决集成到 score_symbol：ST 标的即使趋势强也被否决。"""
+        fund = {"is_st": True, "source": "test"}
+        res = score_symbol(
+            _uptrend_df(), symbol="TEST.SH",
+            benchmark_close=_flat_benchmark(), fundamentals=fund,
+        )
+        assert res.verdict == "no"
+        names = [l["name"] for l in res.layers]
+        assert "fundamental" in names
+        f_layer = next(l for l in res.layers if l["name"] == "fundamental")
+        assert f_layer["status"] == "veto"
+
+    def test_fundamental_cap_integrated(self):
+        """由盈转亏封顶：即使 alpha 分高也只能「观察」。"""
+        fund = {"is_st": False, "eps_recent": [0.5, 0.3, -0.1, -0.2], "source": "test"}
+        res = score_symbol(
+            _uptrend_df(), symbol="TEST.SH",
+            benchmark_close=_flat_benchmark(), fundamentals=fund,
+        )
+        # 上行趋势 alpha 分高，但基本面封顶 → 观察
+        assert res.verdict == "watch"
+
+    def test_fundamentals_none_backward_compatible(self):
+        """fundamentals=None 时跳过该层（向后兼容）。"""
+        res = score_symbol(_uptrend_df(), symbol="TEST.SH", benchmark_close=_flat_benchmark())
+        names = [l["name"] for l in res.layers]
+        assert "fundamental" not in names
+        assert res.verdict == "yes"

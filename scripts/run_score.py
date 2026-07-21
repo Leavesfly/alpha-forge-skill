@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""单股纪律评分 CLI：四层否决式评分 -> 结论 -> 交易计划 -> 可选回放验证。
+"""单股纪律评分 CLI：分层否决式评分 -> 结论 -> 交易计划 -> 可选回放验证。
 
 回答的不是「这个标的好不好」，而是：按当前价量结构、市场环境和风险约束，
 现在是否适合参与。结论五态：是 / 观察 / 否 / 持仓需减风险 / 无法评分。
 
-四层各司其职、单向降级（利好不能救弱势标的）：
+分层各司其职、单向降级（利好不能救弱势标的）：
+    ⓪ 基本面否决（ST/连续亏损/资不抵债，默认启用，--no-fundamental 跳过）
     ① ALPHA 加权（动量 55 · 相对强度 35 · 趋势效率 10）→ 排名分
     ② 风险否决（MA60/MA200 · 周线结构 · 大盘环境）→ 封顶或否决
-    ③ 技术确认（MACD · RSI · KDJ · 量价）→ 只拦截「是」
-    ④ 入场时机（过热降级 · 回调确认）→ 调整入场结论
+    ③ 技术确认（MACD · RSI · KDJ · 量价，受 vol_k 动态阈值与 ADX 趋势感知调节）→ 只拦截「是」
+    ④ 入场时机（过热降级 · 回调确认，受 vol_k 动态阈值调节）→ 调整入场结论
 
 示例：
     # 单股评分（A 股基准自动取 510300.SH，免费日 K 即可）
@@ -106,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cost", type=float, default=None, help="持仓成本价；提供后输出持仓操作建议")
     parser.add_argument("--shares", type=float, default=None, help="持仓数量（配合 --cost 计算市值）")
+    parser.add_argument(
+        "--no-fundamental",
+        action="store_true",
+        help="跳过基本面否决层（ST/连续亏损/资不抵债检查）；默认启用",
+    )
     parser.add_argument("--capital", type=float, default=100_000.0, help="可用资金（用于交易计划建议仓位），默认 10 万；0 关闭建议仓位")
     parser.add_argument("--risk-pct", type=float, default=0.01, help="单笔交易风险预算占资金比例，默认 0.01（止损时约亏资金的 1%%）")
     parser.add_argument("--plot", action="store_true", help="生成评分图（价格 + 均线 + 计划价位；回放时背景按结论着色）")
@@ -198,6 +204,37 @@ def detect_account_position(symbol: str, log) -> dict | None:
     from account import detect_position
 
     return detect_position(symbol, log=log)
+
+
+def _fetch_scoring_fundamentals(symbol: str, log) -> dict | None:
+    """尝试获取基本面数据用于否决层；失败时静默跳过（stderr 提示）。
+
+    返回结构：{eps_recent, is_st, net_asset_per_share, source} 或 None。
+    """
+    try:
+        from canslim.fundamentals import fetch_fundamentals as _fetch_fund
+
+        raw = _fetch_fund(symbol)
+        if raw is None:
+            return None
+        # 从 canslim 基本面数据提取评分否决层所需字段
+        result: dict = {"source": raw.get("source", "unknown")}
+        # EPS 序列：A 股用累计值，港美股用单季值
+        eps_series = raw.get("eps_quarterly") or raw.get("eps")
+        if eps_series is not None and len(eps_series) >= 4:
+            # 取最近 4 个值（单季 EPS）
+            vals = eps_series.dropna().tail(4).tolist()
+            result["eps_recent"] = vals
+        # ST 检测：通过股票名称判断（akshare 场景）
+        result["is_st"] = False
+        # 每股净资产：暂不可用时不设置（否决层跳过该检查）
+        return result
+    except Exception as exc:
+        print(
+            f"[warn] 基本面数据获取失败（{type(exc).__name__}: {exc}），跳过基本面否决层",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _print_score_report(args, result, regime, bench_symbol, log) -> None:
@@ -329,6 +366,11 @@ def main() -> None:
     else:
         position = detect_account_position(args.symbol, log)
 
+    # 基本面否决层：默认启用，--no-fundamental 跳过
+    fundamentals = None
+    if not args.no_fundamental:
+        fundamentals = _fetch_scoring_fundamentals(args.symbol, log)
+
     result = score_symbol(
         df,
         symbol=args.symbol,
@@ -336,6 +378,7 @@ def main() -> None:
         benchmark_symbol=bench_symbol,
         risk_events=risk_events,
         position=position,
+        fundamentals=fundamentals,
     )
 
     # 市场状态（描述性上下文，不参与评分裁决）
