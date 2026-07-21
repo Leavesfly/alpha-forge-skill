@@ -144,7 +144,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 ### JSON 输出新增字段（Agent 程序化消费）
 
-全部 18 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
+全部 20 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
 
 - **`summary`**：1–2 句自然语言结论，Agent 可直接引用或改写后转述给用户。
 - **`next_steps`**：结构化后续动作列表，每项含 `action`（动作标识）、`reason`（为何建议）、`command`（可执行命令）。Agent 据此程序化链式引导，无需解析 stderr 文本。
@@ -404,11 +404,11 @@ uv run python run_backtest.py --symbol AAPL.US --strategy macd --json > result.j
 
 ### CLI 通用约定（Agent 友好）
 
-全部 18 个 `run_*.py` 遵循统一约定，便于脚本与 agent 编排：
+全部 20 个 `run_*.py` 遵循统一约定，便于脚本与 agent 编排：
 
 - **`--help` 带示例**：每个命令的 `--help` 末尾附可直接复制的运行示例。
 - **`--config <TOML>` 全覆盖**：配置文件注入默认值，显式命令行参数优先；未知键报错并给出近似建议与可用键列表。
-- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 19 个命令（backtest/optimize/compare/portfolio/signal/dca/score/scan/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/dashboard）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
+- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 20 个命令（backtest/optimize/compare/portfolio/signal/dca/score/scan/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/dashboard/verify）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
 - **`run_list.py` 能力清单**：一条命令列出全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，`--json` 供 agent 发现能力：`uv run python run_list.py --json`。
 - **`run_dashboard.py` 统一 Dashboard**：聚合真实持仓 + 全部模拟盘 + 可选今日信号于一页自包含 HTML（`--symbols` 附信号，`--json` 结构化）；含集中度/回撤风控提示。
 - **规范退出码**：0=成功，1=运行错误（数据/网络），2=参数错误，130=用户中断；失败信息以 `[error] ` 前缀输出 stderr，含可操作的修复建议（如标的代码格式、数据排查方向）；非法策略参数组合（如 fast>=slow）会在启动期报友好错误。

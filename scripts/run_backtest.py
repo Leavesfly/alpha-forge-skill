@@ -12,18 +12,21 @@ from __future__ import annotations
 
 import argparse
 
-from backtest.costs import CostModel
 from backtest.engine import run_backtest
 from backtest.ledger import run_backtest_ledger
 from backtest.metrics import relative_metrics
-from backtest.rules import TradingRules
 from cli_common import (
+    add_cost_args,
     add_json_arg,
+    add_market_args,
+    add_risk_args,
+    build_cost_and_rules,
     build_next_steps,
     check_symbol,
+    default_lot_size,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     parse_params,
     run_cli,
@@ -58,26 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="策略参数，形如 fast=10 slow=30",
     )
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
-    parser.add_argument(
-        "--market",
-        choices=["generic", "astock"],
-        default="generic",
-        help="成本预设：generic(默认) / astock(A股卖出印花税 + 双边过户费)",
-    )
-    parser.add_argument(
-        "--exec-price",
-        choices=["close", "open"],
-        default="close",
-        help="成交价约定：close(收盘成交,默认) / open(次日开盘成交,更贴近现实)",
-    )
-    parser.add_argument(
-        "--limit-board",
-        choices=["main", "star", "chinext", "st"],
-        default=None,
-        help="启用 A 股涨跌停/停牌规则并指定板块(main 10%%/star,chinext 20%%/st 5%%)",
-    )
+    add_cost_args(parser)
+    add_market_args(parser)
     parser.add_argument("--allow-short", action="store_true", help="开启做空（策略输出 -1）")
     parser.add_argument(
         "--engine",
@@ -104,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kelly", action="store_true", help="半 Kelly 连续仓位（仓位=信号×0.5μ/σ²，与 --vol-target 互斥且优先；仅向量引擎）")
     parser.add_argument("--kelly-window", type=int, default=60, help="Kelly 估计滚动窗口，默认 60")
     parser.add_argument("--max-leverage", type=float, default=1.0, help="仓位上限，默认 1.0")
+
     parser.add_argument("--plot", action="store_true", help="生成回测图表")
     parser.add_argument("--stress", action="store_true", help="输出压力测试（历史情景重放 + 蒙特卡洛冲击）")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/backtest_<标的>_<策略>.png 命名")
@@ -124,8 +110,7 @@ def main() -> None:
     check_symbol(args.symbol)
 
     # --json 不带路径时，stdout 只留给 JSON，进度/报告转到 stderr
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     params = parse_params(args.params)
     if args.allow_short:
@@ -142,18 +127,13 @@ def main() -> None:
     )
     log(f"已获取 {len(df)} 根 K 线，策略：{strategy}")
 
-    cost_model = CostModel.preset(
-        args.market, commission=args.commission, slippage=args.slippage
-    )
-    trading_rules = (
-        TradingRules.astock(args.limit_board) if args.limit_board else None
-    )
+    cost_model, trading_rules = build_cost_and_rules(args)
     log(f"成本模型：{cost_model.describe()}；成交价：{args.exec_price}")
     if trading_rules:
         log(f"已启用 A 股交易规则：涨跌停 {trading_rules.limit_pct:.0%} + 停牌")
 
     if args.engine == "ledger":
-        lot = args.lot_size or (100 if args.market == "astock" else 1)
+        lot = args.lot_size or default_lot_size(args.market)
         if args.kelly:
             log("[warn] 账本引擎暂不支持 --kelly，已忽略（可用向量引擎）。")
         log(f"账本引擎：初始资金 {args.capital:,.0f}，lot_size={lot}")

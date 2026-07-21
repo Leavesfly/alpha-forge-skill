@@ -34,8 +34,8 @@ from cli_common import (
     build_next_steps,
     check_symbol,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     run_cli,
     split_symbols,
@@ -112,8 +112,7 @@ def _print_result(res, log) -> None:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     if bool(args.symbol) == bool(args.symbols):
         raise SystemExit("[error] 需要 --symbol（单标的详评）或 --symbols（多标的横截面）之一。")

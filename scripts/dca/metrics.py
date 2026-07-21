@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backtest.metrics import max_drawdown
+from metrics import max_drawdown
 
 
 def _year_fractions(dates: pd.DatetimeIndex) -> np.ndarray:

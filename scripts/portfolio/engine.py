@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from backtest.metrics import compute_metrics
+from metrics import compute_metrics
 
 
 @dataclass

@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backtest.metrics import periods_per_year
+from metrics import periods_per_year
 
 
 def _long_only(w: np.ndarray) -> np.ndarray:

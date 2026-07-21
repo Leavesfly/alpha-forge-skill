@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from backtest.engine import BacktestResult
 
 # JSON 输出结构版本：字段只增不改不删；若未来有破坏性变更再升版本号
 SCHEMA_VERSION = "alpha-forge/1"
@@ -58,11 +61,11 @@ def frame_records(df: pd.DataFrame, max_rows: int = 500) -> list[dict]:
 
 
 def result_to_dict(
-    result,
+    result: BacktestResult,
     strategy_name: str = "",
-    config: dict | None = None,
+    config: dict[str, Any] | None = None,
     max_trades: int = 200,
-) -> dict:
+) -> dict[str, Any]:
     """把 BacktestResult 转为可 JSON 序列化的字典。
 
     Args:

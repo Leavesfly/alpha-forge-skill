@@ -35,6 +35,7 @@ from .indicators import (
     macd,
 )
 from .plan import build_trade_plan
+from utils import resolve_time_index, safe_round, series_last
 
 #: 结论五态（机器码 -> 中文展示）
 VERDICT_CN = {
@@ -130,7 +131,7 @@ def score_symbol(
         ScoreResult。评分仅使用截至最近一根已完成 K 线的数据，无前视。
     """
     close = df["close"].astype(float).reset_index(drop=True)
-    index = _resolve_index(df)
+    index = resolve_time_index(df)
     close.index = index
     asof = str(index[-1])[:10] if len(index) else ""
     n = int(close.notna().sum())
@@ -151,7 +152,7 @@ def score_symbol(
                     ],
                 }
             ],
-            snapshot={"close": _last(close), "n_bars": n},
+            snapshot={"close": series_last(close), "n_bars": n},
             plan=None,
             benchmark=benchmark_symbol,
             asof=asof,
@@ -194,25 +195,25 @@ def score_symbol(
         layers.append(event_layer)
 
     # ---------- 交易计划（仅 是/观察） ----------
-    atr14 = _last(atr(df.reset_index(drop=True), 14))
+    atr14 = series_last(atr(df.reset_index(drop=True), 14))
     snapshot["atr14"] = atr14
     plan = None
     if verdict in ("yes", "watch"):
-        plan = build_trade_plan(_last(close), snapshot.get("ma20"), atr14)
+        plan = build_trade_plan(series_last(close), snapshot.get("ma20"), atr14)
 
     # ---------- 独立约束：持仓联动（只改操作建议） ----------
     position_out = None
     if position is not None and position.get("cost"):
         verdict, position_out = _position_overlay(position, close, atr14, verdict, layers)
 
-    snapshot["close"] = _last(close)
+    snapshot["close"] = series_last(close)
     return ScoreResult(
         symbol=symbol,
         verdict=verdict,
         alpha_score=round(alpha_score, 1),
         components=components,
         layers=layers,
-        snapshot={k: _round(v) for k, v in snapshot.items()},
+        snapshot={k: safe_round(v) for k, v in snapshot.items()},
         plan=plan,
         benchmark=benchmark_symbol,
         asof=asof,
@@ -279,9 +280,9 @@ def _veto_layer(
 ) -> tuple[str, dict, dict]:
     """风险否决层：MA200 否决、MA60/周线/基准 risk-off 封顶「观察」。"""
     last = float(close.iloc[-1])
-    ma20 = _last(close.rolling(20).mean())
-    ma60 = _last(close.rolling(60).mean())
-    ma200 = _last(close.rolling(200).mean())
+    ma20 = series_last(close.rolling(20).mean())
+    ma60 = series_last(close.rolling(60).mean())
+    ma200 = series_last(close.rolling(200).mean())
     reasons: list[str] = []
     status = "pass"
 
@@ -371,7 +372,7 @@ def _confirm_layer(
 def _timing_layer(close: pd.Series, verdict: str) -> tuple[str, dict, dict]:
     """入场时机层：偏离 MA20 过热追高降级；有序回调保持并注明。"""
     last = float(close.iloc[-1])
-    ma20 = _last(close.rolling(20).mean())
+    ma20 = series_last(close.rolling(20).mean())
     dev20 = last / ma20 - 1.0 if not math.isnan(ma20) and ma20 > 0 else float("nan")
     high60 = float(close.rolling(60).max().iloc[-1])
     dd60 = last / high60 - 1.0 if high60 > 0 else float("nan")
@@ -461,20 +462,6 @@ def _position_overlay(
     return verdict, out
 
 
-# ---------------------------------------------------------------- 工具函数
-
-
-def _resolve_index(df: pd.DataFrame) -> pd.Index:
-    """从常见时间列构造索引，找不到则用序号索引（与 dca.engine 同约定）。"""
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            try:
-                return pd.DatetimeIndex(pd.to_datetime(df[col]))
-            except (ValueError, TypeError):
-                return pd.Index(df[col])
-    return pd.RangeIndex(len(df))
-
-
 def _weekly_close(close: pd.Series) -> pd.Series:
     """周线收盘：时间索引按自然周重采样，否则按 5 根近似一周。"""
     if isinstance(close.index, pd.DatetimeIndex):
@@ -482,15 +469,3 @@ def _weekly_close(close: pd.Series) -> pd.Series:
     grp = np.arange(len(close)) // 5
     return close.groupby(grp).last()
 
-
-def _last(series: pd.Series) -> float:
-    """取序列末值为 float（空序列返回 NaN）。"""
-    return float(series.iloc[-1]) if len(series) else float("nan")
-
-
-def _round(v, digits: int = 4):
-    if isinstance(v, float) and math.isfinite(v):
-        return round(v, digits)
-    if isinstance(v, float) and math.isnan(v):
-        return None
-    return v

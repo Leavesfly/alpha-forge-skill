@@ -17,16 +17,17 @@ from __future__ import annotations
 
 import argparse
 
-from backtest.costs import CostModel
 from backtest.engine import run_backtest
-from backtest.rules import TradingRules
 from cli_common import (
+    add_cost_args,
     add_json_arg,
+    add_market_args,
+    build_cost_and_rules,
     build_next_steps,
     check_symbol,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     run_cli,
 )
@@ -53,26 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="复权口径：forward/qfq(默认) / backward/hfq / none",
     )
     parser.add_argument("--no-cache", action="store_true", help="禁用本地缓存")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
-    parser.add_argument(
-        "--market",
-        choices=["generic", "astock"],
-        default="generic",
-        help="成本预设：generic(默认) / astock",
-    )
-    parser.add_argument(
-        "--exec-price",
-        choices=["close", "open"],
-        default="close",
-        help="成交价约定：close(默认) / open",
-    )
-    parser.add_argument(
-        "--limit-board",
-        choices=["main", "star", "chinext", "st"],
-        default=None,
-        help="启用 A 股涨跌停/停牌规则并指定板块",
-    )
+    add_cost_args(parser)
+    add_market_args(parser)
     parser.add_argument("--allow-short", action="store_true", help="开启做空")
     parser.add_argument("--stop-loss", type=float, default=None, help="止损比例")
     parser.add_argument("--take-profit", type=float, default=None, help="止盈比例")
@@ -97,8 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     names = (
         [s.strip() for s in args.strategies.split(",") if s.strip()]
@@ -121,10 +103,7 @@ def main() -> None:
     )
     log(f"已获取 {len(df)} 根 K 线，对比 {len(names)} 个策略：{names}")
 
-    cost_model = CostModel.preset(
-        args.market, commission=args.commission, slippage=args.slippage
-    )
-    trading_rules = TradingRules.astock(args.limit_board) if args.limit_board else None
+    cost_model, trading_rules = build_cost_and_rules(args)
     params = {"allow_short": True} if args.allow_short else {}
 
     results = {}

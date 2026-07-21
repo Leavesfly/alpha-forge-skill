@@ -21,7 +21,7 @@ from cli_common import (
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
 )
@@ -65,8 +65,7 @@ def _close_series(symbol: str, args) -> pd.Series:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
     if args.benchmark:
         check_symbol(args.benchmark)
     events = [e.strip() for e in args.events.split(",") if e.strip()]

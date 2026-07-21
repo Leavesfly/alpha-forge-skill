@@ -17,6 +17,7 @@ import os
 import random as _random
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from typing import Any, TypedDict
 
 import pandas as pd
 
@@ -34,11 +35,26 @@ BAYES_GAMMA = 0.25
 #: 贝叶斯搜索：每轮评估的候选批量（固定值保证串行/并行结果一致）
 BAYES_BATCH = 4
 
+
+class _WorkerContext(TypedDict):
+    """子进程内的共享上下文结构。"""
+
+    df: pd.DataFrame
+    strategy_cls: type[Strategy]
+    fixed: dict[str, Any]
+    engine_kwargs: dict[str, Any]
+
+
 #: 子进程内的共享上下文（由 initializer 填充，避免逐任务重复 pickle 数据）
-_WORKER_CTX: dict = {}
+_WORKER_CTX: _WorkerContext = {}  # type: ignore[typeddict-item]
 
 
-def _init_worker(df: pd.DataFrame, strategy_cls: type, fixed: dict, engine_kwargs: dict) -> None:
+def _init_worker(
+    df: pd.DataFrame,
+    strategy_cls: type[Strategy],
+    fixed: dict[str, Any],
+    engine_kwargs: dict[str, Any],
+) -> None:
     """进程池 initializer：每个 worker 只接收一次数据与回测配置。"""
     _WORKER_CTX["df"] = df
     _WORKER_CTX["strategy_cls"] = strategy_cls
@@ -46,7 +62,7 @@ def _init_worker(df: pd.DataFrame, strategy_cls: type, fixed: dict, engine_kwarg
     _WORKER_CTX["engine_kwargs"] = engine_kwargs
 
 
-def _eval_combo(params: dict) -> dict:
+def _eval_combo(params: dict[str, Any]) -> dict[str, Any]:
     """评估单组参数（串行与并行共用，保证结果一致）。"""
     ctx = _WORKER_CTX
     strategy = ctx["strategy_cls"](**{**ctx["fixed"], **params})
@@ -54,7 +70,9 @@ def _eval_combo(params: dict) -> dict:
     return {**params, **result.metrics}
 
 
-def _combo_valid(strategy_cls: type, fixed: dict, params: dict) -> bool:
+def _combo_valid(
+    strategy_cls: type[Strategy], fixed: dict[str, Any], params: dict[str, Any]
+) -> bool:
     """尝试构造策略实例，参数校验失败（ValueError）即视为非法组合。"""
     try:
         strategy_cls(**{**fixed, **params})

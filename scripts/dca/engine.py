@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from utils import resolve_time_index
+
 from .metrics import compute_dca_metrics, compute_lumpsum_metrics
 
 #: 支持的定投模式
@@ -116,7 +118,7 @@ def run_dca_backtest(
 
     df = df.reset_index(drop=True)
     close = df["close"].astype(float)
-    index = _resolve_index(df)
+    index = resolve_time_index(df)
     close.index = index
 
     mask = _contribution_mask(index, freq)
@@ -299,18 +301,6 @@ def _align_dividends(index: pd.Index, dividends: pd.Series | None) -> np.ndarray
         dps[pos] += value
     return dps if dps.any() else None
 
-
-def _resolve_index(df: pd.DataFrame) -> pd.Index:
-    """从常见时间列构造索引，找不到则用序号索引。"""
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            try:
-                # 显式转 DatetimeIndex（to_datetime 返回 Series 会使后续
-                # isinstance 判断失效，导致周/月定投退化为固定间隔）
-                return pd.DatetimeIndex(pd.to_datetime(df[col]))
-            except (ValueError, TypeError):
-                return pd.Index(df[col])
-    return pd.RangeIndex(len(df))
 
 
 def _contribution_mask(index: pd.Index, freq: str) -> np.ndarray:

@@ -18,13 +18,13 @@ import numpy as np
 import pandas as pd
 
 from strategies.base import Strategy
+from utils import resolve_time_index
 
 from .costs import CostModel
 from .engine import (
     BacktestResult,
     _apply_risk_management,
     _apply_vol_target,
-    _resolve_index,
 )
 from .metrics import compute_metrics
 from .rules import TradingRules, tradable_masks
@@ -139,7 +139,7 @@ def run_backtest_ledger(
     price_ret = close.pct_change().fillna(0.0)
     benchmark_equity = (1.0 + price_ret).cumprod()
 
-    index = _resolve_index(df)
+    index = resolve_time_index(df)
     for s in (close, signals, positions, strat_ret, equity, benchmark_equity):
         s.index = index
 

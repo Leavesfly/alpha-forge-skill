@@ -24,8 +24,8 @@ from cli_common import (
     add_json_arg,
     build_next_steps,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     run_cli,
     split_symbols,
@@ -57,8 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     if args.symbols:
         symbols = split_symbols(args.symbols, min_count=2, what="扫描")

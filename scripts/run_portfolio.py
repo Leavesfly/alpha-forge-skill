@@ -17,10 +17,11 @@ from __future__ import annotations
 import argparse
 
 from cli_common import (
+    add_cost_args,
     add_json_arg,
     build_next_steps,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
     split_symbols,
@@ -55,8 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=2, help="动量轮动持有标的数，默认 2")
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期，默认 20")
     parser.add_argument("--cvar-alpha", type=float, default=0.95, help="min_cvar 的置信水平，默认 0.95")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    add_cost_args(parser)
     parser.add_argument("--max-weight", type=float, default=None, help="单标的权重上限（如 0.4）")
     parser.add_argument("--max-gross", type=float, default=None, help="总暴露上限 Σ|w|（如 1.0）")
     parser.add_argument("--risk", action="store_true", help="额外输出组合风险报告（VaR/CVaR/溃疡指数）")
@@ -89,8 +89,7 @@ def build_weight_params(args) -> dict:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     symbols = split_symbols(args.symbols, min_count=2, what="组合回测")
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     log(f"拉取 {len(symbols)} 个标的 {args.period} K 线（{args.count} 根）...")
     prices = fetch_prices(symbols, period=args.period, count=args.count)

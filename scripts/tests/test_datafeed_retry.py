@@ -68,12 +68,16 @@ def test_retries_zero_disables_retry(monkeypatch, no_sleep):
 
 def test_retry_config_invalid_env_falls_back(monkeypatch):
     """非法环境变量值回落到默认 2 次。"""
+    from envconfig import reset_env_config
+
     monkeypatch.setenv("ALPHA_FORGE_RETRIES", "abc")
+    reset_env_config()
     retries, backoff = datafeed._retry_config()
     assert retries == 2
     assert backoff == 1.0
     # 负数被钳制为 0
     monkeypatch.setenv("ALPHA_FORGE_RETRIES", "-3")
+    reset_env_config()
     assert datafeed._retry_config()[0] == 0
 
 

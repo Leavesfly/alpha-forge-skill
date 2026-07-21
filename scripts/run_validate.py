@@ -18,15 +18,16 @@ import itertools
 
 import pandas as pd
 
-from backtest.costs import CostModel
 from backtest.engine import run_backtest
-from backtest.rules import TradingRules
 from cli_common import (
+    add_cost_args,
     add_json_arg,
+    add_market_args,
+    build_cost_and_rules,
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
 )
@@ -50,9 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-window", type=int, default=60, help="测试块长度/步长，默认 60")
     parser.add_argument("--anchored", action="store_true", help="锚定式走步（训练窗起点固定为 0）")
     parser.add_argument("--allow-short", action="store_true", help="开启做空")
-    parser.add_argument("--market", choices=["generic", "astock"], default="generic", help="成本预设")
-    parser.add_argument("--exec-price", choices=["close", "open"], default="close", help="成交价约定")
-    parser.add_argument("--limit-board", choices=["main", "star", "chinext", "st"], default=None, help="A 股涨跌停板块")
+    add_cost_args(parser)
+    add_market_args(parser)
     parser.add_argument("--pbo", action="store_true", help="额外计算过拟合概率 PBO")
     parser.add_argument("--pbo-splits", type=int, default=10, help="PBO 的 CSCV 分块数，默认 10")
     add_json_arg(parser)
@@ -82,8 +82,7 @@ def _pbo_returns_matrix(df, strategy_cls, fixed, cost_model, exec_price, trading
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
     strategy_cls = STRATEGIES[args.strategy]
     fixed = {"allow_short": True} if args.allow_short else {}
 
@@ -91,8 +90,7 @@ def main() -> None:
     df = fetch_ohlcv(args.symbol, period=args.period, count=args.count, adjust=args.adjust)
     log(f"已获取 {len(df)} 根 K 线\n")
 
-    cost_model = CostModel.preset(args.market)
-    trading_rules = TradingRules.astock(args.limit_board) if args.limit_board else None
+    cost_model, trading_rules = build_cost_and_rules(args)
 
     log(
         f"走步验证：train={args.train_window} / test={args.test_window} / "

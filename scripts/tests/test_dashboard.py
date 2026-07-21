@@ -14,7 +14,7 @@ def _setup(tmp_path, monkeypatch, account_positions=None, papers=None):
     """打桩：账户/模拟盘/输出目录指向 tmp_path。"""
     acct = {"version": 1, "updated_at": None, "positions": account_positions or {}}
     monkeypatch.setattr(run_dashboard, "load_account", lambda: acct)
-    monkeypatch.setattr(run_dashboard, "_outputs_dir", lambda: tmp_path)
+    monkeypatch.setattr(run_dashboard, "outputs_dir", lambda: tmp_path)
     if papers is not None:
         monkeypatch.setattr(run_dashboard, "_load_papers", lambda: papers)
 

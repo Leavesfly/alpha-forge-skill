@@ -21,6 +21,8 @@ from typing import Protocol
 
 import pandas as pd
 
+from envconfig import get_env_config
+
 # 需要 TICKFLOW_API_KEY 的接口在报错/告警时统一附带此指引，
 # 提醒用户去哪里申请、如何设置与验证。
 API_KEY_HELP = (
@@ -297,7 +299,7 @@ class YFinanceSource:
 
 def source_label() -> str:
     """当前数据源配置标签（缓存键的一部分）：tickflow/baostock/akshare/yfinance/auto。"""
-    forced = os.environ.get("ALPHA_FORGE_DATA_SOURCE", "").strip().lower()
+    forced = get_env_config().data_source
     return forced if forced in ("tickflow", "baostock", "akshare", "yfinance") else "auto"
 
 

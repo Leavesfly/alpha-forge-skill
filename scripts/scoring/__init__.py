@@ -15,6 +15,7 @@ from .engine import (
     score_symbol,
 )
 from .plan import attach_position_sizing, build_trade_plan, format_plan
+from .present import DISCLAIMER, LAYER_CN, print_score_report
 from .replay import format_replay_report, replay_study, replay_verdicts
 from .scan import scan_symbols
 
@@ -29,6 +30,9 @@ __all__ = [
     "build_trade_plan",
     "attach_position_sizing",
     "format_plan",
+    "DISCLAIMER",
+    "LAYER_CN",
+    "print_score_report",
     "format_replay_report",
     "replay_study",
     "replay_verdicts",

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import sys
 from pathlib import Path
 
@@ -43,38 +42,26 @@ from cli_common import (
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
+    is_astock,
     make_parser,
     run_cli,
 )
 from cli_config import parse_args_with_config
 from datafeed import fetch_ohlcv
-from naming import default_output, sanitize
+from naming import default_output, outputs_dir, sanitize
 from report import attach_meta
 from scoring import (
     attach_position_sizing,
     default_benchmark,
-    format_plan,
     format_replay_report,
     replay_study,
     replay_verdicts,
     score_symbol,
 )
+from scoring.present import DISCLAIMER, LAYER_CN, print_score_report
 from scoring.replay import calibrate_threshold
-
-LAYER_CN = {
-    "data": "数据检查",
-    "alpha": "ALPHA 加权",
-    "veto": "风险否决",
-    "confirm": "技术确认",
-    "timing": "入场时机",
-    "event_risk": "事件风险",
-}
-
-DISCLAIMER = (
-    "提示：评分是纪律工具而非收益预测，阈值未经过样本外验证（可用 --replay 自证）；"
-    "可用 run_backtest.py 验证策略、run_paper.py 跟踪模拟盘。不构成投资建议。"
-)
+from utils import extract_close
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -159,8 +146,7 @@ def fetch_event_material(symbol: str, log, json_dest, emit) -> None:
 
     log(f"拉取 {symbol} 个股新闻/公告素材（akshare，仅 A 股，近约 100 条）...")
     news = fetch_stock_news(symbol)
-    out_dir = Path(__file__).resolve().parent.parent / "outputs"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = outputs_dir()
     tag = sanitize(symbol)
 
     events_path = out_dir / f"events_{tag}.csv"
@@ -209,49 +195,113 @@ def fetch_event_material(symbol: str, log, json_dest, emit) -> None:
 
 def detect_account_position(symbol: str, log) -> dict | None:
     """读取统一持仓账户（run_account.py 登记）的持仓。"""
-    from account import get_position
+    from account import detect_position
 
-    try:
-        pos = get_position(symbol)
-    except RuntimeError:  # 账户文件损坏不阻断评分，降级为无持仓
-        return None
-    if pos:
-        log(f"检测到账户持仓（account.json）：{pos['shares']:g} 股，成本 {pos['cost']}（显式 --cost 优先）")
-    return pos
+    return detect_position(symbol, log=log)
 
 
-def detect_paper_position(symbol: str, log) -> dict | None:
-    """自动探测模拟盘状态文件的持仓（近似成本 = (初始资金-现金)/持股）。"""
-    out_dir = Path(__file__).resolve().parent.parent / "outputs"
-    for path in sorted(out_dir.glob(f"paper_{sanitize(symbol)}_*.json")):
-        try:
-            state = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        shares = state.get("shares") or 0
-        if shares > 0:
-            cost = (state.get("initial_capital", 0) - state.get("cash", 0)) / shares
-            if cost > 0:
-                log(f"检测到模拟盘持仓（{path.name}）：{shares} 股，近似成本 {cost:.3f}（显式 --cost 优先）")
-                return {"cost": cost, "shares": shares, "source": f"paper:{path.name}"}
-    return None
+def _print_score_report(args, result, regime, bench_symbol, log) -> None:
+    """终端输出（委托 scoring.present 模块）。"""
+    print_score_report(
+        symbol=args.symbol,
+        result=result,
+        regime=regime,
+        bench_symbol=bench_symbol,
+        brief=args.brief,
+        log=log,
+    )
 
 
-def _close_series(df):
-    """从 OHLCV DataFrame 提取带时间索引的收盘价序列。"""
-    import pandas as pd
+def _run_replay(args, df, bench_close, log):
+    """历史回放验证：返回 (replay_payload, verdict_series)。"""
+    log()
+    log(f"回放最近 {args.replay} 个交易日（逐日 final-only 重算，无前视）...")
+    verdict_series = replay_verdicts(df, benchmark_close=bench_close, days=args.replay, symbol=args.symbol)
+    replay_payload = replay_study(df, verdict_series, benchmark_close=bench_close)
+    log("--- 回放验证（评分是否有用，用数据说话） ---")
+    for line in format_replay_report(replay_payload):
+        log(line)
+    return replay_payload, verdict_series
 
-    close = df["close"].astype(float).reset_index(drop=True)
-    if "trade_date" in df.columns:
-        close.index = pd.DatetimeIndex(pd.to_datetime(df["trade_date"]))
-    return close
+
+def _run_calibrate(args, df, bench_close, log) -> dict:
+    """阈值自校准：回放驱动网格搜索最优入场阈值。"""
+    log()
+    log(f"阈值自校准：回放最近 {args.calibrate} 日，前瞻 {args.calibrate_horizon} 日收益...")
+    payload = calibrate_threshold(
+        df, benchmark_close=bench_close, days=args.calibrate,
+        horizon=args.calibrate_horizon, symbol=args.symbol,
+    )
+    log("--- 阈值校准结果 ---")
+    if payload.get("best_threshold") is not None:
+        log(f"  最优阈值    : alpha_score >= {payload['best_threshold']:.0f}")
+        log(f"  胜率        : {payload['best_hit_rate'] * 100:.1f}%"
+            f"（{payload['best_n']} 个样本）")
+        log(f"  平均前瞻收益: {payload['best_avg_return'] * 100:+.2f}%"
+            f"（{args.calibrate_horizon} 日）")
+        log("  当前预设    : ALPHA_YES=60（原著值，未经样本外验证）")
+        if payload["best_threshold"] != 60.0:
+            log(f"  建议        : 可考虑将入场阈值调整为 {payload['best_threshold']:.0f}"
+                "（需自知偏离原著标准的风险）")
+    else:
+        log(f"  无法校准：{payload.get('note', '样本不足')}")
+    if payload.get("grid"):
+        log("  阈值网格（胜率 / 样本数 / 平均收益）：")
+        for g in payload["grid"]:
+            marker = " ←" if g["threshold"] == payload.get("best_threshold") else ""
+            log(f"    >= {g['threshold']:3.0f} : {g['hit_rate']*100:5.1f}% / {g['n']:3d} / {g['avg_return']*100:+5.2f}%{marker}")
+    return payload
+
+
+def _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload) -> dict:
+    """构建 --json 输出的完整 payload（含 summary/next_steps）。"""
+    digest = hashlib.sha1(
+        f"{args.symbol}|{args.period}|{args.count}|{bench_symbol}|{result.asof}".encode()
+    ).hexdigest()[:12]
+    layer_reason = ""
+    for ly in result.layers:
+        if ly["status"] in ("veto", "cap", "downgrade"):
+            tag = LAYER_CN.get(ly["name"], ly["name"])
+            layer_reason = f"（{tag}层拦截）"
+            break
+    plan_str = ""
+    if result.plan:
+        plan_str = f"参考计划：入场 {result.plan.get('entry')} / 止损 {result.plan.get('stop')}。"
+    summary = (
+        f"{args.symbol} 纪律评分结论：{result.verdict_cn}{layer_reason}。"
+        f"{plan_str}"
+        f"评分是纪律过滤而非涨跌预测，不构成投资建议。"
+    )
+    next_steps = build_next_steps(
+        {"action": "paper", "reason": "按评分裁决每日纸面跟踪",
+         "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
+        {"action": "replay", "reason": "回放验证评分有效性",
+         "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
+        {"action": "backtest", "reason": "用策略回测验证历史表现",
+         "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},
+    )
+    return attach_meta(
+        {
+            **result.to_dict(),
+            "period": args.period,
+            "count": args.count,
+            "regime": regime,
+            "replay": replay_payload,
+            "calibrate": calibrate_payload,
+            "data_hash": digest,
+            "summary": summary,
+            "next_steps": next_steps,
+        },
+        command="score",
+    )
+
+
 
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     if args.fetch_events:
         fetch_event_material(args.symbol, log, args.json, emit_json)
@@ -265,7 +315,7 @@ def main() -> None:
     bench_close = None
     if bench_symbol:
         try:
-            bench_close = _close_series(
+            bench_close = extract_close(
                 fetch_ohlcv(bench_symbol, period=args.period, count=args.count)
             )
         except Exception as exc:
@@ -277,8 +327,7 @@ def main() -> None:
     if args.cost is not None:
         position = {"cost": args.cost, "shares": args.shares, "source": "cli"}
     else:
-        # 探测优先级：真实账户登记（run_account.py）> 模拟盘状态文件
-        position = detect_account_position(args.symbol, log) or detect_paper_position(args.symbol, log)
+        position = detect_account_position(args.symbol, log)
 
     result = score_symbol(
         df,
@@ -290,95 +339,28 @@ def main() -> None:
     )
 
     # 市场状态（描述性上下文，不参与评分裁决）
-    from research.regime import detect_regime, format_regime
+    from research.regime import detect_regime
 
     regime = detect_regime(df["close"])
 
-    # 建议仓位：风险预算法（资金 × 风险比例 / R），回答「买多少」
+    # 建议仓位：风险预算法（资金 × 风险比例 / R）
     if result.plan is not None and args.capital > 0:
-        lot = 100 if args.symbol.upper().endswith((".SH", ".SZ", ".BJ")) else 1
+        lot = 100 if is_astock(args.symbol) else 1
         attach_position_sizing(result.plan, args.capital, args.risk_pct, lot_size=lot)
 
-    # ---------- 终端输出（裁决式，结论先行） ----------
-    log()
-    log(f"========== {args.symbol} 纪律评分（截至 {result.asof}）==========")
-    log(f"结论          : {result.verdict_cn}")
-    log(format_regime(regime))
-    if result.alpha_score is not None:
-        comp = result.components
-        parts = [f"动量 {comp['momentum']['score']:.0f}"]
-        if comp["rel_strength"]["score"] is not None:
-            parts.append(f"相对强度 {comp['rel_strength']['score']:.0f}")
-        parts.append(f"趋势效率 {comp['efficiency']['score']:.0f}")
-        log(f"排名分        : {result.alpha_score:.1f}（{' / '.join(parts)}）")
-    if bench_symbol:
-        log(f"基准          : {bench_symbol}")
+    # 终端输出
+    _print_score_report(args, result, regime, bench_symbol, log)
 
-    if not args.brief:
-        log("--- 关键证据（分层拆解） ---")
-        for layer in result.layers:
-            tag = LAYER_CN.get(layer["name"], layer["name"])
-            status = {"pass": "通过", "veto": "否决", "cap": "封顶", "downgrade": "降级"}.get(
-                layer["status"], layer["status"]
-            )
-            log(f"[{tag}] {status}")
-            for reason in layer["reasons"]:
-                log(f"  · {reason}")
-
-    if result.position is not None:
-        log("--- 持仓状态 ---")
-        pos = result.position
-        log(f"成本 {pos['cost']}，浮盈亏 {pos['pnl_pct'] * 100:+.2f}%" + (
-            f"，市值 {pos['market_value']:,.2f}" if pos.get("market_value") else ""
-        ))
-        if pos.get("stop_ref"):
-            log(f"止损参考 {pos['stop_ref']}（距当前 {pos['stop_distance_pct'] * 100:+.2f}%）")
-        log(f"建议：{pos['advice']}")
-
-    if result.plan is not None or result.verdict in ("yes", "watch"):
-        log("--- 交易计划（风险管理参考，非订单指令） ---")
-        for line in format_plan(result.plan):
-            log(line)
-
-    # ---------- P1：历史回放验证 ----------
+    # 历史回放验证
     replay_payload = None
     verdict_series = None
     if args.replay is not None:
-        log()
-        log(f"回放最近 {args.replay} 个交易日（逐日 final-only 重算，无前视）...")
-        verdict_series = replay_verdicts(df, benchmark_close=bench_close, days=args.replay, symbol=args.symbol)
-        replay_payload = replay_study(df, verdict_series, benchmark_close=bench_close)
-        log("--- 回放验证（评分是否有用，用数据说话） ---")
-        for line in format_replay_report(replay_payload):
-            log(line)
+        replay_payload, verdict_series = _run_replay(args, df, bench_close, log)
 
-    # ---------- P2：阈值自校准 ----------
+    # 阈值自校准
     calibrate_payload = None
     if args.calibrate is not None:
-        log()
-        log(f"阈值自校准：回放最近 {args.calibrate} 日，前瞻 {args.calibrate_horizon} 日收益...")
-        calibrate_payload = calibrate_threshold(
-            df, benchmark_close=bench_close, days=args.calibrate,
-            horizon=args.calibrate_horizon, symbol=args.symbol,
-        )
-        log("--- 阈值校准结果 ---")
-        if calibrate_payload.get("best_threshold") is not None:
-            log(f"  最优阈值    : alpha_score >= {calibrate_payload['best_threshold']:.0f}")
-            log(f"  胜率        : {calibrate_payload['best_hit_rate'] * 100:.1f}%"
-                f"（{calibrate_payload['best_n']} 个样本）")
-            log(f"  平均前瞻收益: {calibrate_payload['best_avg_return'] * 100:+.2f}%"
-                f"（{args.calibrate_horizon} 日）")
-            log(f"  当前预设    : ALPHA_YES=60（原著值，未经样本外验证）")
-            if calibrate_payload["best_threshold"] != 60.0:
-                log(f"  建议        : 可考虑将入场阈值调整为 {calibrate_payload['best_threshold']:.0f}"
-                    "（需自知偏离原著标准的风险）")
-        else:
-            log(f"  无法校准：{calibrate_payload.get('note', '样本不足')}")
-        if calibrate_payload.get("grid"):
-            log("  阈值网格（胜率 / 样本数 / 平均收益）：")
-            for g in calibrate_payload["grid"]:
-                marker = " ←" if g["threshold"] == calibrate_payload.get("best_threshold") else ""
-                log(f"    >= {g['threshold']:3.0f} : {g['hit_rate']*100:5.1f}% / {g['n']:3d} / {g['avg_return']*100:+5.2f}%{marker}")
+        calibrate_payload = _run_calibrate(args, df, bench_close, log)
 
     log()
     log(DISCLAIMER)
@@ -386,7 +368,7 @@ def main() -> None:
     if args.plot:
         from scoring.plot import plot_score
 
-        close = _close_series(df)
+        close = extract_close(df)
         output = args.output or default_output("score", args.symbol)
         path = plot_score(
             close,
@@ -398,46 +380,7 @@ def main() -> None:
         log(f"图表已保存：{path}")
 
     if args.json is not None:
-        digest = hashlib.sha1(
-            f"{args.symbol}|{args.period}|{args.count}|{bench_symbol}|{result.asof}".encode()
-        ).hexdigest()[:12]
-        # Agent 友好：自然语言结论 + 结构化下一步
-        layer_reason = ""
-        for ly in result.layers:
-            if ly["status"] in ("veto", "cap", "downgrade"):
-                tag = LAYER_CN.get(ly["name"], ly["name"])
-                layer_reason = f"（{tag}层拦截）"
-                break
-        plan_str = ""
-        if result.plan:
-            plan_str = f"参考计划：入场 {result.plan.get('entry')} / 止损 {result.plan.get('stop')}。"
-        summary = (
-            f"{args.symbol} 纪律评分结论：{result.verdict_cn}{layer_reason}。"
-            f"{plan_str}"
-            f"评分是纪律过滤而非涨跌预测，不构成投资建议。"
-        )
-        next_steps = build_next_steps(
-            {"action": "paper", "reason": "按评分裁决每日纸面跟踪",
-             "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
-            {"action": "replay", "reason": "回放验证评分有效性",
-             "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
-            {"action": "backtest", "reason": "用策略回测验证历史表现",
-             "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},
-        )
-        payload = attach_meta(
-            {
-                **result.to_dict(),
-                "period": args.period,
-                "count": args.count,
-                "regime": regime,
-                "replay": replay_payload,
-                "calibrate": calibrate_payload,
-                "data_hash": digest,
-                "summary": summary,
-                "next_steps": next_steps,
-            },
-            command="score",
-        )
+        payload = _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload)
         emit_json(args.json, payload, log)
 
 

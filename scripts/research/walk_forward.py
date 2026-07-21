@@ -13,9 +13,9 @@ import pandas as pd
 
 from backtest.costs import CostModel
 from backtest.engine import run_backtest
-from backtest.metrics import compute_metrics
 from backtest.optimize import grid_search
 from backtest.rules import TradingRules
+from metrics import compute_metrics
 from strategies.base import Strategy
 
 

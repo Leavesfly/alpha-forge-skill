@@ -204,9 +204,10 @@ def test_emit_json_writes_file(tmp_path):
 # ---------- 输出命名约定 ----------
 
 def test_default_output_ext():
-    assert default_output("backtest", "600000.SH", "ma_cross") == (
-        "../outputs/backtest_600000SH_ma_cross.png"
-    )
-    assert default_output("report", "600000.SH", "macd", ext="html") == (
-        "../outputs/report_600000SH_macd.html"
-    )
+    """default_output 返回绝对路径，文件名符合约定。"""
+    path = default_output("backtest", "600000.SH", "ma_cross")
+    assert path.endswith("backtest_600000SH_ma_cross.png")
+    assert "outputs" in path
+
+    path_html = default_output("report", "600000.SH", "macd", ext="html")
+    assert path_html.endswith("report_600000SH_macd.html")

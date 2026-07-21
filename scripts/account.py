@@ -23,9 +23,10 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
+
+from naming import outputs_dir
 
 #: 账户文件结构版本（破坏性变更时递增并做迁移）
 ACCOUNT_VERSION = 1
@@ -34,14 +35,14 @@ ACCOUNT_VERSION = 1
 def account_path() -> Path:
     """账户文件路径：默认 outputs/account.json；
     环境变量 ``ALPHA_FORGE_ACCOUNT_FILE`` 可覆盖（测试/多账户隔离）。"""
-    override = os.environ.get("ALPHA_FORGE_ACCOUNT_FILE")
+    from envconfig import get_env_config
+
+    override = get_env_config().account_file
     if override:
         path = Path(override).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-    out_dir = Path(__file__).resolve().parent.parent / "outputs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / "account.json"
+    return outputs_dir() / "account.json"
 
 
 def load_account() -> dict:
@@ -116,3 +117,47 @@ def get_position(symbol: str) -> dict | None:
 def held_symbols() -> list[str]:
     """返回账户当前持有的全部标的代码（排序稳定）。"""
     return sorted(load_account()["positions"])
+
+
+def detect_position(symbol: str, log=None) -> dict | None:
+    """探测标的持仓（统一入口）。
+
+    优先级：真实账户登记（account.json）> 模拟盘状态文件。
+    显式 --cost 始终优先于本函数的返回值（由调用方判断）。
+
+    Args:
+        symbol: 标的代码。
+        log: 可选的日志函数，用于提示检测到的持仓来源。
+
+    Returns:
+        ``{cost, shares, source}`` 或 None。
+    """
+    # 1. 真实账户登记
+    try:
+        pos = get_position(symbol)
+    except RuntimeError:  # 账户文件损坏不阻断，降级为无持仓
+        pos = None
+    if pos:
+        if log:
+            log(f"检测到账户持仓（account.json）：{pos['shares']:g} 股，成本 {pos['cost']}（显式 --cost 优先）")
+        return pos
+
+    # 2. 模拟盘状态文件探测
+    from naming import outputs_dir, sanitize
+
+    out_dir = outputs_dir()
+    for path in sorted(out_dir.glob(f"paper_{sanitize(symbol)}_*.json")):
+        try:
+            import json as _json
+
+            state = _json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        shares = state.get("shares") or 0
+        if shares > 0:
+            cost = (state.get("initial_capital", 0) - state.get("cash", 0)) / shares
+            if cost > 0:
+                if log:
+                    log(f"检测到模拟盘持仓（{path.name}）：{shares} 股，近似成本 {cost:.3f}（显式 --cost 优先）")
+                return {"cost": cost, "shares": shares, "source": f"paper:{path.name}"}
+    return None

@@ -15,18 +15,19 @@ from __future__ import annotations
 
 import argparse
 
-from backtest.costs import CostModel
 from backtest.engine import run_backtest
 from backtest.metrics import periods_per_year
 from backtest.optimize import grid_search
-from backtest.rules import TradingRules
 from cli_common import (
+    add_cost_args,
     add_json_arg,
+    add_market_args,
+    build_cost_and_rules,
     build_next_steps,
     check_symbol,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     run_cli,
 )
@@ -81,26 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="并行进程数；默认取 CPU 核数，1 为串行",
     )
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
-    parser.add_argument(
-        "--market",
-        choices=["generic", "astock"],
-        default="generic",
-        help="成本预设：generic(默认) / astock(A股卖出印花税 + 双边过户费)",
-    )
-    parser.add_argument(
-        "--exec-price",
-        choices=["close", "open"],
-        default="close",
-        help="成交价约定：close(默认) / open(次日开盘成交)",
-    )
-    parser.add_argument(
-        "--limit-board",
-        choices=["main", "star", "chinext", "st"],
-        default=None,
-        help="启用 A 股涨跌停/停牌规则并指定板块",
-    )
+    add_cost_args(parser)
+    add_market_args(parser)
     parser.add_argument("--allow-short", action="store_true", help="开启做空（策略输出 -1）")
     parser.add_argument("--stop-loss", type=float, default=None, help="止损比例，如 0.05")
     parser.add_argument("--take-profit", type=float, default=None, help="止盈比例，如 0.10")
@@ -114,8 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
     strategy_cls = STRATEGIES[args.strategy]
 
     log(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
@@ -123,12 +105,7 @@ def main() -> None:
     method_str = f"method={args.method}" + (f", n_iter={args.n_iter}" if args.method in ("random", "bayes") else "")
     log(f"已获取 {len(df)} 根 K 线，开始寻优（{method_str}，按 {args.metric} 排序）...\n")
 
-    cost_model = CostModel.preset(
-        args.market, commission=args.commission, slippage=args.slippage
-    )
-    trading_rules = (
-        TradingRules.astock(args.limit_board) if args.limit_board else None
-    )
+    cost_model, trading_rules = build_cost_and_rules(args)
 
     table = None
     with ProgressBar(total=1, description="参数寻优") as bar:

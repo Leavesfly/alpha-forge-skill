@@ -19,10 +19,11 @@ import argparse
 
 from backtest.metrics import format_report
 from cli_common import (
+    add_cost_args,
     add_json_arg,
     build_next_steps,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
     split_symbols,
@@ -60,8 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期，默认 20")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
     parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    add_cost_args(parser)
     parser.add_argument("--ic", action="store_true", help="额外输出因子 IC/IR、衰减与相关性分析")
     parser.add_argument("--ic-horizon", type=int, default=5, help="IC 前瞻收益周期，默认 5")
     parser.add_argument("--plot", action="store_true", help="生成多因子回测图表")
@@ -114,8 +114,7 @@ def _report_ic(prices, fundamentals, factors_used, args, log) -> dict:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
     factors = [f.strip() for f in args.factors.split(",") if f.strip()] or None
 
     symbols = resolve_symbols(args)

@@ -7,6 +7,9 @@
 
 引擎会对信号做 shift(1) 处理以避免前视偏差（未来函数），
 因此策略内部可以直接使用当日收盘价计算指标。
+
+策略注册：子类定义 ``name`` 后自动注册到 ``STRATEGIES`` 注册表，
+无需手动在 ``__init__.py`` 中 import + 添加。
 """
 
 from __future__ import annotations
@@ -14,6 +17,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 import pandas as pd
+
+#: 策略名称 -> 策略类 的注册表（由 __init_subclass__ 自动填充）
+STRATEGIES: dict[str, type[Strategy]] = {}
 
 
 class Strategy(ABC):
@@ -27,6 +33,17 @@ class Strategy(ABC):
 
     #: 参数寻优时使用的默认参数网格：{参数名: [候选值, ...]}
     param_grid: dict[str, list] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        """子类定义 name 后自动注册到 STRATEGIES。"""
+        super().__init_subclass__(**kwargs)
+        # 跳过：抽象基类、私有类（_开头）、未定义 name 的中间类
+        if (
+            cls.name != "base"
+            and not cls.__name__.startswith("_")
+            and not getattr(cls, "__abstractmethods__", None)
+        ):
+            STRATEGIES[cls.name] = cls
 
     def __init__(self, **params):
         # 用默认参数占位，再用传入参数覆盖

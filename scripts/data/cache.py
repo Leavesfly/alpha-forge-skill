@@ -234,11 +234,16 @@ def _incr_enabled(period: str) -> bool:
     return str(period) in _PERIOD_DAYS
 
 
-def _date_column(df: pd.DataFrame) -> str | None:
+def find_date_column(df: pd.DataFrame) -> str | None:
+    """返回 DataFrame 中的时间列名（trade_date/date/datetime/time），找不到返回 None。"""
     for col in ("trade_date", "date", "datetime", "time"):
         if col in df.columns:
             return col
     return None
+
+
+# 向后兼容别名
+_date_column = find_date_column
 
 
 def _incremental_update(

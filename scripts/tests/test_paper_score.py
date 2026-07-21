@@ -112,9 +112,11 @@ class TestSummary:
         p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
     def _run_summary(self, monkeypatch, tmp_path, capsys, price=10.0):
+        from paper import summary as paper_summary
+
         df = make_ohlcv(np.full(5, price))
-        monkeypatch.setattr(run_paper, "outputs_dir", lambda: tmp_path)
-        monkeypatch.setattr(run_paper, "fetch_ohlcv", lambda symbol, **kw: df)
+        monkeypatch.setattr(paper_summary, "outputs_dir", lambda: tmp_path)
+        monkeypatch.setattr(paper_summary, "fetch_ohlcv", lambda symbol, **kw: df)
         monkeypatch.setattr(sys, "argv", ["run_paper.py", "--summary", "--json"])
         run_paper.main()
         return json.loads(capsys.readouterr().out)
@@ -144,7 +146,9 @@ class TestSummary:
 
     def test_summary_without_states_errors(self, tmp_path, monkeypatch, capsys):
         """无任何状态文件时报可操作错误。"""
-        monkeypatch.setattr(run_paper, "outputs_dir", lambda: tmp_path)
+        from paper import summary as paper_summary
+
+        monkeypatch.setattr(paper_summary, "outputs_dir", lambda: tmp_path)
         monkeypatch.setattr(sys, "argv", ["run_paper.py", "--summary"])
         with pytest.raises(SystemExit):
             run_paper.main()

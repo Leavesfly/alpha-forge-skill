@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from utils import resolve_time_index, safe_round, series_last
+
 #: 结论三态（复用 scoring 的机器码约定，另有 unrated）
 VERDICT_CN = {
     "yes": "是",
@@ -124,7 +126,7 @@ def canslim_check(
         CanSlimResult。仅使用截至最近一根已完成 K 线的数据，无前视。
     """
     close = df["close"].astype(float).reset_index(drop=True)
-    index = _resolve_index(df)
+    index = resolve_time_index(df)
     close.index = index
     asof = str(index[-1])[:10] if len(index) else ""
     n = int(close.notna().sum())
@@ -138,7 +140,7 @@ def canslim_check(
             failed=0,
             unavailable=len(LETTERS_CN),
             rs_raw=None,
-            snapshot={"close": _last(close), "n_bars": n},
+            snapshot={"close": series_last(close), "n_bars": n},
             asof=asof,
             n_bars=n,
             notes=[f"有效 K 线仅 {n} 根，低于检查所需 {MIN_BARS} 根（52 周高点/12 个月 RS 无法形成）"],
@@ -147,7 +149,7 @@ def canslim_check(
     volume = df["volume"].astype(float).reset_index(drop=True) if "volume" in df.columns else None
     notes: list[str] = []
     checks: list[dict] = []
-    snapshot: dict = {"close": _last(close)}
+    snapshot: dict = {"close": series_last(close)}
 
     asof_ts = index[-1] if isinstance(index, pd.DatetimeIndex) else None
     checks.append(_check_c(fundamentals, c_growth, asof_ts, notes))
@@ -172,7 +174,7 @@ def canslim_check(
         failed=failed,
         unavailable=unavailable,
         rs_raw=round(rs_raw, 4) if rs_raw is not None else None,
-        snapshot={k: _round(v) for k, v in snapshot.items()},
+        snapshot={k: safe_round(v) for k, v in snapshot.items()},
         asof=asof,
         n_bars=n,
         notes=notes,
@@ -455,28 +457,3 @@ def _latest_roe(fundamentals: dict | None, asof_ts) -> float | None:
         return None
     return float(roe.iloc[-1])
 
-
-# ---------------------------------------------------------------- 工具函数
-
-
-def _resolve_index(df: pd.DataFrame) -> pd.Index:
-    """从常见时间列构造索引（与 scoring.engine 同约定）。"""
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            try:
-                return pd.DatetimeIndex(pd.to_datetime(df[col]))
-            except (ValueError, TypeError):
-                return pd.Index(df[col])
-    return pd.RangeIndex(len(df))
-
-
-def _last(series: pd.Series) -> float:
-    return float(series.iloc[-1]) if len(series) else float("nan")
-
-
-def _round(v, digits: int = 4):
-    if isinstance(v, float) and math.isfinite(v):
-        return round(v, digits)
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    return v

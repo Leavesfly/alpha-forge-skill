@@ -7,9 +7,19 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from envconfig import reset_env_config
 from tests.helpers import make_ohlcv
+
+
+@pytest.fixture(autouse=True)
+def _reset_env_config():
+    """每个测试前重置环境变量配置缓存，确保 monkeypatch.setenv 生效。"""
+    reset_env_config()
+    yield
+    reset_env_config()
 
 
 @pytest.fixture

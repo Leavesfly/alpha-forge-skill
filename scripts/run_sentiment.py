@@ -26,11 +26,12 @@ import argparse
 
 from backtest.metrics import format_report
 from cli_common import (
+    add_cost_args,
     add_json_arg,
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
 )
@@ -60,9 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hold", type=int, default=5, help="新闻情绪持续天数（前向填充上限），默认 5")
     parser.add_argument("--smooth", type=int, default=3, help="日度情绪滚动平滑窗口，默认 3")
     parser.add_argument("--allow-short", action="store_true", help="开启做空（极端利空输出 -1）")
-    parser.add_argument("--use-lexicon", action="store_true", help="backtest 阶段用关键词词典兜底打分（无 agent 时）")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    parser.add_argument("--use-lexicon", action="store_true", help="backtest 阶段用关键词词典兖底打分（无 agent 时）")
+    add_cost_args(parser)
     parser.add_argument("--plot", action="store_true", help="生成新闻情绪策略图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/sentiment_<标的>.png 命名")
     add_json_arg(parser)
@@ -187,7 +187,7 @@ def stage_backtest(args, log) -> None:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    log = make_logger(args.json == "-")
+    _, log = init_log(args)
     if args.stage == "fetch":
         stage_fetch(args, log)
     else:

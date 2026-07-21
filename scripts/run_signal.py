@@ -31,8 +31,8 @@ from cli_common import (
     add_json_arg,
     build_next_steps,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     parse_params,
     run_cli,
@@ -108,8 +108,7 @@ def latest_signal(df: pd.DataFrame, strategy) -> dict:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     symbols = split_symbols(args.symbols, min_count=1, what="信号服务")
     params = parse_params(args.params)

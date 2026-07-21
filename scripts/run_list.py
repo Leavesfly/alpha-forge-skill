@@ -21,7 +21,7 @@ import argparse
 import os
 import sys
 
-from cli_common import add_json_arg, emit_json, make_logger, make_parser, run_cli
+from cli_common import add_json_arg, emit_json, init_log, make_parser, run_cli
 from cli_config import parse_args_with_config
 from strategies import STRATEGIES
 
@@ -181,8 +181,7 @@ def _run_doctor(args, log) -> None:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     if args.doctor:
         _run_doctor(args, log)

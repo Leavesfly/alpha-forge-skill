@@ -27,12 +27,13 @@ from cli_common import (
     add_json_arg,
     build_next_steps,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
     split_symbols,
 )
 from cli_config import parse_args_with_config
+from naming import outputs_dir
 from report import attach_meta
 
 
@@ -51,16 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _outputs_dir() -> Path:
-    out_dir = Path(__file__).resolve().parent.parent / "outputs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
 
 def _load_papers() -> list[dict]:
     """扫描全部模拟盘状态文件。"""
     papers = []
-    for p in sorted(_outputs_dir().glob("paper_*.json")):
+    for p in sorted(outputs_dir().glob("paper_*.json")):
         try:
             s = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -216,8 +212,7 @@ def _render_html(
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     account = load_account()
     papers = _load_papers()
@@ -229,7 +224,7 @@ def main() -> None:
         signals = _fetch_signals(symbols, args.strategy)
 
     html = _render_html(account, papers, signals, args.strategy)
-    output = args.output or str(_outputs_dir() / "dashboard.html")
+    output = args.output or str(outputs_dir() / "dashboard.html")
     out_path = Path(output).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")

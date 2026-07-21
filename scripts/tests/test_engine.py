@@ -99,14 +99,14 @@ def test_short_profits_when_price_falls(trending_down_df):
     """做空在下行行情中应盈利（净值 > 1）。"""
     result = run_backtest(
         trending_down_df,
-        ConstShortStrategy(),
+        _ConstShortStrategy(),
         commission=0.0,
         slippage=0.0,
     )
     assert result.equity.iloc[-1] > 1.0
 
 
-class ConstShortStrategy(Strategy):
+class _ConstShortStrategy(Strategy):
     name = "const_short"
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:

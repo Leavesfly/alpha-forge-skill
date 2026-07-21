@@ -27,8 +27,8 @@ from cli_common import (
     build_next_steps,
     check_symbol,
     emit_json,
+    init_log,
     log_next_steps,
-    make_logger,
     make_parser,
     run_cli,
 )
@@ -62,8 +62,7 @@ def _fetch_last_price(symbol: str) -> float | None:
 
 def main() -> None:
     args = parse_args_with_config(build_parser())
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     if args.set and args.remove:
         raise SystemExit("[error] --set 与 --remove 不能同时使用。")

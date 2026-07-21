@@ -1,4 +1,4 @@
-"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + baostock / akshare / yfinance 兜底）。
+"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + baostock / akshare / yfinance 兖底）。
 
 统一拉取 K 线为回测所需的 OHLCV DataFrame。默认优先 TickFlow
 （免费服务历史日 K 足以回测，配置 TICKFLOW_API_KEY 后支持分钟级）；
@@ -6,51 +6,65 @@
 重试仍失败时自动降级：A 股日/周/月 K 走 baostock → akshare，
 港股/美股日/周/月 K 走 yfinance。
 环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|baostock|akshare|yfinance`` 可强制指定单源。
+
+弃用提示：``fetch_dividends`` / ``fetch_fundamentals`` / ``get_client`` 为向后兼容
+重导出，建议改用 ``from data.dividends import fetch_dividends`` 等新路径。
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
-import re
 import sys
 import time
+import warnings
 
 import pandas as pd
-from tickflow import TickFlow
 
-from data import load_klines, normalize_adjust
+from data import find_date_column, load_klines, normalize_adjust
 from data.sources import (
     API_KEY_HELP,
     get_sources,
-    get_tickflow_client,
     source_label,
 )
+from market import validate_symbol
 
-# 向后兼容：旧代码从 datafeed 导入 get_client
-get_client = get_tickflow_client
+# ---------------------------------------------------------------------------
+# 向后兼容重导出（弃用，建议改用 data/ 子包直接导入）
+# ---------------------------------------------------------------------------
+_DEPRECATED_REEXPORTS = {
+    "fetch_dividends": ("data.dividends", "fetch_dividends"),
+    "fetch_fundamentals": ("data.fundamentals", "fetch_fundamentals"),
+    "get_client": ("data.sources", "get_tickflow_client"),
+}
 
-# 标的代码统一格式：代码.市场后缀（与 cli_common 保持一致）
-_SYMBOL_RE = re.compile(r"^[0-9A-Za-z]+\.[A-Za-z]{2,4}$")
+
+def __getattr__(name: str):
+    """惰性重导出 + 弃用警告（Python 3.7+ 模块级 __getattr__）。"""
+    if name in _DEPRECATED_REEXPORTS:
+        module_path, attr_name = _DEPRECATED_REEXPORTS[name]
+        warnings.warn(
+            f"从 datafeed 导入 {name} 已弃用，请改用 from {module_path} import {attr_name}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        import importlib
+
+        module = importlib.import_module(module_path)
+        return getattr(module, attr_name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _check_symbol(symbol: str) -> None:
     """校验标的代码格式，提前拦截低级错误而非等到网络请求失败。"""
-    if not _SYMBOL_RE.match((symbol or "").strip()):
-        raise RuntimeError(
-            f"标的代码不合法：'{symbol}'。格式应为「代码.市场后缀」，如 600000.SH（A股）/ "
-            "AAPL.US（美股）/ 00700.HK（港股）/ cu2501.SHF（期货）；"
-            "完整后缀见 references/data-fetching.md。"
-        )
+    validate_symbol(symbol)
 
 
 def _retry_config() -> tuple[int, float]:
     """重试配置：(重试次数, 首次退避秒数)；``ALPHA_FORGE_RETRIES=0`` 关闭重试。"""
-    try:
-        retries = int(os.environ.get("ALPHA_FORGE_RETRIES", "2"))
-    except ValueError:
-        retries = 2
-    return max(0, retries), 1.0
+    from envconfig import get_env_config
+
+    return max(0, get_env_config().retries), 1.0
 
 
 def _fetch_with_retry(source, symbol: str, period: str, count: int, adjust: str) -> pd.DataFrame:
@@ -165,14 +179,6 @@ def fetch_ohlcv(
     return df
 
 
-def _date_column(df: pd.DataFrame) -> str | None:
-    """返回 DataFrame 中的时间列名。"""
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            return col
-    return None
-
-
 def fetch_prices(
     symbols: list[str],
     period: str = "1d",
@@ -197,7 +203,7 @@ def fetch_prices(
         except Exception as exc:
             # 多标的场景下明确指出是哪个标的失败，便于定位
             raise RuntimeError(f"拉取 {sym} 失败：{exc}") from exc
-        date_col = _date_column(df)
+        date_col = find_date_column(df)
         idx = pd.to_datetime(df[date_col]) if date_col else pd.RangeIndex(len(df))
         series[sym] = pd.Series(df["close"].astype(float).values, index=idx)
 
@@ -224,6 +230,8 @@ def fetch_universe(name: str = "CN_Equity_A", limit: int | None = None) -> list[
         raise RuntimeError(
             "获取股票池需要配置环境变量 TICKFLOW_API_KEY。\n" + API_KEY_HELP
         )
+    from tickflow import TickFlow
+
     tf = TickFlow()
     data = tf.universes.get(name)
     symbols = data["symbols"] if isinstance(data, dict) else list(data)
@@ -234,74 +242,3 @@ def fetch_universe(name: str = "CN_Equity_A", limit: int | None = None) -> list[
     return symbols
 
 
-def fetch_dividends(symbol: str) -> pd.Series:
-    """拉取 A 股现金分红历史（每股派现，索引为除权除息日）。
-
-    数据源 akshare 分红送配详情（东财），无需 API Key；仅支持 A 股。
-    供 run_dca.py 显式分红建模（--dividends auto）使用，应搭配不复权价格。
-
-    Returns:
-        每股现金分红 Series（float，DatetimeIndex 为除权除息日，升序）。
-
-    Raises:
-        RuntimeError: 非 A 股、接口异常或无分红记录时。
-    """
-    _check_symbol(symbol)
-    if not symbol.upper().endswith((".SH", ".SZ", ".BJ")):
-        raise RuntimeError(
-            f"分红数据目前仅支持 A 股（收到 {symbol}）；"
-            "其他市场可用 --dividends <CSV> 提供（列：date,dps）。"
-        )
-    import akshare as ak
-
-    code = symbol.split(".")[0]
-    with contextlib.redirect_stdout(sys.stderr):
-        df = ak.stock_fhps_detail_em(symbol=code)
-    if df is None or len(df) == 0:
-        raise RuntimeError(f"akshare 未返回 {symbol} 的分红记录。")
-
-    # 防御式取列：「现金分红-现金分红比例」为每 10 股派现金额
-    div_col = next((c for c in df.columns if "现金分红比例" in str(c)), None)
-    date_col = next((c for c in df.columns if "除权除息日" in str(c)), None)
-    if div_col is None or date_col is None:
-        raise RuntimeError(
-            f"分红数据列名不兼容（实际列：{list(df.columns)}），"
-            "可能 akshare 接口变更；可改用 --dividends <CSV> 提供（列：date,dps）。"
-        )
-    out = df[[date_col, div_col]].dropna()
-    dps = pd.to_numeric(out[div_col], errors="coerce") / 10.0  # 每 10 股 -> 每股
-    dates = pd.to_datetime(out[date_col], errors="coerce")
-    series = pd.Series(dps.to_numpy(), index=pd.DatetimeIndex(dates))
-    series = series[series > 0].dropna().sort_index()
-    if series.empty:
-        raise RuntimeError(f"{symbol} 无有效现金分红记录（可能从未分红）。")
-    return series
-
-
-def fetch_fundamentals(symbols: list[str]) -> pd.DataFrame | None:
-    """获取多标的财务指标（用于价值/质量/规模因子）。
-
-    需要 TICKFLOW_API_KEY 且账号具备财务数据权限。无权限、未配置或
-    接口异常时返回 None（调用方据此跳过基本面因子）。
-
-    Returns:
-        含 symbol、period_end 及各财务指标列的 DataFrame；不可用时返回 None。
-    """
-    if not os.environ.get("TICKFLOW_API_KEY"):
-        print(
-            "[warn] 未配置 TICKFLOW_API_KEY，价值/质量/规模等基本面因子将被跳过。\n"
-            + API_KEY_HELP
-        )
-        return None
-    tf = TickFlow()
-    try:
-        df = tf.financials.metrics(symbols, as_dataframe=True)
-    except Exception as exc:  # 权限不足/接口异常均降级处理
-        print(
-            f"[warn] 获取财务数据失败（{type(exc).__name__}: {exc}），基本面因子将被跳过。"
-        )
-        return None
-    if df is None or len(df) == 0:
-        print("[warn] 财务数据为空，基本面因子将被跳过。")
-        return None
-    return df

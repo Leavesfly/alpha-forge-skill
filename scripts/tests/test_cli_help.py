@@ -55,5 +55,5 @@ def test_datafeed_rejects_bad_symbol():
     """数据层在网络请求前就应拦截非法标的代码。"""
     from datafeed import fetch_ohlcv
 
-    with pytest.raises(RuntimeError, match="标的代码不合法"):
+    with pytest.raises(ValueError, match="标的代码不合法"):
         fetch_ohlcv("600000", period="1d", count=10)

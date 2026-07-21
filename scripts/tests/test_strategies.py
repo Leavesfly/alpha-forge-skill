@@ -47,7 +47,7 @@ def test_allow_short_can_produce_negative(random_walk_df):
 
 
 def test_unknown_strategy_raises():
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError):
         get_strategy("no_such_strategy")
 
 

@@ -17,10 +17,81 @@ import numpy as np
 import pandas as pd
 
 from strategies.base import Strategy
+from utils import resolve_time_index
 
 from .costs import CostModel
 from .metrics import compute_metrics, periods_per_year
 from .rules import TradingRules, apply_tradability, tradable_masks
+
+
+@dataclass
+class BacktestConfig:
+    """回测配置容器：封装成本/风控/仓位/执行等参数。
+
+    用于简化 ``run_backtest`` 的 14 个参数传递，同时保持向后兼容。
+    可用 ``BacktestConfig.from_args(args)`` 从 CLI 参数构造。
+    """
+
+    # 元数据
+    symbol: str = ""
+    period: str = "1d"
+    initial_capital: float = 1_000_000.0
+    risk_free: float = 0.0
+
+    # 成本（当 cost_model 为 None 时用这两个构造）
+    commission: float = 0.0005
+    slippage: float = 0.0005
+    cost_model: CostModel | None = None
+
+    # 风控
+    stop_loss: float | None = None
+    take_profit: float | None = None
+
+    # 仓位管理
+    vol_target: float | None = None
+    vol_window: int = 20
+    kelly: bool = False
+    kelly_window: int = 60
+    max_leverage: float = 1.0
+
+    # 执行规则
+    exec_price: str = "close"
+    trading_rules: TradingRules | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> BacktestConfig:
+        """从字典构造配置（仅提取 BacktestConfig 已定义的字段，忽略多余键）。"""
+        valid_keys = cls.__dataclass_fields__  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+
+    @classmethod
+    def from_args(cls, args) -> BacktestConfig:
+        """从 CLI 参数构造配置（用于 run_backtest/run_optimize/run_validate 等）。
+
+        向后兼容：内部调用 from_dict(vars(args))。
+        """
+        return cls.from_dict(vars(args))
+
+    def to_engine_kwargs(self) -> dict:
+        """转为 ``run_backtest`` 的关键字参数（用于解包传递）。"""
+        return {
+            "symbol": self.symbol,
+            "period": self.period,
+            "initial_capital": self.initial_capital,
+            "commission": self.commission,
+            "slippage": self.slippage,
+            "risk_free": self.risk_free,
+            "stop_loss": self.stop_loss,
+            "take_profit": self.take_profit,
+            "vol_target": self.vol_target,
+            "vol_window": self.vol_window,
+            "kelly": self.kelly,
+            "kelly_window": self.kelly_window,
+            "max_leverage": self.max_leverage,
+            "cost_model": self.cost_model,
+            "exec_price": self.exec_price,
+            "trading_rules": self.trading_rules,
+        }
 
 
 @dataclass
@@ -54,6 +125,8 @@ class BacktestResult:
 def run_backtest(
     df: pd.DataFrame,
     strategy: Strategy,
+    config: BacktestConfig | None = None,
+    *,
     symbol: str = "",
     period: str = "1d",
     initial_capital: float = 1_000_000.0,
@@ -76,6 +149,8 @@ def run_backtest(
     Args:
         df: 含 ``close`` 列的 OHLCV DataFrame（时间升序）。
         strategy: 策略实例。
+        config: 回测配置对象；提供时优先使用其字段，忽略同名 kwargs。
+            None 时从各 kwargs 构造（向后兼容旧调用方式）。
         symbol: 标的代码（用于展示）。
         period: K 线周期（用于年化指标）。
         initial_capital: 初始资金（影响绝对金额，比率指标不受影响）。
@@ -100,6 +175,44 @@ def run_backtest(
     Returns:
         BacktestResult。多空由策略信号 {-1, 0, 1} 决定，引擎自动处理做空盈亏。
     """
+    # config 优先；否则从 kwargs 构造（向后兼容）
+    if config is None:
+        config = BacktestConfig(
+            symbol=symbol,
+            period=period,
+            initial_capital=initial_capital,
+            commission=commission,
+            slippage=slippage,
+            risk_free=risk_free,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            vol_target=vol_target,
+            vol_window=vol_window,
+            kelly=kelly,
+            kelly_window=kelly_window,
+            max_leverage=max_leverage,
+            cost_model=cost_model,
+            exec_price=exec_price,
+            trading_rules=trading_rules,
+        )
+    # 统一从 config 取值
+    symbol = config.symbol
+    period = config.period
+    initial_capital = config.initial_capital
+    commission = config.commission
+    slippage = config.slippage
+    risk_free = config.risk_free
+    stop_loss = config.stop_loss
+    take_profit = config.take_profit
+    vol_target = config.vol_target
+    vol_window = config.vol_window
+    kelly = config.kelly
+    kelly_window = config.kelly_window
+    max_leverage = config.max_leverage
+    cost_model = config.cost_model
+    exec_price = config.exec_price
+    trading_rules = config.trading_rules
+
     df = df.reset_index(drop=True)
     close = df["close"].astype(float)
 
@@ -151,7 +264,7 @@ def run_backtest(
     benchmark_equity = (1.0 + benchmark_ret).cumprod()
 
     # 附上索引便于绘图（使用 trade_date/日期列，退化为 RangeIndex）
-    index = _resolve_index(df)
+    index = resolve_time_index(df)
     for s in (close, signals, positions, strat_ret, equity, benchmark_equity):
         s.index = index
 
@@ -175,16 +288,6 @@ def run_backtest(
         benchmark_metrics=benchmark_metrics,
     )
 
-
-def _resolve_index(df: pd.DataFrame) -> pd.Index:
-    """从常见时间列构造索引，找不到则用序号索引。"""
-    for col in ("trade_date", "date", "datetime", "time"):
-        if col in df.columns:
-            try:
-                return pd.to_datetime(df[col])
-            except (ValueError, TypeError):
-                return pd.Index(df[col])
-    return pd.RangeIndex(len(df))
 
 
 def _apply_risk_management(

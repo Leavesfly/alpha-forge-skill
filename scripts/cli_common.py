@@ -19,12 +19,17 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-# 标的代码统一格式：代码.市场后缀（如 600000.SH / AAPL.US / 00700.HK / cu2501.SHF）
-_SYMBOL_RE = re.compile(r"^[0-9A-Za-z]+\.[A-Za-z]{2,4}$")
-
-SYMBOL_FORMAT_HINT = (
-    "标的代码格式应为「代码.市场后缀」，如 600000.SH（A股）/ AAPL.US（美股）/ "
-    "00700.HK（港股）/ cu2501.SHF（期货）；完整后缀见 references/data-fetching.md。"
+# ---------------------------------------------------------------------------
+# 领域常量与标的工具：从 market.py re-export（保持向后兼容）
+# ---------------------------------------------------------------------------
+from market import (  # noqa: F401 - re-export 保持兼容
+    ASTOCK_LOT_SIZE,
+    ASTOCK_SUFFIXES,
+    DEFAULT_LOT_SIZE,
+    SYMBOL_FORMAT_HINT,
+    default_lot_size,
+    is_astock,
+    validate_symbol,
 )
 
 
@@ -74,10 +79,10 @@ def examples_from_doc(doc: str | None) -> str | None:
 
 def check_symbol(symbol: str) -> str:
     """校验单个标的代码格式，非法时给出可操作的错误提示。"""
-    sym = (symbol or "").strip()
-    if not _SYMBOL_RE.match(sym):
-        raise SystemExit(f"[error] 标的代码不合法：'{symbol}'。{SYMBOL_FORMAT_HINT}")
-    return sym
+    try:
+        return validate_symbol(symbol)
+    except ValueError as exc:
+        raise SystemExit(f"[error] {exc}") from exc
 
 
 def split_symbols(text: str, min_count: int = 1, what: str = "本命令") -> list[str]:
@@ -187,19 +192,126 @@ def add_json_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# 参数组注册：消除 run_*.py 中大量重复的 add_argument 定义
+# ---------------------------------------------------------------------------
+
+
+def add_cost_args(parser: argparse.ArgumentParser) -> None:
+    """添加交易成本参数：--commission / --slippage。"""
+    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
+    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+
+
+def add_market_args(parser: argparse.ArgumentParser) -> None:
+    """添加市场/成交规则参数：--market / --exec-price / --limit-board。"""
+    parser.add_argument(
+        "--market",
+        choices=["generic", "astock"],
+        default="generic",
+        help="成本预设：generic(默认) / astock(A股卖出印花税 + 双边过户费)",
+    )
+    parser.add_argument(
+        "--exec-price",
+        choices=["close", "open"],
+        default="close",
+        help="成交价约定：close(收盘成交,默认) / open(次日开盘成交,更贴近现实)",
+    )
+    parser.add_argument(
+        "--limit-board",
+        choices=["main", "star", "chinext", "st"],
+        default=None,
+        help="启用 A 股涨跌停/停牌规则并指定板块(main 10%%/star,chinext 20%%/st 5%%)",
+    )
+
+
+def add_risk_args(parser: argparse.ArgumentParser) -> None:
+    """添加风控/仓位管理参数：--allow-short / --stop-loss / --take-profit /
+    --vol-target / --vol-window / --max-leverage。"""
+    parser.add_argument("--allow-short", action="store_true", help="开启做空（策略输出 -1）")
+    parser.add_argument("--stop-loss", type=float, default=None, help="止损比例，如 0.05 表示浮亏 5%%")
+    parser.add_argument("--take-profit", type=float, default=None, help="止盈比例，如 0.10 表示浮盈 10%%")
+    parser.add_argument("--vol-target", type=float, default=None, help="年化目标波动率，如 0.15（开启连续仓位）")
+    parser.add_argument("--vol-window", type=int, default=20, help="波动率滚动窗口，默认 20")
+    parser.add_argument("--max-leverage", type=float, default=1.0, help="仓位上限，默认 1.0")
+
+
+def init_log(args: argparse.Namespace) -> tuple[bool, Callable[..., None]]:
+    """从已解析参数初始化日志：返回 (json_stdout, log) 二元组。
+
+    消除各 run_*.py 中重复的 ``json_stdout = args.json == "-"`` 样板。
+    """
+    json_stdout = getattr(args, "json", None) == "-"
+    return json_stdout, make_logger(json_stdout)
+
+
+def build_cost_and_rules(args: argparse.Namespace):
+    """从 CLI 参数构造交易成本模型与 A 股交易规则。
+
+    消除 run_backtest/run_optimize/run_compare/run_validate/run_paper 中
+    重复的 CostModel.preset + TradingRules.astock 构造逻辑。
+
+    Returns:
+        (cost_model, trading_rules) 二元组；trading_rules 为 None 表示不施加成交约束。
+    """
+    from backtest.costs import CostModel
+    from backtest.rules import TradingRules
+
+    cost_model = CostModel.preset(
+        getattr(args, "market", "generic"),
+        commission=getattr(args, "commission", 0.0005),
+        slippage=getattr(args, "slippage", 0.0005),
+    )
+    limit_board = getattr(args, "limit_board", None)
+    trading_rules = TradingRules.astock(limit_board) if limit_board else None
+    return cost_model, trading_rules
+
+
 def run_cli(main: Callable[[], None]) -> None:
     """统一 CLI 入口：把可预期异常转为友好 stderr 信息与规范退出码。
 
     退出码约定：0=成功，1=运行错误（数据/网络/计算），2=参数错误，130=用户中断。
     """
+    from errors import AlphaForgeError, DataFetchError, InsufficientDataError, ValidationError
+
     try:
         main()
     except KeyboardInterrupt:
         print("\n已取消。", file=sys.stderr)
         sys.exit(130)
-    except SystemExit:
+    except SystemExit as exc:
+        # 规范化退出码：字符串消息（参数错误）→ exit 2；数字码保留
+        if exc.code is None or isinstance(exc.code, str):
+            if exc.code:
+                print(exc.code, file=sys.stderr)
+            sys.exit(2)
         raise
-    except (RuntimeError, ValueError, OSError) as exc:
+    except ValidationError as exc:
+        # 领域参数/格式错误 → exit 2
+        if os.environ.get("ALPHA_FORGE_DEBUG"):
+            raise
+        print(f"[error] {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (DataFetchError, InsufficientDataError) as exc:
+        # 领域数据错误 → exit 1
+        if os.environ.get("ALPHA_FORGE_DEBUG"):
+            raise
+        print(f"[error] {exc}", file=sys.stderr)
+        sys.exit(1)
+    except AlphaForgeError as exc:
+        # 其他领域异常（未来扩展）→ exit 1
+        if os.environ.get("ALPHA_FORGE_DEBUG"):
+            raise
+        print(f"[error] {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        # 参数/格式错误 → exit 2（向后兼容旧代码）
+        if os.environ.get("ALPHA_FORGE_DEBUG"):
+            raise
+        print(f"[error] {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (RuntimeError, OSError) as exc:
+        # 运行错误（数据/网络/IO）→ exit 1（向后兼容旧代码）
         if os.environ.get("ALPHA_FORGE_DEBUG"):
             raise
         print(f"[error] {exc}", file=sys.stderr)

@@ -16,6 +16,7 @@ from data.sources import (
     get_sources,
     source_label,
 )
+from envconfig import reset_env_config
 from tests.helpers import make_ohlcv
 
 
@@ -93,26 +94,31 @@ def test_baostock_supports_scope():
 def test_forced_source_env(monkeypatch):
     """环境变量强制单源。"""
     monkeypatch.setenv("ALPHA_FORGE_DATA_SOURCE", "akshare")
+    reset_env_config()
     assert source_label() == "akshare"
     sources = get_sources()
     assert len(sources) == 1 and sources[0].name == "akshare"
 
     monkeypatch.setenv("ALPHA_FORGE_DATA_SOURCE", "tickflow")
+    reset_env_config()
     sources = get_sources()
     assert len(sources) == 1 and sources[0].name == "tickflow"
 
     monkeypatch.setenv("ALPHA_FORGE_DATA_SOURCE", "baostock")
+    reset_env_config()
     assert source_label() == "baostock"
     sources = get_sources()
     assert len(sources) == 1 and sources[0].name == "baostock"
 
     monkeypatch.delenv("ALPHA_FORGE_DATA_SOURCE", raising=False)
+    reset_env_config()
     assert source_label() == "auto"
     assert [s.name for s in get_sources()] == ["tickflow", "baostock", "akshare", "yfinance"]
 
 
 def test_yfinance_forced_source_env(monkeypatch):
     monkeypatch.setenv("ALPHA_FORGE_DATA_SOURCE", "yfinance")
+    reset_env_config()
     assert source_label() == "yfinance"
     sources = get_sources()
     assert len(sources) == 1 and sources[0].name == "yfinance"
@@ -213,3 +219,54 @@ def test_akshare_column_normalization(monkeypatch, df):
     assert list(out.columns) == ["trade_date", "open", "high", "low", "close", "volume"]
     assert len(out) == 20
     assert out["trade_date"].is_monotonic_increasing
+
+
+# ---------------------------------------------------------------- fetch_dividends
+
+
+def test_fetch_dividends_success(monkeypatch):
+    """正常分红数据解析：每 10 股 -> 每股，按除权除息日升序。"""
+    ak_df = pd.DataFrame(
+        {
+            "报告期": ["2022-12-31", "2023-12-31"],
+            "除权除息日": ["2023-06-15", "2024-06-20"],
+            "现金分红-现金分红比例": [3.0, 5.0],  # 每 10 股派 3 元、5 元
+        }
+    )
+
+    class _FakeAk:
+        @staticmethod
+        def stock_fhps_detail_em(symbol):
+            assert symbol == "600000"
+            return ak_df
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "akshare", _FakeAk)
+    series = datafeed.fetch_dividends("600000.SH")
+    assert len(series) == 2
+    assert series.iloc[0] == pytest.approx(0.3)  # 3/10
+    assert series.iloc[1] == pytest.approx(0.5)  # 5/10
+    assert series.index.is_monotonic_increasing
+
+
+def test_fetch_dividends_no_record_typeerror(monkeypatch):
+    """股票从未分红时 akshare 内部抛 TypeError，应转为友好 RuntimeError。"""
+
+    class _FakeAk:
+        @staticmethod
+        def stock_fhps_detail_em(symbol):
+            # 模拟 akshare 内部 API 返回 result=None 时的 TypeError
+            raise TypeError("'NoneType' object is not subscriptable")
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "akshare", _FakeAk)
+    with pytest.raises(RuntimeError, match="无分红记录"):
+        datafeed.fetch_dividends("688981.SH")
+
+
+def test_fetch_dividends_non_a_share_raises():
+    """非 A 股标的应提前拦截。"""
+    with pytest.raises(RuntimeError, match="仅支持 A 股"):
+        datafeed.fetch_dividends("AAPL.US")

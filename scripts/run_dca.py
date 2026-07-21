@@ -33,11 +33,12 @@ from __future__ import annotations
 import argparse
 
 from cli_common import (
+    add_cost_args,
     add_json_arg,
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
 )
@@ -74,8 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
     parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    add_cost_args(parser)
     parser.add_argument("--ma-window", type=int, default=60, help="ma/smart 模式均线窗口，默认 60")
     parser.add_argument("--boost", type=float, default=2.0, help="加码基准倍数（ma 低于均线倍数；smart/dip 分档以此缩放），默认 2.0")
     parser.add_argument("--dip-window", type=int, default=120, help="dip 模式回撤参考高点滚动窗口，默认 120")
@@ -127,8 +127,7 @@ def _load_dividends(args, log):
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     dividends = None
     adjust = "forward"

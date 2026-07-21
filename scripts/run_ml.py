@@ -21,11 +21,12 @@ from __future__ import annotations
 import argparse
 
 from cli_common import (
+    add_cost_args,
     add_json_arg,
     build_next_steps,
     check_symbol,
     emit_json,
-    make_logger,
+    init_log,
     make_parser,
     run_cli,
 )
@@ -65,8 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-window", type=int, default=20, help="每次走步向前预测的周期数，默认 20")
     parser.add_argument("--threshold", type=float, default=0.05, help="中性带宽度，默认 0.05（proba 偏离 0.5 超过才入场）")
     parser.add_argument("--allow-short", action="store_true", help="开启做空（预测下跌输出 -1）")
-    parser.add_argument("--commission", type=float, default=0.0005, help="单边手续费率")
-    parser.add_argument("--slippage", type=float, default=0.0005, help="单边滑点率")
+    add_cost_args(parser)
     parser.add_argument("--plot", action="store_true", help="生成机器学习策略图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/ml_<标的>.png 命名")
     add_json_arg(parser)
@@ -154,8 +154,7 @@ def run_meta(args, df, log, json_stdout) -> None:
 def main() -> None:
     args = parse_args_with_config(build_parser())
     check_symbol(args.symbol)
-    json_stdout = args.json == "-"
-    log = make_logger(json_stdout)
+    json_stdout, log = init_log(args)
 
     log(f"拉取 {args.symbol} {args.period} K 线（{args.count} 根）...")
     df = fetch_ohlcv(args.symbol, period=args.period, count=args.count)
