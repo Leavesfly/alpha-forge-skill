@@ -72,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["score", "pe", "pb", "roe", "div", "growth"],
         help="排序字段，默认 score（综合评分）",
     )
+    # 估值分位增强
+    parser.add_argument(
+        "--valuation-pct",
+        action="store_true",
+        help="启用估值历史分位增强：拉取候选标的近 N 年 PE/PB 历史，计算当前分位并调整评分（较慢）",
+    )
+    parser.add_argument(
+        "--valuation-lookback", type=int, default=5,
+        help="估值分位回看年数，默认 5",
+    )
     add_json_arg(parser)
     return parser
 
@@ -88,6 +98,8 @@ def main() -> None:
         min_div=args.min_div,
         min_growth=args.min_growth,
         min_cap=args.min_cap,
+        use_valuation_pct=args.valuation_pct,
+        valuation_lookback=args.valuation_lookback,
     )
 
     symbols = None
@@ -129,10 +141,21 @@ def main() -> None:
             roe_str = f"ROE {item['roe']:.1f}%" if item.get("roe") else "ROE N/A"
             div_str = f"股息 {item['div_yield']:.1f}%" if item.get("div_yield") else ""
             growth_str = f"增速 {item['profit_growth']:+.0f}%" if item.get("profit_growth") else ""
+            # 估值分位（可选）
+            val_str = ""
+            if item.get("valuation"):
+                vp = item["valuation"]
+                pcts = []
+                if vp.get("pe_percentile") is not None:
+                    pcts.append(f"PE{vp['pe_percentile']:.0%}")
+                if vp.get("pb_percentile") is not None:
+                    pcts.append(f"PB{vp['pb_percentile']:.0%}")
+                if pcts:
+                    val_str = f"分位 {'/'.join(pcts)}"
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {val_str}"
             )
     else:
         log("（无达标标的。当前阈值下全市场无满足条件的标的，可放宽阈值重试。）")
@@ -187,6 +210,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"增速>{criteria.min_growth:.0f}%")
     if criteria.min_cap > 0:
         parts.append(f"市值>{criteria.min_cap:.0f}亿")
+    if criteria.use_valuation_pct:
+        parts.append(f"估值分位增强(近{criteria.valuation_lookback}年)")
     return "、".join(parts) if parts else "无限制"
 
 

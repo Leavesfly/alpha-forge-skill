@@ -94,7 +94,7 @@ from datafeed import fetch_prices, fetch_fundamentals, fetch_universe
 from factors import run_factor_model
 
 symbols = fetch_universe("CN_Equity_A", limit=30)
-prices = fetch_prices(symbols, period="1d", count=500)
+prices = fetch_prices(symbols, period="1d", count=1250)
 fundamentals = fetch_fundamentals(list(prices.columns))  # 无权限返回 None
 result = run_factor_model(prices, fundamentals, top_quantile=0.2, layers=5)
 print(result.factors_used, result.skipped)

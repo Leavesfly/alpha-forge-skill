@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", required=True, help="标的代码，如 600000.SH")
     parser.add_argument("--strategy", required=True, choices=list(STRATEGIES), help="策略名称")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=800, help="K 线数量，默认 800")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument("--metric", default="sharpe", help="训练窗选参指标，默认 sharpe")
     parser.add_argument("--train-window", type=int, default=250, help="训练窗长度，默认 250")

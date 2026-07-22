@@ -10,6 +10,7 @@ import pytest
 from cli_common import (
     check_symbol,
     emit_json,
+    eval_condition,
     examples_from_doc,
     log_next_steps,
     make_parser,
@@ -211,3 +212,28 @@ def test_default_output_ext():
 
     path_html = default_output("report", "600000.SH", "macd", ext="html")
     assert path_html.endswith("report_600000SH_macd.html")
+
+
+# ---------- next_steps condition 求值 ----------
+
+def test_eval_condition_numeric_dotted_path():
+    data = {"dsr": {"dsr": 0.75}, "metrics": {"sharpe": 0.8}, "benchmark_metrics": {"sharpe": 1.2}}
+    assert eval_condition("dsr.dsr < 0.9", data) is True
+    assert eval_condition("dsr.dsr >= 0.9", data) is False
+    assert eval_condition("metrics.sharpe < benchmark_metrics.sharpe", data) is True
+    assert eval_condition("metrics.sharpe > benchmark_metrics.sharpe", data) is False
+
+
+def test_eval_condition_string_and_bool():
+    data = {"verdict": "watch", "flag": True}
+    assert eval_condition("verdict != no", data) is True
+    assert eval_condition("verdict == yes", data) is False
+    assert eval_condition("verdict == watch", data) is True
+    assert eval_condition("flag == true", data) is True
+
+
+def test_eval_condition_failure_returns_false():
+    data = {"a": 1}
+    assert eval_condition("nonexist.field > 1", data) is False  # 路径不存在
+    assert eval_condition("bad syntax !!", data) is False  # 语法错
+    assert eval_condition("", data) is False  # 空表达式

@@ -22,6 +22,7 @@ from typing import Protocol
 import pandas as pd
 
 from envconfig import get_env_config
+from errors import DataFetchError
 
 # 需要 TICKFLOW_API_KEY 的接口在报错/告警时统一附带此指引，
 # 提醒用户去哪里申请、如何设置与验证。
@@ -68,7 +69,7 @@ def get_tickflow_client(period: str = "1d"):
     if has_key:
         return TickFlow()
     if _needs_api_key(period):
-        raise RuntimeError(
+        raise DataFetchError(
             f"周期 {period} 需要实时/分钟数据，请先配置环境变量 TICKFLOW_API_KEY 后重试。\n"
             + API_KEY_HELP
         )
@@ -76,11 +77,15 @@ def get_tickflow_client(period: str = "1d"):
 
 
 def _validate_and_sort(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """校验必需列并按时间升序。"""
+    """校验必需列并按时间升序。
+
+    Raises:
+        DataFetchError: 数据为空或缺少 close 列。
+    """
     if df is None or len(df) == 0:
-        raise RuntimeError(f"未获取到 {symbol} 的 K 线数据，请检查代码与周期。")
+        raise DataFetchError(f"未获取到 {symbol} 的 K 线数据，请检查代码与周期。")
     if "close" not in df.columns:
-        raise RuntimeError(f"返回数据缺少 close 列，实际列：{list(df.columns)}")
+        raise DataFetchError(f"返回数据缺少 close 列，实际列：{list(df.columns)}")
     for col in ("trade_date", "date", "datetime", "time"):
         if col in df.columns:
             df = df.sort_values(col).reset_index(drop=True)
@@ -138,7 +143,7 @@ class BaostockSource:
 
         lg = bs.login()
         if lg.error_code != "0":
-            raise RuntimeError(f"baostock 登录失败：{lg.error_msg}")
+            raise DataFetchError(f"baostock 登录失败：{lg.error_msg}")
         try:
             rs = bs.query_history_k_data_plus(
                 bs_code,
@@ -147,7 +152,7 @@ class BaostockSource:
                 adjustflag=_BS_ADJUSTS.get(adjust, "2"),
             )
             if rs.error_code != "0":
-                raise RuntimeError(f"baostock 查询 {symbol} 失败：{rs.error_msg}")
+                raise DataFetchError(f"baostock 查询 {symbol} 失败：{rs.error_msg}")
             rows = []
             while rs.next():
                 rows.append(rs.get_row_data())
@@ -155,7 +160,7 @@ class BaostockSource:
             bs.logout()
 
         if not rows:
-            raise RuntimeError(f"baostock 未返回 {symbol} 的 K 线数据。")
+            raise DataFetchError(f"baostock 未返回 {symbol} 的 K 线数据。")
 
         df = pd.DataFrame(rows, columns=["trade_date", "open", "high", "low", "close", "volume"])
         # baostock 返回字符串，需转数值
@@ -207,7 +212,7 @@ class AkshareSource:
             adjust=_AK_ADJUSTS.get(adjust, "qfq"),
         )
         if df is None or len(df) == 0:
-            raise RuntimeError(f"akshare 未返回 {symbol} 的 K 线数据。")
+            raise DataFetchError(f"akshare 未返回 {symbol} 的 K 线数据。")
         df = df.rename(columns=_AK_COLUMNS)
         keep = [c for c in ("trade_date", "open", "high", "low", "close", "volume") if c in df.columns]
         df = df[keep].copy()
@@ -259,7 +264,7 @@ class YFinanceSource:
 
     def fetch(self, symbol: str, period: str, count: int, adjust: str) -> pd.DataFrame:
         if adjust == "backward":
-            raise RuntimeError(
+            raise DataFetchError(
                 "yfinance 兜底源不支持后复权（hfq），请改用前复权或配置 TICKFLOW_API_KEY。"
             )
         import yfinance as yf
@@ -274,7 +279,7 @@ class YFinanceSource:
             threads=False,
         )
         if df is None or len(df) == 0:
-            raise RuntimeError(f"yfinance 未返回 {symbol}（{ticker}）的 K 线数据。")
+            raise DataFetchError(f"yfinance 未返回 {symbol}（{ticker}）的 K 线数据。")
         # 新版 yfinance 单标的也返回 (字段, ticker) 两层列，压平取字段层
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)

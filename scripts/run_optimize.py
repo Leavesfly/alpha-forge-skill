@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="策略名称",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument(
         "--metric",
         default="sharpe",
@@ -202,7 +202,8 @@ def main() -> None:
                 "next_steps": build_next_steps(
                     {"action": "backtest", "reason": "用最优参数复跑出图",
                      "command": f"run_backtest.py --symbol {args.symbol} --strategy {args.strategy} --params {params_str} --plot --json"},
-                    {"action": "validate", "reason": "走步样本外验证确认稳健性",
+                    {"action": "validate", "reason": "DSR<90% 过拟合风险高，需走步样本外验证确认稳健性",
+                     "condition": "dsr.dsr < 0.9",
                      "command": f"run_validate.py --symbol {args.symbol} --strategy {args.strategy} --json"},
                 ),
             },

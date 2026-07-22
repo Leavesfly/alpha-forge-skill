@@ -1,6 +1,6 @@
 ---
 name: alpha-forge-skill
-description: A股/港股/美股量化研究与交易辅助。获取行情K线/财务数据，内置 14 个经典策略（双均线/MACD/RSI/布林/海龟/动量/网格等）+ 回测引擎 + 并行参数寻优（网格/随机/贝叶斯）+ 压力测试 + 多标的组合轮动与优化（含 HRP/最小CVaR）+ 多因子选股 + 配对交易 + 机器学习预测（含三重障碍标注/meta-labeling 信号过滤）+ 新闻情绪 + 定投DCA（含分红建模）+ 纪律评分决策层（能不能买/该不该卖/买多少）+ CAN SLIM 欧奈尔成长股清单（港美股基本面自动兜底）+ 低估值/潜力机会全市场筛选（PE/PB/ROE/负债/分红/增速六维硬阈值漏斗）+ 市场状态识别 + 统一持仓账户 + 全市场扫描 + 每日信号（支持 webhook 推送）与模拟盘（含组合级总览）。对话式触发："XX现在能买吗/值不值得买""持仓该不该卖/减仓""买多少合适""帮我记一下持仓""最近有什么值得买的""有没有低估值的股票/高分红的股票""这只股符不符合 CAN SLIM""这只股用什么策略好""帮我回测/调参/做组合/定投""每天帮我盯盘看该买该卖"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
+description: A股/港股/美股量化研究与交易辅助。获取行情K线/财务数据，内置 14 个经典策略（双均线/MACD/RSI/布林/海龟/动量/网格等）+ 自定义策略 DSL（Agent 按自然语言描述生成 TOML 规则回测，策略空间无限）+ 回测引擎 + 并行参数寻优（网格/随机/贝叶斯）+ 压力测试 + 多标的组合轮动与优化（含 HRP/最小CVaR）+ 多因子选股 + 配对交易 + 机器学习预测（含三重障碍标注/meta-labeling 信号过滤）+ 新闻情绪 + 定投DCA（含分红建模）+ 纪律评分决策层（能不能买/该不该卖/买多少，含估值历史分位与宏观 regime 上下文）+ CAN SLIM 欧奈尔成长股清单（港美股基本面自动兖底）+ 低估值/潜力机会全市场筛选（PE/PB/ROE/负债/分红/增速六维硬阈值漏斗，可选估值历史分位增强）+ 市场状态识别 + 统一持仓账户 + 全市场扫描 + 每日信号（支持 webhook 推送）与模拟盘（含组合级总览）。对话式触发：“XX现在能买吗/值不值得买”“持仓该不该卖/减仓”“买多少合适”“帮我记一下持仓”“最近有什么值得买的”“有没有低估值的股票/高分红的股票”“这只股符不符合 CAN SLIM”“这只股用什么策略好”“帮我回测/调参/做组合/定投”“每天帮我盯盘看该买该卖”。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
@@ -42,11 +42,13 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 结论五态中文（verdict_cn）+ 哪一层给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
 | “我持有 XX，成本 N，该不该卖/减仓” | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
 | “帮我记一下持仓 / 我的持仓怎么样了” | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
+| “我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万” | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
 | "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
+| “我想自己定义一个策略：金叉且 RSI 不过热时买……” | agent 按用户描述生成 TOML 规则文件（格式见 `examples/custom_rule.toml`，指标/运算符白名单用 `run_list.py --json` 查），再 `run_custom.py --symbol <代码> --rules <文件> --json` | 规则如何被解析（入场/离场条件）+ 回测结果 vs 基准；提醒自定义规则未经样本外验证 |
 | “帮我调参 / 找最优参数” | `run_optimize.py --symbol <代码> --strategy <策略> --json`（大网格加 `--method random`） | 最优参数 + DSR 诊断结论；DSR<90% 时必须提醒过拟合风险并建议 run_validate |
 | “这策略靠谱吗 / 是不是过拟合” | `run_validate.py --symbol <代码> --strategy <策略> --pbo --json` | 样本外夏普 vs 样本内、PBO 概率；以样本外为准 |
 | “这几只股票帮我做个组合” | `run_portfolio.py --symbols <列表> --strategy momentum --json` | 组合 vs 等权基准；调仓频率与成本假设 |
@@ -146,10 +148,12 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 ### JSON 输出新增字段（Agent 程序化消费）
 
-全部 21 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
+全部 23 个 `run_*.py` 的 `--json` 输出现已包含两个 Agent 友好字段：
 
 - **`summary`**：1–2 句自然语言结论，Agent 可直接引用或改写后转述给用户。
-- **`next_steps`**：结构化后续动作列表，每项含 `action`（动作标识）、`reason`（为何建议）、`command`（可执行命令）。Agent 据此程序化链式引导，无需解析 stderr 文本。
+- **`next_steps`**：结构化后续动作列表，每项含 `action`（动作标识）、`reason`（为何建议）、`command`（可执行命令）。部分项含可选 `condition`（如 `"dsr.dsr < 0.9"`、`"verdict != no"`），**仅当条件成立时才应向用户提议该动作**（条件引用同一 JSON 输出的字段点路径）；无 condition 表示无条件推荐。Agent 据此程序化链式引导，无需解析 stderr 文本。
+
+此外 `run_score.py --json` 输出含 **`evidence`** 结构化证据链：每条证据含 `id`（E01/E02…）、`indicator`、`value`、`threshold`、`triggered`、`impact` 与 `claim`（一句话断言）。**Agent 深度解读评分时应引用证据而非自行推断**（如「收盘低于 MA200（E02）所以被否决」），从机制上避免事实性错误。
 
 ## 环境配置
 
@@ -344,6 +348,23 @@ uv run python run_compare.py --symbol AAPL.US --strategies ma_cross,macd,rsi --p
 uv run python run_compare.py --symbol 600000.SH --json > compare.json
 ```
 
+### 自定义规则策略（DSL，Agent 可生成）
+
+用户用自然语言描述策略想法（如“金叉且 RSI 不过热时买，死叉或超买时卖”），
+agent 生成 TOML 规则文件后用 `run_custom.py` 回测验证——策略空间不再限于内置 14 个：
+
+```bash
+# 用示例规则回测（金叉 + RSI 过滤）
+uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml --plot
+
+# 结构化 JSON（含规则摘要 rules 字段）
+uv run python run_custom.py --symbol AAPL.US --rules my_rule.toml --json
+```
+
+规则文件三段式：`[indicators.*]` 定义指标（白名单算子：SMA/EMA/RSI/MACD/布林/ATR/唐奇安/KDJ/动量/ROC，`close/open/high/low/volume` 可直接引用），`[entry]`/`[exit]` 定义条件（运算符 `>`/`<`/`>=`/`<=`/`crosses_above`/`crosses_below`，支持 and/or 组合）。
+**安全设计**：不执行任意代码，仅解析受限表达式；非法规则报友好错误（附可用指标/运算符清单）。
+完整格式见 `examples/custom_rule.toml`；指标白名单可用 `run_list.py --json` 的 `custom_dsl` 字段查询。
+
 ### 交易保真度（成本/规则/成交价）
 
 回测可信度的根基。`run_backtest.py` / `run_optimize.py` / `run_validate.py` 均支持：
@@ -406,11 +427,11 @@ uv run python run_backtest.py --symbol AAPL.US --strategy macd --json > result.j
 
 ### CLI 通用约定（Agent 友好）
 
-全部 20 个 `run_*.py` 遵循统一约定，便于脚本与 agent 编排：
+全部 23 个 `run_*.py` 遵循统一约定，便于脚本与 agent 编排：
 
 - **`--help` 带示例**：每个命令的 `--help` 末尾附可直接复制的运行示例。
 - **`--config <TOML>` 全覆盖**：配置文件注入默认值，显式命令行参数优先；未知键报错并给出近似建议与可用键列表。
-- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 21 个命令（backtest/optimize/compare/portfolio/signal/dca/score/scan/screener/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/dashboard/verify）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
+- **`--json` 全命令支持**：顶层固定含 `schema`/`command`/`generated_at` 元信息，字段只增不删；全部 23 个命令（backtest/optimize/compare/custom/portfolio/signal/dca/score/scan/screener/canslim/ml/pairs/factor/validate/sentiment/paper/event/list/account/profile/dashboard/verify）均已支持；不带值时 stdout 保证纯 JSON（进度转 stderr）。
 - **`run_list.py` 能力清单**：一条命令列出全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，`--json` 供 agent 发现能力：`uv run python run_list.py --json`。
 - **`run_dashboard.py` 统一 Dashboard**：聚合真实持仓 + 全部模拟盘 + 可选今日信号于一页自包含 HTML（`--symbols` 附信号，`--json` 结构化）；含集中度/回撤风控提示。
 - **规范退出码**：0=成功，1=运行错误（数据/网络），2=参数错误，130=用户中断；失败信息以 `[error] ` 前缀输出 stderr，含可操作的修复建议（如标的代码格式、数据排查方向）；非法策略参数组合（如 fast>=slow）会在启动期报友好错误。
@@ -556,6 +577,8 @@ uv run python run_dca.py --symbol 600000.SH --dividends --div-policy reinvest
 入场时机，单向降级、利好不加分），输出结论五态（是/观察/否/持仓需减风险/无法评分）、
 入场/止损/2R/3R 交易计划价位与**建议仓位**（风险预算法：股数 = 资金×风险比例/R，
 回答「买多少」）；同时输出**市场状态**（趋势/震荡/高波动，描述性上下文）；
+可选附加**估值历史分位**（当前 PE/PB 在自身近 N 年历史中的位置）与**宏观 regime**
+（国债利率/CPI/PMI 组合判断：扩张/宽松/滞胀/收缩）；
 A股/港股/美股基准自动选择（510300.SH / 02800.HK / SPY.US）：
 
 ```bash
@@ -563,6 +586,15 @@ A股/港股/美股基准自动选择（510300.SH / 02800.HK / SPY.US）：
 uv run python run_score.py --symbol 600000.SH
 uv run python run_score.py --symbol AAPL.US --brief
 uv run python run_score.py --symbol 600000.SH --capital 200000 --risk-pct 0.02
+
+# 附加估值历史分位：当前 PE/PB 在近 5 年历史中的位置（低估/合理/高估）
+uv run python run_score.py --symbol 600519.SH --valuation-pct
+
+# 附加宏观环境上下文：国债利率/CPI/PMI 组合判断宏观 regime
+uv run python run_score.py --symbol 600000.SH --macro
+
+# 估值分位 + 宏观环境一起看
+uv run python run_score.py --symbol 600519.SH --valuation-pct --macro
 
 # 事件风险三步闭环：抓新闻素材生成待标注模板 → agent 填 risk 列 → --risk-file 回传
 uv run python run_score.py --symbol 600000.SH --fetch-events
@@ -612,7 +644,8 @@ uv run python run_canslim.py --symbol AAPL.US --fundamentals-csv aapl_eps.csv
 
 基于基本面硬阈值的价值发现：六维筛选（PE/PB/ROE/负债率/股息率/净利润增速）+
 综合评分排序。A 股走 akshare 免费批量接口（无需 API Key），两阶段漏斗
-（Phase 1 全市场快照过滤 → Phase 2 逐只深度过滤）；港美股走 yfinance 逐只：
+（Phase 1 全市场快照过滤 → Phase 2 逐只深度过滤）；港美股走 yfinance 逐只；
+可选**估值历史分位增强**（拉取候选标的近 N 年 PE/PB 历史，低分位加分、高分位减分）：
 
 ```bash
 # A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 市值>30亿）
@@ -623,6 +656,9 @@ uv run python run_screener.py --max-pe 15 --max-pb 2 --min-div 3
 
 # 成长+质量策略（ROE>15%, 增速>20%, 负债<60%）
 uv run python run_screener.py --min-roe 15 --min-growth 20 --max-debt 60
+
+# 估值历史分位增强：候选标的附加近 5 年 PE/PB 分位，低分位（便宜）加分
+uv run python run_screener.py --valuation-pct
 
 # 港美股手动列表筛选
 uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
@@ -651,6 +687,26 @@ uv run python run_account.py --remove --symbol 600000.SH
 联动效果：`run_score.py` 未传 `--cost` 时自动带入账户成本给操作建议（优先级：显式
 `--cost` > 账户登记 > 模拟盘探测）；`run_scan.py` 对已持标的标注「已持有」，
 `--exclude-held` 可直接排除。
+
+### 用户风险画像（个性化风控）
+
+不同用户风险承受能力不同，画像让建议仓位与风控提示因人而异（仅登记，不做交易执行）：
+
+```bash
+# 登记为平衡型投资者，可用资金 20 万（预设自动填充 risk_pct/最大回撤/单标的上限）
+uv run python run_profile.py --set --risk-tolerance balanced --capital 200000
+
+# 自定义（激进 + 显式覆盖最大回撤）
+uv run python run_profile.py --set --risk-tolerance aggressive --max-drawdown 0.4
+
+# 查看 / 重置
+uv run python run_profile.py --json
+uv run python run_profile.py --reset
+```
+
+三档预设：`conservative`（保守）/`balanced`（平衡）/`aggressive`（激进）。联动效果：
+`run_score.py` 未显式传 `--capital`/`--risk-pct` 时自动读取画像计算建议仓位（优先级：
+显式 CLI > 用户画像 > 内置默认）；`--json` 输出含 `profile` 上下文字段。
 
 ### 信号服务与模拟盘（实盘前置）
 
@@ -702,6 +758,7 @@ uv run python run_event.py --symbol 600519.SH --events 2025-04-25 \
 | 场景 | 一句话做法 |
 |------|----------|
 | 单股策略选优 | `run_compare.py` 一键对比全部 14 个策略，按夏普排序 |
+| 自定义策略回测 | `run_custom.py --rules <TOML>` 白名单指标+受限条件表达式，Agent 按自然语言生成规则 |
 | 参数寻优→复跑 | `run_optimize.py` 找最优参（并行 + DSR 诊断），再 `run_backtest.py --params ... --plot` |
 | 风控改善 | 同策略叠加 `--stop-loss` / `--vol-target` 对比回撤 |
 | 多空对冲 | `--allow-short` 应对下跌或震荡市 |
@@ -712,11 +769,12 @@ uv run python run_event.py --symbol 600519.SH --events 2025-04-25 \
 | 机器学习 | `run_ml.py` 可插拔模型预测方向，走步样本外回测 + 线性基线对照 |
 | 新闻情绪 | `run_sentiment.py --stage fetch` 抓新闻→agent 打分→`--stage backtest` |
 | 定投定期定额 | `run_dca.py` 按周期定投，看资金加权 IRR 与一次性投入对比 |
-| 单股纪律评分 | `run_score.py` 四层否决式评分，结论 + 交易计划价位 + 建议仓位，`--replay` 回放验证 |
+| 单股纪律评分 | `run_score.py` 四层否决式评分，结论 + 交易计划价位 + 建议仓位，`--replay` 回放验证，`--valuation-pct` 估值分位，`--macro` 宏观环境 |
 | CAN SLIM 清单核查 | `run_canslim.py` 欧奈尔七项法则逐项核查，多标的横截面 RS 百分位排名 |
 | 持仓登记与体检 | `run_account.py --set` 登记持仓，run_score/run_scan 自动联动（带入成本/标注已持有） |
+| 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>` 登记偏好，run_score 建议仓位因人而异 |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量评分，达标/降级候选分列 |
-| 低估值/潜力筛选 | `run_screener.py` 六维基本面硬阈值漏斗（PE/PB/ROE/负债/分红/增速），A 股免费全市场扫描 |
+| 低估值/潜力筛选 | `run_screener.py` 六维基本面硬阈值漏斗（PE/PB/ROE/负债/分红/增速），A 股免费全市场扫描，`--valuation-pct` 估值分位增强 |
 | 组合优化 | `run_portfolio.py --strategy min_variance/max_sharpe` |
 | 每日信号跟踪 | `run_signal.py` 批量输出目标仓位与调仓动作 |
 | 模拟盘演练 | `run_paper.py` 虚拟资金纸面交易，追踪与回测预期的偏差 |

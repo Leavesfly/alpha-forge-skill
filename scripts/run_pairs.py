@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exit", type=float, default=0.5, help="平仓 z 阈值，默认 0.5")
     parser.add_argument("--stop", type=float, default=3.5, help="止损 z 阈值，默认 3.5")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     add_cost_args(parser)
     parser.add_argument("--plot", action="store_true", help="生成配对交易图表")
     parser.add_argument("--output", default=None, help="图表输出路径；默认按 ../outputs/pairs_<标的A>_<标的B>.png 命名")

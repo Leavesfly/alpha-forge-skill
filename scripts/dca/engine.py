@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from strategies.rsi import compute_rsi
 from utils import resolve_time_index
 
 from .metrics import compute_dca_metrics, compute_lumpsum_metrics
@@ -307,6 +308,7 @@ def _contribution_mask(index: pd.Index, freq: str) -> np.ndarray:
     """标记定投日：每个周期（日/周/月）的首个交易日。
 
     非时间索引时退化为按固定间隔（周≈5 根、月≈21 根）投入。
+    使用 pandas 向量化分组取首，避免 Python 层 set 循环。
     """
     n = len(index)
     if freq == "daily":
@@ -320,18 +322,16 @@ def _contribution_mask(index: pd.Index, freq: str) -> np.ndarray:
 
     if freq == "weekly":
         iso = index.isocalendar()
-        keys = list(zip(iso["year"].to_numpy(), iso["week"].to_numpy()))
+        keys = iso["year"].astype(str) + "-" + iso["week"].astype(str).str.zfill(2)
     elif freq == "monthly":
-        keys = list(zip(index.year.to_numpy(), index.month.to_numpy()))
+        keys = index.year.astype(str) + "-" + index.month.astype(str).str.zfill(2)
     else:
         raise ValueError(f"未知定投频率 '{freq}'，可选：daily/weekly/monthly")
 
+    # 每个周期分组取首个位置（向量化）
+    first_positions = pd.Series(np.arange(n), index=keys.to_numpy()).groupby(level=0).first()
     mask = np.zeros(n, dtype=bool)
-    seen: set = set()
-    for i, key in enumerate(keys):
-        if key not in seen:
-            seen.add(key)
-            mask[i] = True
+    mask[first_positions.to_numpy()] = True
     return mask
 
 
@@ -381,21 +381,10 @@ def _multiplier_series(
         mult = np.where(dd <= -0.05, mild, mult)
         mult = np.where(dd <= -0.15, boost, mult)
         mult = np.where(dd <= -0.30, deep, mult)
-        # RSI 超卖（<30）额外加一档，封顶 deep
-        rsi = _rsi(close, 14).to_numpy()
+        # RSI 超卖（<30）额外加一档，封顶 deep；未形成期以中性值 50 填充
+        rsi = compute_rsi(close, 14).fillna(50.0).to_numpy()
         mult = np.where(rsi < 30.0, np.minimum(mult + 0.5, deep), mult)
         return mult
 
     raise ValueError(f"未知定投模式 '{mode}'")
 
-
-def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder 平滑 RSI；未形成前填充中性值 50。"""
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
-    rs = avg_gain / avg_loss.replace(0.0, np.nan)
-    rsi = 100.0 - 100.0 / (1.0 + rs)
-    return rsi.fillna(50.0)

@@ -4,7 +4,7 @@
 
 **从数据到决策的量化研究工作台**
 
-A 股 · 港股 · 美股 · 期货 | 14 种策略 · 6 类研究范式 · 19 个 CLI 工具
+A 股 · 港股 · 美股 · 期货 | 14 种策略 · 6 类研究范式 · 23 个 CLI 工具
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![uv](https://img.shields.io/badge/uv-powered-8A2BE2)](https://docs.astral.sh/uv/)
@@ -46,7 +46,7 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 
 | 原则 | 体现 |
 |------|------|
-| 🤖 Agent 优先 | 19 个 CLI 全部 `--json` 输出，含 `summary` + `next_steps` 链式引导 |
+| 🤖 Agent 优先 | 23 个 CLI 全部 `--json` 输出，含 `summary` + `next_steps` 链式引导 |
 | 🛡️ 诚实回测 | 信号 `shift(1)` 防前视、DSR/PBO 过拟合诊断、样本外验证 |
 | 🎯 决策导向 | 不只告诉你「历史表现」，更回答「现在能买吗 / 买多少 / 何时卖」 |
 | 🔄 渐进增强 | 免费日 K 即可上手，API Key 解锁实时数据与高级功能 |
@@ -69,6 +69,7 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 | 特性 | 说明 |
 |------|------|
 | **14 种策略** | 双均线、MACD、RSI、布林带、动量、唐奇安、KDJ、网格、海龟、肯特纳、SuperTrend、Dual Thrust、CCI、威廉指标 |
+| **自定义策略 DSL** | TOML 声明式规则（白名单指标 + 受限条件表达式），Agent 按自然语言生成规则回测，策略空间无限 |
 | **双引擎回测** | 向量化引擎（快速研究）+ 账本引擎（现金 + 整数股，A 股 100 股约束） |
 | **参数寻优** | 网格 / 随机 / 贝叶斯搜索，多核并行，DSR 过拟合诊断 |
 | **组合优化** | 动量轮动、等权、风险平价、最小方差、最大夏普、HRP、最小 CVaR |
@@ -87,6 +88,7 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 | **CAN SLIM** | 欧奈尔七项法则纪律化，A 股 EPS/ROE 自动获取，横截面 RS 排名 |
 | **市场扫描** | 流动性初筛 → 批量评分 → 达标/降级候选分列 |
 | **持仓账户** | 统一登记持仓，评分/扫描自动联动（带入成本、标注已持有） |
+| **用户风险画像** | 保守/平衡/激进三档预设，评分建议仓位因人而异（显式参数优先） |
 | **风险指标** | VaR/CVaR/下行偏差/尾部比率/溃疡指数，暴露约束，回撤熔断 |
 | **压力测试** | 历史情景重放（2015 股灾/2018 熊市/2020-03）+ 蒙特卡洛冲击 |
 | **稳健验证** | 走步样本外、Deflated Sharpe Ratio、PBO 过拟合概率 |
@@ -147,6 +149,9 @@ uv run python run_backtest.py --symbol 600000.SH --strategy macd --plot
 # 多策略对比（一键 PK 全部策略）
 uv run python run_compare.py --symbol 600000.SH --plot
 
+# 自定义策略 DSL（TOML 规则文件，Agent 可按自然语言生成）
+uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml --plot
+
 # 参数寻优（网格/随机/贝叶斯，多核并行）
 uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross --method bayes
 
@@ -196,6 +201,10 @@ uv run python run_scan.py --symbols 600000.SH,600519.SH,000858.SZ,AAPL.US
 # 持仓账户管理
 uv run python run_account.py --set --symbol 600000.SH --shares 1000 --cost 8.50
 uv run python run_account.py  # 查看持仓与浮盈亏
+
+# 用户风险画像（评分建议仓位因人而异）
+uv run python run_profile.py --set --risk-tolerance balanced --capital 200000
+uv run python run_profile.py  # 查看画像
 ```
 
 ### 跟踪类
@@ -288,11 +297,11 @@ alpha-forge-skill/
 ├── outputs/                 # 📊 图表与报告输出（自动创建）
 │
 └── scripts/                 # ⚙️ 可运行代码
-    ├── run_*.py             #    19 个 CLI 工具
+    ├── run_*.py             #    23 个 CLI 工具
     ├── datafeed.py          #    统一数据获取
     ├── cli_common.py        #    CLI 公共工具
     │
-    ├── strategies/          #    14 种策略实现
+    ├── strategies/          #    14 种策略实现 + custom.py（自定义规则 DSL 引擎）
     ├── backtest/            #    回测引擎（向量化 + 账本）
     ├── portfolio/           #    组合回测与优化
     ├── factors/             #    因子库与研究

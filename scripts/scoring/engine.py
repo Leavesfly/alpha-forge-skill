@@ -101,6 +101,7 @@ class ScoreResult:
     n_bars: int
     position: dict | None = None  # 持仓联动（P1）
     risk_events: list[dict] = field(default_factory=list)  # 触发的风险事件（P1）
+    evidence: list[dict] = field(default_factory=list)  # 结构化证据链（Agent 可引用）
 
     @property
     def verdict_cn(self) -> str:
@@ -114,6 +115,7 @@ class ScoreResult:
             "alpha_score": self.alpha_score,
             "components": self.components,
             "layers": self.layers,
+            "evidence": self.evidence,
             "snapshot": self.snapshot,
             "plan": self.plan,
             "benchmark": self.benchmark,
@@ -248,12 +250,17 @@ def score_symbol(
     snapshot["close"] = series_last(close)
     snapshot["vol_k"] = round(vol_k, 3)
     snapshot["adx14"] = adx_value
+
+    # ---------- 结构化证据链（Agent 可引用编号转述） ----------
+    evidence = _build_evidence(layers, components, snapshot)
+
     return ScoreResult(
         symbol=symbol,
         verdict=verdict,
         alpha_score=round(alpha_score, 1),
         components=components,
         layers=layers,
+        evidence=evidence,
         snapshot={k: safe_round(v) for k, v in snapshot.items()},
         plan=plan,
         benchmark=benchmark_symbol,
@@ -634,4 +641,195 @@ def _fundamental_veto(fundamentals: dict) -> tuple[str, dict]:
 
     layer = {"name": "fundamental", "status": status, "reasons": reasons}
     return verdict_hint, layer
+
+
+# ---------------------------------------------------------------- 证据链构建
+
+#: 层名 -> 中文显示名（证据链用）
+_LAYER_CN = {
+    "fundamental": "基本面否决",
+    "alpha": "ALPHA加权",
+    "veto": "风险否决",
+    "confirm": "技术确认",
+    "timing": "入场时机",
+    "event_risk": "事件风险",
+}
+
+#: 层状态 -> 影响类型
+_STATUS_IMPACT = {
+    "veto": "veto",
+    "cap": "cap_watch",
+    "downgrade": "downgrade",
+    "pass": "none",
+}
+
+
+def _build_evidence(layers: list[dict], components: dict, snapshot: dict) -> list[dict]:
+    """从各层结果与指标快照构建结构化证据链。
+
+    每条证据含：
+    - id: 编号（E01, E02, ...），Agent 转述时可引用
+    - layer: 产生层
+    - indicator: 指标机器名
+    - value: 实际值
+    - threshold: 对比阈值（无则 None）
+    - triggered: 是否触发了状态变更
+    - impact: 影响类型（veto/cap_watch/downgrade/none）
+    - claim: 一句话自然语言断言（Agent 可直接引用）
+    """
+    evidence: list[dict] = []
+    seq = 0
+
+    for layer in layers:
+        name = layer.get("name", "")
+        status = layer.get("status", "pass")
+        impact = _STATUS_IMPACT.get(status, "none")
+        triggered = status in ("veto", "cap", "downgrade")
+        layer_cn = _LAYER_CN.get(name, name)
+
+        if name == "alpha":
+            # ALPHA 层：动量/相对强度/趋势效率三项子分
+            mom = components.get("momentum", {})
+            rs = components.get("rel_strength", {})
+            eff = components.get("efficiency", {})
+            score = layer.get("score")
+            seq += 1
+            alpha_verdict = (
+                f"≥{int(ALPHA_YES)} 初始结论「是」" if score and score >= ALPHA_YES
+                else f"< {int(ALPHA_YES)} 动能不足"
+            )
+            evidence.append({
+                "id": f"E{seq:02d}",
+                "layer": "alpha",
+                "indicator": "alpha_composite_score",
+                "value": score,
+                "threshold": ALPHA_YES,
+                "triggered": False,
+                "impact": "none",
+                "claim": (
+                    f"综合排名分 {score}（动量子分 {mom.get('score')}/"
+                    f"相对强度 {rs.get('score')}/趋势效率 {eff.get('score')}），"
+                    f"{alpha_verdict}"
+                ),
+            })
+        elif name == "veto":
+            # 风险否决层：MA200/MA60/周线/大盘
+            close_v = snapshot.get("close")
+            ma200 = snapshot.get("ma200")
+            ma60 = snapshot.get("ma60")
+            if close_v is not None and ma200 is not None and not math.isnan(ma200):
+                seq += 1
+                below_200 = close_v < ma200
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "veto",
+                    "indicator": "close_vs_ma200",
+                    "value": safe_round(close_v),
+                    "threshold": safe_round(ma200),
+                    "triggered": below_200,
+                    "impact": "veto" if below_200 else "none",
+                    "claim": (
+                        f"收盘 {close_v:.2f} {'<' if below_200 else '>'} MA200({ma200:.2f})，"
+                        f"{'长期趋势破坏，直接否决' if below_200 else '长期趋势未破坏'}"
+                    ),
+                })
+            if close_v is not None and ma60 is not None and not math.isnan(ma60):
+                seq += 1
+                below_60 = close_v < ma60
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "veto",
+                    "indicator": "close_vs_ma60",
+                    "value": safe_round(close_v),
+                    "threshold": safe_round(ma60),
+                    "triggered": below_60,
+                    "impact": "cap_watch" if below_60 else "none",
+                    "claim": (
+                        f"收盘 {close_v:.2f} {'<' if below_60 else '>'} MA60({ma60:.2f})，"
+                        f"{'中期走弱封顶观察' if below_60 else '中期趋势健康'}"
+                    ),
+                })
+        elif name == "confirm":
+            # 技术确认层：MACD/RSI/KDJ
+            rsi14 = snapshot.get("rsi14")
+            dif = snapshot.get("macd_dif")
+            dea = snapshot.get("macd_dea")
+            if dif is not None and dea is not None:
+                seq += 1
+                dead_cross = dif < dea
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "confirm",
+                    "indicator": "macd_cross",
+                    "value": {"dif": safe_round(dif), "dea": safe_round(dea)},
+                    "threshold": None,
+                    "triggered": dead_cross,
+                    "impact": "downgrade" if (dead_cross and triggered) else "none",
+                    "claim": f"MACD DIF({dif:.3f}) {'<' if dead_cross else '>'} DEA({dea:.3f})，{'死叉状态' if dead_cross else '金叉状态'}",
+                })
+            if rsi14 is not None:
+                seq += 1
+                vol_k = snapshot.get("vol_k", 1.0)
+                rsi_th = 78.0 * vol_k
+                overheated = rsi14 > rsi_th
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "confirm",
+                    "indicator": "rsi14",
+                    "value": safe_round(rsi14),
+                    "threshold": safe_round(rsi_th),
+                    "triggered": overheated,
+                    "impact": "downgrade" if (overheated and triggered) else "none",
+                    "claim": f"RSI14={rsi14:.1f}{' > ' + f'{rsi_th:.0f}' + ' 短期过热' if overheated else ' 未过热'}",
+                })
+        elif name == "timing":
+            # 入场时机层：MA20 偏离
+            dev20 = snapshot.get("dev20")
+            if dev20 is not None and not math.isnan(dev20):
+                seq += 1
+                vol_k = snapshot.get("vol_k", 1.0)
+                dev_th = 0.15 * vol_k
+                too_hot = dev20 > dev_th
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "timing",
+                    "indicator": "ma20_deviation",
+                    "value": safe_round(dev20),
+                    "threshold": safe_round(dev_th),
+                    "triggered": too_hot,
+                    "impact": "downgrade" if (too_hot and triggered) else "none",
+                    "claim": (
+                        f"偏离MA20达 {dev20 * 100:+.1f}%"
+                        f"{' > ' + f'{dev_th * 100:.0f}%' + ' 过热追高，等回踩' if too_hot else ' 入场时机正常'}"
+                    ),
+                })
+        elif name == "fundamental":
+            # 基本面否决层
+            if triggered:
+                seq += 1
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "fundamental",
+                    "indicator": "fundamental_veto",
+                    "value": status,
+                    "threshold": None,
+                    "triggered": True,
+                    "impact": impact,
+                    "claim": f"{layer_cn}层触发：{layer.get('reasons', [''])[0]}",
+                })
+        elif name == "event_risk":
+            if triggered:
+                seq += 1
+                evidence.append({
+                    "id": f"E{seq:02d}",
+                    "layer": "event_risk",
+                    "indicator": "event_risk_high",
+                    "value": status,
+                    "threshold": None,
+                    "triggered": True,
+                    "impact": impact,
+                    "claim": f"事件风险层触发：{layer.get('reasons', [''])[0]}",
+                })
+
+    return evidence
 

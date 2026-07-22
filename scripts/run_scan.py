@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--universe", default=None, help="股票池名称，如 CN_Equity_A（需 API Key）")
     parser.add_argument("--limit", type=int, default=50, help="股票池最多取多少只，默认 50")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="每标的 K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="每标的 K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--pool", type=int, default=None, help="流动性初筛保留标的数（按近 20 日均成交额）；默认不过滤")
     parser.add_argument("--top", type=int, default=20, help="达标候选最多输出数，默认 20")
     parser.add_argument("--min-score", type=float, default=60.0, help="达标候选最低排名分，默认 60")

@@ -82,6 +82,14 @@ uv run python run_score.py --symbol 600000.SH
 > 新手只需记住一条规则：**评分是纪律工具而非收益预测**——「否」多数时候只是因为
 > 跌破年线（逆势不开仓），不是预言它会跌。原理与五态含义见 [scoring.md](scoring.md)。
 
+**进阶**：加 `--valuation-pct` 看估值历史分位（当前 PE/PB 在近 5 年历史中的位置），
+加 `--macro` 看宏观环境（国债利率/CPI/PMI 组合判断）：
+
+```bash
+# 评分 + 估值分位 + 宏观环境
+uv run python run_score.py --symbol 600519.SH --valuation-pct --macro
+```
+
 ### B. Hello Backtest：「这个策略历史上表现如何？」
 
 想研究策略，对浦发银行用双均线策略回测最近 500 根日 K 并出图：
@@ -120,6 +128,8 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot
 | 只用免费数据做研究 | 用例 7 | 1 |
 | 一只股票该用哪个策略 | 用例 1（run_compare 一键对比） | 2 |
 | 给策略找最优参数 | 用例 2（多核并行 + DSR 诊断） | 2 |
+| 自定义一个策略（金叉且 RSI 不过热才买…） | 自定义规则 DSL（`run_custom.py --rules`，[strategies.md](strategies.md)） | 2 |
+| 让建议仓位符合我的风险偏好 | 用户风险画像（`run_profile.py --set`，[scoring.md](scoring.md)） | 1 |
 | 降低回撤、追求更稳 | 用例 3 | 3 |
 | 知道策略在股灾/熊市里会怎样 | 用例 3 的 `--stress` 压力测试 | 3 |
 | 应对下跌、震荡行情 | 用例 4 | 3 |
@@ -150,7 +160,7 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot
 cd scripts
 
 # 一键对比全部策略（并排指标表，默认按夏普排序）
-uv run python run_compare.py --symbol 600000.SH --count 500
+uv run python run_compare.py --symbol 600000.SH --count 1250
 
 # 只比感兴趣的子集 + 净值叠加图 + HTML 对比报告
 uv run python run_compare.py --symbol 600000.SH --strategies ma_cross,macd,turtle \
@@ -193,14 +203,14 @@ uv run python run_backtest.py --symbol 600519.SH --strategy ma_cross \
 
 ```bash
 # 无风控
-uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 500
+uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 1250
 
 # 加止损 5% + 止盈 15%
-uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 500 \
+uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 1250 \
   --stop-loss 0.05 --take-profit 0.15
 
 # 波动率目标 15%（连续仓位，按波动缩放头寸）
-uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 500 \
+uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 1250 \
   --vol-target 0.15
 
 # 选定风控方案后，加 --stress 看它在历史极端行情下的表现
@@ -223,10 +233,10 @@ uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 1000 \
 
 ```bash
 # 趋势策略开启做空（死叉时持有空头）
-uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --count 500 --allow-short
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --count 1250 --allow-short
 
 # 做空 + 止损，控制反向波动风险
-uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 500 \
+uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 1250 \
   --allow-short --stop-loss 0.08
 ```
 
@@ -246,7 +256,7 @@ uv run python run_backtest.py --symbol 600000.SH --strategy macd --count 500 \
 SYMS=600000.SH,000001.SZ,600519.SH,000858.SZ,600809.SH
 for r in momentum equal_weight inverse_vol; do
   echo "=== $r ==="
-  uv run python run_portfolio.py --symbols $SYMS --strategy $r --count 500 \
+  uv run python run_portfolio.py --symbols $SYMS --strategy $r --count 1250 \
     | grep -E "累计收益率|夏普比率|最大回撤|调仓次数"
 done
 ```
@@ -315,7 +325,7 @@ print(format_report(result.metrics))
 | 定投（定期定额） | `run_dca.py --symbol 600000.SH --plot` | 按周期定额投入，看资金加权 IRR 与一次性投入对比 | [dca.md](dca.md) |
 | 事件研究 | `run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30 --plot` | 看财报日/政策日前后的平均超额反应（AAR/CAAR） | [backtesting.md](backtesting.md) |
 | 市场扫描 | `run_scan.py --symbols 600000.SH,600519.SH,000001.SZ,601398.SH --top 5` | 对一篮子/股票池跑纪律评分漏斗，筛出「是/观察」候选 | [scoring.md](scoring.md) |
-| 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（六维硬阈值漏斗，A 股免费） | [scoring.md](scoring.md) |
+| 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（六维硬阈值漏斗，A 股免费，`--valuation-pct` 估值分位增强） | [scoring.md](scoring.md) |
 
 （上表命令均以 `uv run python` 前缀在 `scripts/` 下运行，如 `uv run python run_factor.py ...`。）
 
@@ -334,7 +344,7 @@ print(format_report(result.metrics))
 
 目标：从候选池出发，先单标的选优，再组合成轮动策略，最后接到每日信号——把前面各级能力串成一条研究闭环。
 
-1. **筛池**：三条路径任选或叠加——用 `run_screener.py` 基本面价值筛选（低估值/高质量/高分红），或用财务指标筛优质股（见 [data-fetching.md](data-fetching.md) 的「筛选优质股票」），或用 `run_scan.py` 对股票池跑纪律评分漏斗，取「是/观察」档候选。
+1. **筛池**：三条路径任选或叠加——用 `run_screener.py` 基本面价值筛选（低估值/高质量/高分红，`--valuation-pct` 可加估值分位增强），或用财务指标筛优质股（见 [data-fetching.md](data-fetching.md) 的「筛选优质股票」），或用 `run_scan.py` 对股票池跑纪律评分漏斗，取「是/观察」档候选。
 2. **选策略**：对候选逐个 `run_compare.py` 一键对比全部策略（用例 1）。
 3. **调参 + 防过拟合**：对胜出策略 `run_optimize.py` 寻优，看 DSR；再用 `run_validate.py` 做走步样本外验证（用例 2）。
 4. **组合**：把入选标的放入 `run_portfolio.py` 做动量轮动，与等权基准对比（用例 5）。
@@ -345,9 +355,9 @@ print(format_report(result.metrics))
 **另一条平行的决策闭环**（不写策略代码、纯纪律驱动，适合日常例行）：
 
 ```bash
-# 扫描筛候选 → 单标的评分复核（含交易计划与回放验证）→ 按评分裁决纸面跟踪
+# 扫描筛候选 → 单标的评分复核（含交易计划、估值分位、宏观环境与回放验证）→ 按评分裁决纸面跟踪
 uv run python run_scan.py --symbols 600000.SH,600519.SH,601398.SH --top 3
-uv run python run_score.py --symbol 600519.SH --replay 120
+uv run python run_score.py --symbol 600519.SH --valuation-pct --macro --replay 120
 uv run python run_paper.py --symbol 600519.SH --mode score
 ```
 
@@ -369,12 +379,12 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 
 | 约定 | 说明 |
 |------|------|
-| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部 18 个命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` |
+| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部 23 个命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` |
 | JSON 结构 | 顶层固定含 `schema`（当前 `alpha-forge/1`）、`command`、`generated_at` 三个元信息键，按 `command` 分发解析；字段只增不删 |
-| Agent 友好字段 | 所有命令的 JSON 输出含 **`summary`**（1–2 句自然语言结论，可直接引用或改写后转述给用户）和 **`next_steps`**（结构化后续动作列表，每项含 `action`/`reason`/`command`，据此程序化链式引导） |
+| Agent 友好字段 | 所有命令的 JSON 输出含 **`summary`**（1–2 句自然语言结论，可直接引用或改写后转述给用户）和 **`next_steps`**（结构化后续动作列表，每项含 `action`/`reason`/`command`，部分项含可选 `condition`，仅条件成立时才提议）。`run_score` 额外含 **`evidence`** 结构化证据链（编号可引用，避免转述事实性错误） |
 | 能力发现 | `run_list.py --json`（`command=list`）返回全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，agent 可据此动态构造后续命令 |
 | 退出码 | 0=成功；1=运行错误（数据/网络/计算，含非法策略参数组合）；2=参数错误；130=用户中断。失败信息以 `[error] ` 前缀输出到 stderr |
-| 配置文件 | 全部 18 个 `run_*.py` 支持 `--config <TOML>`（显式命令行参数优先；未知键报错并给出近似建议） |
+| 配置文件 | 全部 23 个 `run_*.py` 支持 `--config <TOML>`（显式命令行参数优先；未知键报错并给出近似建议） |
 | 输出命名 | 图表/报告默认落 `outputs/<命令>_<关键参数>.png|html`，同配置重跑才覆盖；`--output` 可显式指定 |
 | 调试 | 设置 `ALPHA_FORGE_DEBUG=1` 可在出错时查看完整 Python 堆栈 |
 
@@ -385,15 +395,19 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 用户：“帮我看看茅台现在能不能买？”
 
 ```bash
-# 1. 推断标的代码（茅台 → 600519.SH），跑纪律评分
-uv run python run_score.py --symbol 600519.SH --json > score.json
+# 1. 推断标的代码（茅台 → 600519.SH），跑纪律评分（可加估值分位与宏观环境）
+uv run python run_score.py --symbol 600519.SH --valuation-pct --macro --json > score.json
 # 2. 取关键字段组织回答：
 #    .summary           自然语言结论（可直接引用或改写）
 #    .verdict_cn        结论（是/观察/否/持仓需减风险/无法评分）
+#    .valuation         估值历史分位（含 pe_percentile/pb_percentile/valuation_label）
+#    .macro_regime_cn   宏观环境（经济扩张/宽松有利/滞胀压力/收缩衰退）
 #    .layers[]          各层理由（哪一层拦截、为什么）
+#    .evidence[]        结构化证据链（id/indicator/value/threshold/claim，深度解读时引用编号）
 #    .alpha_score       排名分（相对强弱，非涨跌概率）
 #    .plan              入场/止损/2R/3R 交易计划价位（结论为「是」时）
-#    .next_steps[]      结构化后续动作（action/reason/command）
+#    .profile           用户风险画像上下文（如已登记）
+#    .next_steps[]      结构化后续动作（action/reason/command，部分含 condition）
 ```
 
 转述模板（结论 + 理由 + 计划 + 局限性，四段缺一不可）：
@@ -407,6 +421,8 @@ uv run python run_score.py --symbol 600519.SH --json > score.json
 
 > **Agent 提示**：优先使用 `.summary` 字段作为转述起点，再根据 `.next_steps` 主动提议下一步，
 > 而非等待用户追问。链式引导话术模板见 [SKILL.md「链式引导模板」](../SKILL.md)。
+> **深度解读时引用 `.evidence`**：如「收盘低于 MA200（E02）所以被否决」，而非自行推断指标值；
+> **`.next_steps` 含 `condition` 的项**（如 `verdict != no`）仅在条件成立时才向用户提议。
 
 ### 场景 A：批量回测 → 解析指标 → 选优复跑
 
@@ -453,7 +469,50 @@ for s in ma_cross macd turtle; do
 done
 ```
 
-### 场景 D：错误处理分支
+### 场景 D：用户描述策略 → 生成规则 → 回测验证（自定义 DSL）
+
+用户：“帮我试个策略：5 日线上穿 20 日线且 RSI 不过热时买，死叉或 RSI 超买时卖。”
+
+```bash
+# 1. agent 把自然语言转成 TOML 规则文件（指标/运算符白名单用 run_list.py --json 查）
+cat > my_rule.toml <<'EOF'
+[meta]
+name = "ma5_20_rsi"
+description = "金叉且 RSI 未过热买入，死叉或超买卖出"
+
+[indicators.fast]
+type = "sma"
+period = 5
+
+[indicators.slow]
+type = "sma"
+period = 20
+
+[indicators.rsi14]
+type = "rsi"
+period = 14
+
+[entry]
+logic = "and"
+conditions = ["fast crosses_above slow", "rsi14 < 70"]
+
+[exit]
+logic = "or"
+conditions = ["fast crosses_below slow", "rsi14 > 80"]
+EOF
+
+# 2. 回测验证（与内置策略同一引擎，含成本/风控/JSON）
+uv run python run_custom.py --symbol 600000.SH --rules my_rule.toml --json > custom.json
+# .summary 为结论；.rules 为规则摘要；.next_steps 含「对比内置策略」与「验证」
+
+# 3. 建议与内置策略对比 + 样本外验证（自定义规则未经样本外验证）
+uv run python run_compare.py --symbol 600000.SH --json
+```
+
+> 规则格式详见 [strategies.md「自定义规则策略」](strategies.md)；**不执行任意代码**，
+> 非法规则（未知指标/未定义引用/语法错）报友好错误。
+
+### 场景 E：错误处理分支
 
 ```bash
 uv run python run_backtest.py --symbol 600000 --strategy ma_cross --json > out.json

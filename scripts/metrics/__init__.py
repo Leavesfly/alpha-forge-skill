@@ -41,15 +41,22 @@ def max_drawdown(equity: pd.Series) -> float:
 
 
 def max_drawdown_duration(equity: pd.Series) -> int:
-    """最长回撤持续期：净值低于前高的最长连续周期数。"""
+    """最长回撤持续期：净值低于前高的最长连续周期数。
+
+    使用向量化分组计数，避免纯 Python 循环。
+    """
     if equity.empty:
         return 0
     below = (equity < equity.cummax()).to_numpy()
-    longest = current = 0
-    for flag in below:
-        current = current + 1 if flag else 0
-        longest = max(longest, current)
-    return int(longest)
+    if not below.any():
+        return 0
+    # 利用“非回撤”位置切分，求各连续段的长度
+    breaks = np.where(~below)[0]
+    if len(breaks) == 0:
+        return int(len(below))
+    # 各段长度 = 相邻 break 的差值（包含头尾边界）
+    segments = np.diff(np.concatenate(([-1], breaks, [len(below)]))) - 1
+    return int(segments.max())
 
 
 #: 盈亏比/欧米茄无亏损时的封顶值（避免 inf 破坏 JSON 序列化）

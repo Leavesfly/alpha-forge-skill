@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lag-days", type=int, default=60, help="财务因子报告期滞后天数，默认 60")
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期，默认 20")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     add_cost_args(parser)
     parser.add_argument("--ic", action="store_true", help="额外输出因子 IC/IR、衰减与相关性分析")
     parser.add_argument("--ic-horizon", type=int, default=5, help="IC 前瞻收益周期，默认 5")

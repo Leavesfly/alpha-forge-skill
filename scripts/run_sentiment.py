@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", required=True, help="A 股标的代码，如 600000.SH")
     parser.add_argument("--stage", required=True, choices=["fetch", "backtest"], help="执行阶段")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=250, help="回测 K 线数量，默认 250")
+    parser.add_argument("--count", type=int, default=1250, help="回测 K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--entry", type=float, default=0.2, help="开仓情绪阈值，默认 0.2")
     parser.add_argument("--exit", type=float, default=0.05, help="中性带下限，默认 0.05")
     parser.add_argument("--hold", type=int, default=5, help="新闻情绪持续天数（前向填充上限），默认 5")

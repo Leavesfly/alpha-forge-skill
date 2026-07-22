@@ -111,7 +111,14 @@ class BacktestResult:
 
     @property
     def trades(self) -> pd.DataFrame:
-        """开平仓记录（时间、方向、价格）。"""
+        """开平仓记录。
+
+        Returns:
+            含 time/action/price 三列的 DataFrame：
+            - time: 交易发生时间；
+            - action: BUY（加仓/开多）或 SELL（减仓/开空）；
+            - price: 当期收盘价。
+        """
         pos = self.positions.fillna(0.0)
         change = pos.diff().fillna(pos)
         idx = change[change != 0].index
@@ -289,7 +296,6 @@ def run_backtest(
     )
 
 
-
 def _apply_risk_management(
     signals: pd.Series,
     close: pd.Series,
@@ -330,7 +336,8 @@ def _apply_risk_management(
             # 首次入场或方向反转：以当前 bar 收盘价为建仓价
             if pos == 0.0 or np.sign(tgt) != np.sign(pos):
                 pos, entry = tgt, price[i]
-            # 基于建仓价计算浮动盈亏（区分多空方向）
+            # 基于建仓价计算浮动盈亏（区分多空方向）：
+            # 多头浮盈 = price/entry - 1；空头浮盈 = entry/price - 1
             ret = price[i] / entry - 1.0 if pos > 0 else entry / price[i] - 1.0
             if (stop_loss and ret <= -stop_loss) or (take_profit and ret >= take_profit):
                 pos, entry, blocked = 0.0, np.nan, True

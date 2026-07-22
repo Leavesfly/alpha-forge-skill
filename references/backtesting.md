@@ -138,7 +138,7 @@ uv run python run_backtest.py --symbol AAPL.US --strategy macd --count 800 \
     --params fast=10 slow=30
 ```
 
-参数：`--symbol`、`--strategy`、`--period`（默认 1d）、`--count`（默认 500）、
+参数：`--symbol`、`--strategy`、`--period`（默认 1d）、`--count`（默认 1250，约 5 年）、
 `--params key=value ...`、`--commission`、`--slippage`、`--allow-short`、
 `--stop-loss`、`--take-profit`、`--vol-target`、`--vol-window`、`--max-leverage`、
 `--plot`、`--output`。

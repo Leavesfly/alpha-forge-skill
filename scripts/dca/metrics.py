@@ -14,9 +14,12 @@ from metrics import max_drawdown
 
 
 def _year_fractions(dates: pd.DatetimeIndex) -> np.ndarray:
-    """各现金流相对首笔的年化时间差（按 365 天/年）。"""
-    origin = dates[0]
-    return np.array([(d - origin).days / 365.0 for d in dates], dtype=float)
+    """各现金流相对首笔的年化时间差（按 365 天/年）。
+
+    使用向量化 timedelta 运算，避免逐元素 Python 循环。
+    """
+    delta_days = (dates - dates[0]).days.to_numpy(dtype=float)
+    return delta_days / 365.0
 
 
 def xirr(
@@ -77,7 +80,7 @@ def compute_dca_metrics(
     cashflow: pd.Series | None = None,
     dividend_income: float = 0.0,
     total_dividends: float = 0.0,
-) -> dict:
+) -> dict[str, float | int]:
     """计算定投绩效指标。
 
     Args:
@@ -131,8 +134,8 @@ def compute_lumpsum_metrics(
     close: pd.Series,
     total_invested: float,
     cost_rate: float,
-    dividends: "np.ndarray | None" = None,
-) -> dict:
+    dividends: np.ndarray | None = None,
+) -> dict[str, float]:
     """一次性投入基准：期初一次性投入 total_invested，持有到末期。
 
     作为定投的对照，直接回答「若有同等本金在期初全部买入」的结果。
@@ -188,9 +191,9 @@ def _cost_adjusted_nav(market_value: pd.Series, invested: pd.Series) -> pd.Serie
 
 
 def _year_span(index: pd.Index) -> float:
-    """索引首末的年化跨度（按 365 天/年）；非时间索引退化为 nan 提示。"""
+    """索引首末的年化跨度（按 365 天/年）；非时间索引退化为 0。"""
     if isinstance(index, pd.DatetimeIndex) and len(index) > 1:
-        return (index[-1] - index[0]).days / 365.0
+        return float((index[-1] - index[0]).days / 365.0)
     return 0.0
 
 

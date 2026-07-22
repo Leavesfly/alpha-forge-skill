@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"策略名逗号分隔（默认全部）：{','.join(STRATEGIES)}",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument(
         "--adjust",
         default="forward",

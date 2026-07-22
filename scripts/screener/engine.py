@@ -21,7 +21,7 @@ from .data import (
 
 @dataclass
 class ScreenCriteria:
-    """六维筛选阈值（0 表示不启用该维度）。"""
+    """六维筛选阈值（0 表示不启用该维度）+ 可选估值分位增强。"""
 
     max_pe: float = 20.0        # 市盈率上限
     max_pb: float = 3.0         # 市净率上限
@@ -30,9 +30,11 @@ class ScreenCriteria:
     min_div: float = 0.0        # 股息率下限(%)，0=不筛
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
     min_cap: float = 30.0       # 总市值下限(亿)
+    use_valuation_pct: bool = False  # 是否启用估值历史分位增强（逐只拉取，较慢）
+    valuation_lookback: int = 5      # 估值分位回看年数
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "max_pe": self.max_pe,
             "max_pb": self.max_pb,
             "min_roe": self.min_roe,
@@ -41,6 +43,10 @@ class ScreenCriteria:
             "min_growth": self.min_growth,
             "min_cap": self.min_cap,
         }
+        if self.use_valuation_pct:
+            d["use_valuation_pct"] = True
+            d["valuation_lookback"] = self.valuation_lookback
+        return d
 
 
 @dataclass
@@ -53,9 +59,10 @@ class ScreenResult:
     score: float            # 综合评分 0~100
     passed: bool            # 是否通过全部启用维度
     fail_reasons: list[str] = field(default_factory=list)
+    valuation: dict | None = None  # 估值历史分位（可选）
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "symbol": self.symbol,
             "name": self.name,
             "score": round(self.score, 1),
@@ -63,6 +70,9 @@ class ScreenResult:
             "fail_reasons": self.fail_reasons,
             **{k: _safe_round(v) for k, v in self.metrics.items()},
         }
+        if self.valuation is not None:
+            d["valuation"] = self.valuation
+        return d
 
 
 def _safe_round(v, ndigits: int = 2):
@@ -461,6 +471,12 @@ def run_screen(
         n_phase1 = len(survivors)
         all_results = screen_astock_phase2(survivors, criteria, log, on_progress)
 
+    # 估值分位增强（可选，逐只拉取历史 PE/PB）
+    if criteria.use_valuation_pct and all_results:
+        all_results = _enrich_valuation(
+            all_results, criteria.valuation_lookback, log, on_progress
+        )
+
     # 排序
     all_results = _sort_results(all_results, sort_by)
     candidates = all_results[:top]
@@ -528,6 +544,45 @@ def _screen_astock_manual(
     passed_results = [r for r in results if r.passed]
     passed_results.sort(key=lambda r: r.score, reverse=True)
     return passed_results
+
+
+def _enrich_valuation(
+    results: list[ScreenResult],
+    lookback_years: int,
+    log: Callable[..., None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> list[ScreenResult]:
+    """为候选标的附加估值历史分位（逐只拉取，较慢）。
+
+    估值分位作为评分加成：低分位（便宜）加分，高分位（贵）减分。
+    加成幅度：±10 分（在原始综合评分基础上）。
+    """
+    from data.valuation import fetch_valuation_percentile
+
+    if log:
+        log(f"估值分位增强：拉取 {len(results)} 只候选的历史 PE/PB（近 {lookback_years} 年）...")
+
+    enriched: list[ScreenResult] = []
+    for i, r in enumerate(results):
+        vp = fetch_valuation_percentile(r.symbol, lookback_years)
+        if vp is not None:
+            r.valuation = vp.to_dict()
+            # 评分加成：分位越低（越便宜）加分越多
+            pcts = [p for p in (vp.pe_percentile, vp.pb_percentile) if p is not None]
+            if pcts:
+                avg_pct = sum(pcts) / len(pcts)
+                # 分位 0% → +10，分位 50% → 0，分位 100% → -10
+                bonus = (0.5 - avg_pct) * 20.0
+                r.score = max(0.0, min(100.0, r.score + bonus))
+        enriched.append(r)
+        if on_progress:
+            on_progress(i + 1, r.symbol)
+
+    if log:
+        n_ok = sum(1 for r in enriched if r.valuation is not None)
+        log(f"估值分位增强完成：{n_ok}/{len(results)} 只成功获取")
+
+    return enriched
 
 
 def _sort_results(results: list[ScreenResult], sort_by: str) -> list[ScreenResult]:

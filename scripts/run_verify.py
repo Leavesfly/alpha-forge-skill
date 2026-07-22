@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--period", default="1d", choices=["1d", "1w", "1M"],
         help="K 线周期（仅日/周/月），默认 1d",
     )
-    parser.add_argument("--count", type=int, default=500, help="拉取 K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="拉取 K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument(
         "--threshold", type=float, default=DEFAULT_PRICE_THRESHOLD,

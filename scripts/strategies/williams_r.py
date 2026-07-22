@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
+from .indicators import extract_ohlcv
 
 
 class WilliamsRStrategy(Strategy):
@@ -44,13 +45,13 @@ class WilliamsRStrategy(Strategy):
         upper = float(self.params["upper"])
         allow_short = bool(self.params.get("allow_short"))
 
-        close = df["close"].astype(float)
-        high = df["high"].astype(float) if "high" in df.columns else close
-        low = df["low"].astype(float) if "low" in df.columns else close
+        _, high, low, close = extract_ohlcv(df)
 
+        # %R = (HH - C) / (HH - LL) × -100，取值 [-100, 0]
+        # HH/LL 用 shift(1) 历史窗口，不含当前 bar
         hh = high.rolling(period).max().shift(1)
         ll = low.rolling(period).min().shift(1)
-        span = (hh - ll).replace(0.0, np.nan)
+        span = (hh - ll).replace(0.0, np.nan)  # 防除零
         wr = ((hh - close) / span * -100.0).to_numpy()
 
         n = len(close)

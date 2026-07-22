@@ -15,18 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
-
-
-def _atr(df: pd.DataFrame, window: int) -> pd.Series:
-    """平均真实波幅（历史窗口，shift(1) 防前视）。"""
-    close = df["close"].astype(float)
-    high = df["high"].astype(float) if "high" in df.columns else close
-    low = df["low"].astype(float) if "low" in df.columns else close
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return tr.rolling(window).mean().shift(1)
+from .indicators import compute_atr
 
 
 class KeltnerStrategy(Strategy):
@@ -53,8 +42,10 @@ class KeltnerStrategy(Strategy):
         allow_short = bool(self.params.get("allow_short"))
 
         close = df["close"].astype(float)
+        # 中轨：EMA 的历史值（shift 1 防前视）
         mid = close.ewm(span=window, adjust=False).mean().shift(1)
-        atr = _atr(df, window)
+        atr = compute_atr(df, window)
+        # 上下轨 = 中轨 ± 倍数 × ATR
         upper = (mid + atr_mult * atr).to_numpy()
         lower = (mid - atr_mult * atr).to_numpy()
         mid_np = mid.to_numpy()

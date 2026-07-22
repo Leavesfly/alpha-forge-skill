@@ -1,4 +1,4 @@
-"""数据层：透明缓存、复权口径管理、多数据源抽象、交叉验证、分红与财务数据。"""
+"""数据层：透明缓存、复权口径管理、多数据源抽象、交叉验证、分红、财务、估值分位与宏观数据。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,13 @@ from .cache import (
 )
 from .dividends import fetch_dividends
 from .fundamentals import fetch_fundamentals
+from .macro import (
+    MacroRegime,
+    MacroSnapshot,
+    detect_macro_regime,
+    fetch_macro_snapshot,
+    format_macro_regime,
+)
 from .sources import (
     AkshareSource,
     BaostockSource,
@@ -18,6 +25,11 @@ from .sources import (
     TickFlowSource,
     get_sources,
     source_label,
+)
+from .valuation import (
+    ValuationPercentile,
+    fetch_valuation_percentile,
+    format_valuation,
 )
 from .verify import (
     ColumnDiff,
@@ -42,4 +54,14 @@ __all__ = [
     "ColumnDiff",
     "VerifyResult",
     "verify_symbol",
+    # 估值分位
+    "ValuationPercentile",
+    "fetch_valuation_percentile",
+    "format_valuation",
+    # 宏观数据
+    "MacroRegime",
+    "MacroSnapshot",
+    "detect_macro_regime",
+    "fetch_macro_snapshot",
+    "format_macro_regime",
 ]

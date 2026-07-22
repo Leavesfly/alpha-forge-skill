@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="策略名称",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument(
         "--adjust",
         default="forward",
@@ -261,7 +261,8 @@ def main() -> None:
              "command": f"run_compare.py --symbol {args.symbol} --json"},
             {"action": "optimize", "reason": "寻找最优参数（含 DSR 过拟合诊断）",
              "command": f"run_optimize.py --symbol {args.symbol} --strategy {args.strategy} --json"},
-            {"action": "validate", "reason": "样本外验证策略稳健性",
+            {"action": "validate", "reason": "策略跑输基准，需样本外验证是否值得使用",
+             "condition": "metrics.sharpe < benchmark_metrics.sharpe",
              "command": f"run_validate.py --symbol {args.symbol} --strategy {args.strategy} --json"},
         )
         payload = attach_meta(payload, command="backtest")

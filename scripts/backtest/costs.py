@@ -76,6 +76,14 @@ class CostModel:
     ) -> pd.Series:
         """按买入/卖出换手计提逐周期成本。
 
+        计算公式：
+            cost = (buy + sell) × (commission + slippage + transfer_fee)
+                 + sell × stamp_duty
+
+        当 stamp_duty=0 且 transfer_fee=0 时，简化为：
+            cost = total_turnover × (commission + slippage)
+        与旧引擎完全一致。
+
         Args:
             buy_turnover: 买入方向换手（>=0）。
             sell_turnover: 卖出方向换手（>=0）。

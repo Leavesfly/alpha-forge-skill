@@ -197,6 +197,92 @@
 | 机器学习 | 技术指标特征 + LightGBM 方向预测，走步（walk-forward）重训练与样本外验证；支持三重障碍标注（--label triple）与 meta-labeling 信号过滤（--meta <策略>） | `run_ml.py` | [ml-strategy.md](./ml-strategy.md) |
 | 新闻情绪 | akshare 抓 A 股新闻 + AI（agent LLM）情绪打分，情绪信号回测 | `run_sentiment.py`（两阶段） | [sentiment.md](./sentiment.md) |
 | 定投（定期定额/DCA） | 按周期（日/周/月）定额注入现金、份额累积，资金加权 XIRR 计量；含智能定投/超跌加码/价值平均增强模式，双基准对比 | `run_dca.py --mode <name>` | [dca.md](./dca.md) |
+| 自定义规则（DSL） | TOML 声明式规则：白名单指标 + 受限条件表达式，入场/离场逻辑 and/or | `run_custom.py --rules <file>` | 见下文 |
+
+## 自定义规则策略（DSL，Agent 可生成）
+
+内置 14 个策略是「固定菜单」；**自定义规则 DSL** 让用户（或 Agent）用自然语言
+描述策略想法，生成 TOML 规则文件后直接回测验证——策略空间不再受限。对应
+CLI：[`run_custom.py`](../scripts/run_custom.py)，引擎：[`strategies/custom.py`](../scripts/strategies/custom.py)。
+
+### 规则文件结构（三段式）
+
+```toml
+[meta]
+name = "golden_cross_rsi"
+description = "金叉且 RSI 未过热时买入，死叉或 RSI 超买时卖出"
+
+# 指标定义（白名单算子，按定义顺序计算，可引用其他指标作 source）
+[indicators.fast_ma]
+type = "sma"
+period = 10
+
+[indicators.slow_ma]
+type = "sma"
+period = 30
+
+[indicators.rsi14]
+type = "rsi"
+period = 14
+
+# 入场条件（全部满足 = and）
+[entry]
+logic = "and"
+conditions = [
+    "fast_ma crosses_above slow_ma",   # 金叉
+    "rsi14 < 70",                       # RSI 未过热
+]
+
+# 离场条件（任一满足 = or）
+[exit]
+logic = "or"
+conditions = [
+    "fast_ma crosses_below slow_ma",   # 死叉
+    "rsi14 > 80",                       # RSI 超买
+]
+```
+
+### 指标白名单
+
+| 类型 | 参数 | 说明 |
+|------|------|------|
+| `sma` / `ema` | `period`, `source`(默认 close) | 简单/指数均线 |
+| `rsi` | `period` | Wilder RSI |
+| `macd_line` / `macd_signal` / `macd_hist` | `fast`/`slow`/`signal` | MACD 三线 |
+| `bollinger_upper` / `bollinger_mid` / `bollinger_lower` | `period`, `std`(默认 2) | 布林带三轨 |
+| `atr` | `period` | 平均真实波幅 |
+| `donchian_upper` / `donchian_lower` | `period` | 唐奇安通道上下轨 |
+| `kdj_k` / `kdj_d` | `period`/`k_smooth`/`d_smooth` | KDJ 的 K/D 值 |
+| `momentum` / `roc` | `period` | 动量（差值）/ 变动率 |
+| `close`/`open`/`high`/`low`/`volume` | — | 原始 OHLCV 列 |
+
+条件中可直接引用 `close/open/high/low/volume` 而无需在 `[indicators]` 中定义。
+
+### 条件表达式（受限语法）
+
+格式：`<指标名或数值> <运算符> <指标名或数值>`。运算符：
+`>` / `<` / `>=` / `<=` / `crosses_above`（金叉）/ `crosses_below`（死叉）。
+`[entry]`/`[exit]` 各自的 `logic` 控制条件间是 `and` 还是 `or` 组合。
+
+### 安全设计
+
+- **不执行任意代码**：仅解析受限表达式，无 `eval`；
+- **白名单约束**：未知指标类型/未定义引用/语法错误均报友好错误（附可用指标与运算符清单）；
+- **预热期保护**：指标窗口不足期间信号强制为 0，不入场。
+
+### 运行
+
+```bash
+# 用示例规则回测（金叉 + RSI 过滤）
+uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml --plot
+
+# 结构化 JSON（含规则摘要 rules 字段）
+uv run python run_custom.py --symbol AAPL.US --rules my_rule.toml --json
+```
+
+指标/运算符白名单可用 `run_list.py --json` 的 `custom_dsl` 字段查询。
+自定义规则**未经样本外验证**，回测结果不代表未来收益；建议与内置策略对比
+（`run_compare.py`）并用 `run_validate.py` 验证稳健性。
 
 ## 扩展新策略
 

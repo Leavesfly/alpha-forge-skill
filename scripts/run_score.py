@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="基准代码；默认按市场自动选择（A股 510300.SH / 港股 02800.HK / 美股 SPY.US）",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d（评分按日线纪律设计）")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500（评分至少需 250 根）")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年，评分至少需 250 根）")
     parser.add_argument("--brief", action="store_true", help="简短模式：只输出结论与计划价位")
     parser.add_argument(
         "--replay",
@@ -112,8 +112,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="跳过基本面否决层（ST/连续亏损/资不抵债检查）；默认启用",
     )
-    parser.add_argument("--capital", type=float, default=100_000.0, help="可用资金（用于交易计划建议仓位），默认 10 万；0 关闭建议仓位")
-    parser.add_argument("--risk-pct", type=float, default=0.01, help="单笔交易风险预算占资金比例，默认 0.01（止损时约亏资金的 1%%）")
+    parser.add_argument("--capital", type=float, default=None, help="可用资金（用于交易计划建议仓位）；默认读用户画像，无画像时 10 万；0 关闭建议仓位")
+    parser.add_argument("--risk-pct", type=float, default=None, help="单笔交易风险预算占资金比例；默认读用户画像，无画像时 0.01（止损时约亏资金的 1%%）")
+    # 估值分位与宏观环境（可选上下文）
+    parser.add_argument(
+        "--valuation-pct",
+        action="store_true",
+        help="附加估值历史分位：拉取近 N 年 PE/PB 历史，计算当前估值在自身历史中的位置",
+    )
+    parser.add_argument(
+        "--valuation-lookback", type=int, default=5,
+        help="估值分位回看年数，默认 5",
+    )
+    parser.add_argument(
+        "--macro",
+        action="store_true",
+        help="附加宏观环境上下文：拉取国债利率/CPI/PMI，判断宏观 regime（扩张/宽松/滞胀/收缩）",
+    )
     parser.add_argument("--plot", action="store_true", help="生成评分图（价格 + 均线 + 计划价位；回放时背景按结论着色）")
     parser.add_argument("--output", default=None, help="图表输出路径；默认 ../outputs/score_<标的>.png")
     add_json_arg(parser)
@@ -237,7 +252,7 @@ def _fetch_scoring_fundamentals(symbol: str, log) -> dict | None:
         return None
 
 
-def _print_score_report(args, result, regime, bench_symbol, log) -> None:
+def _print_score_report(args, result, regime, bench_symbol, log, valuation=None, macro_regime=None) -> None:
     """终端输出（委托 scoring.present 模块）。"""
     print_score_report(
         symbol=args.symbol,
@@ -246,6 +261,8 @@ def _print_score_report(args, result, regime, bench_symbol, log) -> None:
         bench_symbol=bench_symbol,
         brief=args.brief,
         log=log,
+        valuation=valuation,
+        macro_regime=macro_regime,
     )
 
 
@@ -290,7 +307,7 @@ def _run_calibrate(args, df, bench_close, log) -> dict:
     return payload
 
 
-def _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload) -> dict:
+def _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload, valuation=None, macro_regime=None) -> dict:
     """构建 --json 输出的完整 payload（含 summary/next_steps）。"""
     digest = hashlib.sha1(
         f"{args.symbol}|{args.period}|{args.count}|{bench_symbol}|{result.asof}".encode()
@@ -310,27 +327,46 @@ def _build_json_payload(args, result, regime, bench_symbol, replay_payload, cali
         f"评分是纪律过滤而非涨跌预测，不构成投资建议。"
     )
     next_steps = build_next_steps(
-        {"action": "paper", "reason": "按评分裁决每日纸面跟踪",
+        {"action": "paper", "reason": "结论为是/观察，按评分裁决每日纸面跟踪",
+         "condition": "verdict != no",
          "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
         {"action": "replay", "reason": "回放验证评分有效性",
          "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
         {"action": "backtest", "reason": "用策略回测验证历史表现",
          "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},
     )
-    return attach_meta(
-        {
-            **result.to_dict(),
-            "period": args.period,
-            "count": args.count,
-            "regime": regime,
-            "replay": replay_payload,
-            "calibrate": calibrate_payload,
-            "data_hash": digest,
-            "summary": summary,
-            "next_steps": next_steps,
-        },
-        command="score",
-    )
+    payload = {
+        **result.to_dict(),
+        "period": args.period,
+        "count": args.count,
+        "regime": regime,
+        "replay": replay_payload,
+        "calibrate": calibrate_payload,
+        "data_hash": digest,
+        "summary": summary,
+        "next_steps": next_steps,
+    }
+    # 估值分位（可选）
+    if valuation is not None:
+        payload["valuation"] = valuation.to_dict()
+    # 宏观 regime（可选）
+    if macro_regime is not None:
+        payload.update(macro_regime.to_dict())
+    # 用户风险画像上下文（如已登记）
+    from profile import load_profile as _load_profile
+
+    try:
+        _prof = _load_profile()
+    except RuntimeError:
+        _prof = None
+    if _prof:
+        payload["profile"] = {
+            "risk_tolerance": _prof.get("risk_tolerance"),
+            "capital": _prof.get("capital"),
+            "risk_pct": _prof.get("risk_pct"),
+            "max_drawdown": _prof.get("max_drawdown"),
+        }
+    return attach_meta(payload, command="score")
 
 
 
@@ -386,13 +422,37 @@ def main() -> None:
 
     regime = detect_regime(df["close"])
 
+    # 估值历史分位（可选）
+    valuation = None
+    if args.valuation_pct:
+        from data.valuation import fetch_valuation_percentile
+
+        log("拉取估值历史分位...")
+        valuation = fetch_valuation_percentile(args.symbol, args.valuation_lookback)
+        if valuation is None:
+            print(f"[warn] {args.symbol} 估值历史数据不可用，跳过估值分位", file=sys.stderr)
+
+    # 宏观环境上下文（可选）
+    macro_regime = None
+    if args.macro:
+        from data.macro import detect_macro_regime
+
+        log("拉取宏观数据（国债利率/CPI/PMI）...")
+        macro_regime = detect_macro_regime()
+
     # 建议仓位：风险预算法（资金 × 风险比例 / R）
-    if result.plan is not None and args.capital > 0:
+    # 资金/风险比例优先级：显式 CLI > 用户画像 > 内置默认
+    from profile import effective_risk_params
+
+    risk_params = effective_risk_params(log=log if (args.capital is None or args.risk_pct is None) else None)
+    capital = args.capital if args.capital is not None else (risk_params["capital"] or 100_000.0)
+    risk_pct = args.risk_pct if args.risk_pct is not None else (risk_params["risk_pct"] or 0.01)
+    if result.plan is not None and capital > 0:
         lot = 100 if is_astock(args.symbol) else 1
-        attach_position_sizing(result.plan, args.capital, args.risk_pct, lot_size=lot)
+        attach_position_sizing(result.plan, capital, risk_pct, lot_size=lot)
 
     # 终端输出
-    _print_score_report(args, result, regime, bench_symbol, log)
+    _print_score_report(args, result, regime, bench_symbol, log, valuation, macro_regime)
 
     # 历史回放验证
     replay_payload = None
@@ -423,7 +483,7 @@ def main() -> None:
         log(f"图表已保存：{path}")
 
     if args.json is not None:
-        payload = _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload)
+        payload = _build_json_payload(args, result, regime, bench_symbol, replay_payload, calibrate_payload, valuation, macro_regime)
         emit_json(args.json, payload, log)
 
 

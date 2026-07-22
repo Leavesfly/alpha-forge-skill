@@ -34,6 +34,8 @@ def print_score_report(
     bench_symbol: str | None,
     brief: bool,
     log: Callable[..., None],
+    valuation=None,
+    macro_regime=None,
 ) -> None:
     """终端输出：裁决式结论先行 + 分层拆解 + 持仓状态 + 交易计划。"""
     from research.regime import format_regime
@@ -44,6 +46,19 @@ def print_score_report(
     log(f"========== {symbol} 纪律评分（截至 {result.asof}）==========")
     log(f"结论          : {result.verdict_cn}")
     log(format_regime(regime))
+
+    # 估值历史分位（可选）
+    if valuation is not None:
+        from data.valuation import format_valuation
+
+        log(format_valuation(valuation))
+
+    # 宏观环境上下文（可选）
+    if macro_regime is not None:
+        from data.macro import format_macro_regime
+
+        log(format_macro_regime(macro_regime))
+
     if result.alpha_score is not None:
         comp = result.components
         parts = [f"动量 {comp['momentum']['score']:.0f}"]

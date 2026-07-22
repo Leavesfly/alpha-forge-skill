@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
+from .indicators import compute_atr, extract_ohlcv
 
 
 class SuperTrendStrategy(Strategy):
@@ -39,20 +40,16 @@ class SuperTrendStrategy(Strategy):
         mult = float(self.params["mult"])
         allow_short = bool(self.params.get("allow_short"))
 
-        close = df["close"].astype(float)
-        high = df["high"].astype(float) if "high" in df.columns else close
-        low = df["low"].astype(float) if "low" in df.columns else close
+        _, high, low, close = extract_ohlcv(df)
 
-        prev_close = close.shift(1)
-        tr = pd.concat(
-            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-        ).max(axis=1)
-        atr = tr.rolling(period).mean().shift(1)
+        # ATR 使用历史窗口（shift 1）防止前视偏差
+        atr = compute_atr(df, period).to_numpy()
 
-        hl2 = (high + low) / 2.0
-        basic_upper = (hl2 + mult * atr).to_numpy()
-        basic_lower = (hl2 - mult * atr).to_numpy()
+        # 基础上下轨：中价 ± 倍数 × ATR
+        hl2 = ((high + low) / 2.0).to_numpy()
         c = close.to_numpy()
+        basic_upper = hl2 + mult * atr
+        basic_lower = hl2 - mult * atr
 
         n = len(c)
         out = np.zeros(n)

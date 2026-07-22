@@ -27,6 +27,7 @@ class EnvConfig:
         retries: ALPHA_FORGE_RETRIES 数据拉取重试次数（0 关闭）。
         output_dir: ALPHA_FORGE_OUTPUT_DIR 覆盖默认输出目录。
         account_file: ALPHA_FORGE_ACCOUNT_FILE 覆盖账户文件路径。
+        profile_file: ALPHA_FORGE_PROFILE_FILE 覆盖用户风险画像文件路径。
     """
 
     debug: bool = False
@@ -34,6 +35,7 @@ class EnvConfig:
     retries: int = 2
     output_dir: str = ""
     account_file: str = ""
+    profile_file: str = ""
 
 
 _cached: EnvConfig | None = None
@@ -58,6 +60,7 @@ def get_env_config() -> EnvConfig:
             retries=max(0, retries),
             output_dir=os.environ.get("ALPHA_FORGE_OUTPUT_DIR", ""),
             account_file=os.environ.get("ALPHA_FORGE_ACCOUNT_FILE", ""),
+            profile_file=os.environ.get("ALPHA_FORGE_PROFILE_FILE", ""),
         )
     return _cached
 

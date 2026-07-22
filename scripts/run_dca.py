@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="定投模式：fixed/ma/smart/dip/value_avg，默认 fixed",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     add_cost_args(parser)
     parser.add_argument("--ma-window", type=int, default=60, help="ma/smart 模式均线窗口，默认 60")
     parser.add_argument("--boost", type=float, default=2.0, help="加码基准倍数（ma 低于均线倍数；smart/dip 分档以此缩放），默认 2.0")

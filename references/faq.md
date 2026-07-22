@@ -20,7 +20,7 @@
 | `ModuleNotFoundError`（pandas/tickflow 等） | 依赖未安装 | `cd scripts && uv sync`（跑测试需 `uv sync --group dev`） |
 | 未找到打分文件（run_sentiment backtest） | 跳过了 fetch/打分步骤 | 先 `--stage fetch` 生成模板，由 agent 填分后再 `--stage backtest`；无 agent 时加 `--use-lexicon` 词典兜底 |
 | 模拟盘结果与预期不符 | 改了 `--params` 但沿用旧状态文件 | `run_paper.py ... --reset` 重置模拟盘状态 |
-| `无法评分`（run_score / run_scan） | K 线不足 250 根，无法稳定计算年线/动量 | 增大 `--count`（建议 ≥ 500）；次新股上市未满一年属正常现象，不强行给分 |
+| `无法评分`（run_score / run_scan） | K 线不足 250 根，无法稳定计算年线/动量 | 增大 `--count`（建议 ≥ 1250）；次新股上市未满一年属正常现象，不强行给分 |
 | 财务因子被跳过（run_factor） | 无 API Key 或账号无财务数据权限 | 配置 Key 并开通权限；或仅用价格因子 `--factors momentum,low_vol` |
 | 图表中文显示为方框 | 系统缺中文字体 | 安装任一中文字体（如 PingFang/微软雅黑/Noto Sans CJK）后重跑 |
 | 退出码 2 | 命令行参数错误 | 看 stderr 的 `[error] ` 提示与 `--help` 示例段修正参数 |

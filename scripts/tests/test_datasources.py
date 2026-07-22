@@ -179,7 +179,9 @@ def test_yfinance_column_normalization(monkeypatch):
 
 
 def test_yfinance_backward_adjust_unsupported():
-    with pytest.raises(RuntimeError, match="后复权"):
+    from errors import DataFetchError
+
+    with pytest.raises(DataFetchError, match="后复权"):
         YFinanceSource().fetch("AAPL.US", "1d", 20, "backward")
 
 

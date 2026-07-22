@@ -13,15 +13,27 @@ from .base import Strategy
 
 
 def compute_rsi(close: pd.Series, period: int) -> pd.Series:
-    """Wilder 平滑法计算 RSI。"""
+    """Wilder 平滑法计算 RSI（Relative Strength Index）。
+
+    RSI = 100 - 100 / (1 + RS)，其中 RS = 平均涨幅 / 平均跌幅。
+    采用 Wilder 指数平滑（alpha = 1/period），等价于传统 SMA 递推。
+
+    Args:
+        close: 收盘价序列。
+        period: RSI 计算窗口（常用 14）。
+
+    Returns:
+        RSI 序列，取值 [0, 100]，初始窗口期为 NaN。
+    """
     delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
+    gain = delta.clip(lower=0.0)   # 上涨幅度（下跌记 0）
+    loss = -delta.clip(upper=0.0)  # 下跌幅度（上涨记 0）
+    # Wilder 平滑：alpha = 1/period，等价于传统 SMA 递推公式
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     rsi = 100 - 100 / (1 + rs)
-    # 当平均亏损为 0 时 RSI 视为 100
+    # 当平均亏损为 0 时（连续上涨）RSI 视为 100
     rsi = rsi.where(avg_loss != 0, 100.0)
     return rsi
 

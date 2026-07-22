@@ -32,6 +32,15 @@ class MACrossStrategy(Strategy):
             )
 
     def _ma(self, series: pd.Series, window: int) -> pd.Series:
+        """计算移动均线：支持 SMA（简单）和 EMA（指数）两种模式。
+
+        Args:
+            series: 输入价格序列。
+            window: 均线窗口。
+
+        Returns:
+            均线序列，初始窗口期为 NaN（SMA）或渐进收敛（EMA）。
+        """
         if self.params.get("ma_type", "sma").lower() == "ema":
             return series.ewm(span=window, adjust=False).mean()
         return series.rolling(window).mean()

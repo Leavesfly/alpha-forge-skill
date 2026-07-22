@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
+from .indicators import extract_ohlcv
 
 
 class DonchianStrategy(Strategy):
@@ -37,10 +38,8 @@ class DonchianStrategy(Strategy):
         entry = int(self.params["entry"])
         exit_ = int(self.params["exit"])
         allow_short = bool(self.params.get("allow_short"))
-        close = df["close"]
-        # 无 high/low 时退化为收盘价
-        high = df["high"] if "high" in df.columns else close
-        low = df["low"] if "low" in df.columns else close
+
+        _, high, low, close = extract_ohlcv(df)
 
         # 通道基于历史窗口（不含当前 bar），避免前视
         upper = high.rolling(entry).max().shift(1).to_numpy()

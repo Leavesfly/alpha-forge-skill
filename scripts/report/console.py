@@ -45,6 +45,12 @@ _METRIC_ROWS = [
 
 
 def _fmt(value, kind: str) -> str:
+    """按类型格式化指标值（与 html.py 的 _fmt 保持一致）。
+
+    Args:
+        value: 指标数值，None 显示为 '-'。
+        kind: 格式类型（pct=百分比 / int=整数 / num=两位小数）。
+    """
     if value is None:
         return "-"
     if kind == "pct":

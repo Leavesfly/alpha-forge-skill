@@ -16,8 +16,11 @@
 from __future__ import annotations
 
 import math
+from typing import TypeVar
 
 import pandas as pd
+
+T = TypeVar("T")
 
 
 def resolve_time_index(df: pd.DataFrame) -> pd.Index:
@@ -47,17 +50,28 @@ def series_last(series: pd.Series) -> float:
     return float(series.iloc[-1]) if len(series) else float("nan")
 
 
-def safe_round(v, digits: int = 4):
-    """对浮点值安全四舍五入：有限值 round，NaN/inf 返回 None，非浮点原样返回。"""
-    if isinstance(v, float) and math.isfinite(v):
-        return round(v, digits)
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    return v
+def safe_round(v: T, digits: int = 4) -> T | float | None:
+    """对浮点值安全四舍五入：有限值 round，NaN/inf 返回 None，非浮点原样返回。
+
+    Args:
+        v: 待处理的值（通常为 float 或 None）。
+        digits: 保留小数位数。
+
+    Returns:
+        有限浮点数四舍五入后的值；NaN/inf 返回 None；非浮点类型原样返回。
+    """
+    if not isinstance(v, float):
+        return v
+    return round(v, digits) if math.isfinite(v) else None
 
 
 def extract_close(df: pd.DataFrame) -> pd.Series:
     """从 OHLCV DataFrame 提取带时间索引的收盘价序列。
+
+    与 ``resolve_time_index`` 的区别：
+    - ``resolve_time_index`` 仅返回索引对象，用于给已有 Series 赋索引；
+    - ``extract_close`` 直接返回带索引的 close Series，适合绘图/绩效计算等
+      需要「索引 + 值」一体的场景。
 
     优先使用 trade_date 列作为 DatetimeIndex，否则用序号索引。
     """

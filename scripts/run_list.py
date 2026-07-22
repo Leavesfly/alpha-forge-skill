@@ -226,6 +226,13 @@ def main() -> None:
     log("  七项: " + ", ".join(f"{k}({v})" for k, v in CANSLIM_LETTERS.items()))
     log("  纪律: M 大势不满足直接否；C/A 基本面缺失封顶「观察」；多标的横截面 RS 百分位排名")
 
+    from strategies.custom import INDICATOR_SPEC, OPERATORS
+
+    log(f"\n===== 自定义规则策略 DSL（run_custom --rules <TOML>）=====")
+    log("  指标白名单: " + ", ".join(sorted(INDICATOR_SPEC)))
+    log("  运算符: " + ", ".join(OPERATORS))
+    log("  逻辑组合: entry/exit 各自支持 and/or；示例见 examples/custom_rule.toml")
+
     log("\n各策略原理与参数详见 references/strategies.md；--help 附可复制示例。")
 
     if args.json is not None:
@@ -248,6 +255,12 @@ def main() -> None:
                 "canslim": {
                     "letters": dict(CANSLIM_LETTERS),
                     "commands": ["run_canslim.py"],
+                },
+                "custom_dsl": {
+                    "indicators": sorted(INDICATOR_SPEC),
+                    "operators": list(OPERATORS),
+                    "example": "examples/custom_rule.toml",
+                    "commands": ["run_custom.py"],
                 },
             },
             command="list",

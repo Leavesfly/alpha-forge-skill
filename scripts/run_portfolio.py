@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="轮动/优化策略：momentum/equal_weight/inverse_vol/min_variance/max_sharpe/hrp/min_cvar",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--lookback", type=int, default=60, help="回看周期（动量/波动率），默认 60")
     parser.add_argument("--top-k", type=int, default=2, help="动量轮动持有标的数，默认 2")
     parser.add_argument("--rebalance", type=int, default=20, help="调仓周期，默认 20")

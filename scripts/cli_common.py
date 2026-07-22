@@ -153,17 +153,86 @@ def log_next_steps(log: Callable[..., None], *steps: str) -> None:
 def build_next_steps(*steps: dict) -> list[dict]:
     """构建结构化下一步动作列表，嵌入 --json 输出供 Agent 程序化链式引导。
 
-    每个 step 为 dict，含 action（动作标识）、reason（为何建议）、command（可执行命令）。
-    Agent 可据此在转述结尾主动提议后续操作，而非依赖解析 stderr 文本。
+    每个 step 为 dict，含：
+    - ``action``：动作标识（如 optimize/validate/paper）；
+    - ``reason``：为何建议（自然语言）；
+    - ``command``：可执行命令；
+    - ``condition``（可选）：触发条件表达式，如 ``"dsr < 0.9"``、``"verdict == yes"``。
+      含 condition 的 step 仅在条件成立时才应被 Agent 采纳；无 condition 表示无条件推荐。
+      条件引用同一 JSON 输出中的字段（点路径），运算符支持 ==/!=/>/</>=/<=。
 
     用法::
 
         next_steps = build_next_steps(
-            {"action": "optimize", "reason": "寻找最优参数", "command": "run_optimize.py --symbol 600000.SH --strategy ma_cross"},
-            {"action": "validate", "reason": "样本外验证", "command": "run_validate.py --symbol 600000.SH --strategy ma_cross"},
+            {"action": "validate", "reason": "DSR 偏低，需样本外验证",
+             "condition": "dsr < 0.9",
+             "command": "run_validate.py --symbol 600000.SH --strategy ma_cross"},
+            {"action": "paper", "reason": "结论为是，可纸面跟踪",
+             "condition": "verdict == yes",
+             "command": "run_paper.py --symbol 600000.SH --mode score"},
         )
     """
     return list(steps)
+
+
+def eval_condition(condition: str, data: dict) -> bool:
+    """求值 next_steps 的 condition 表达式（受限语法，不 eval 代码）。
+
+    表达式格式：``<点路径> <运算符> <字面量或点路径>``，如 ``dsr < 0.9``、
+    ``verdict == yes``。点路径从 ``data`` 取值（支持 ``a.b.c``）；字面量可为
+    数值、true/false 或裸字符串。求值失败（路径不存在/语法错）返回 False。
+    """
+    import operator as _op
+
+    m = re.match(
+        r"^\s*(?P<left>[\w.]+)\s*(?P<op>==|!=|>=|<=|>|<)\s*(?P<right>[\w.+-]+)\s*$",
+        condition,
+    )
+    if not m:
+        return False
+    ops = {
+        "==": _op.eq, "!=": _op.ne, ">": _op.gt, "<": _op.lt,
+        ">=": _op.ge, "<=": _op.le,
+    }
+    left = _resolve_path(m.group("left"), data)
+    right = _resolve_path(m.group("right"), data)
+    if left is None or right is None:
+        return False
+    # 类型对齐：一侧为数值则另一侧也转数值
+    try:
+        if isinstance(left, (int, float)) and not isinstance(left, bool):
+            right = float(right)
+        elif isinstance(right, (int, float)) and not isinstance(right, bool):
+            left = float(left)
+        return bool(ops[m.group("op")](left, right))
+    except (TypeError, ValueError):
+        return False
+
+
+def _resolve_path(token: str, data: dict):
+    """解析点路径或字面量：先试 data 点路径，再试数值/布尔字面量，最后裸字符串。"""
+    # 点路径取值
+    cur: object = data
+    found = True
+    for part in token.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            found = False
+            break
+    if found:
+        return cur
+    # 布尔字面量
+    low = token.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    # 数值字面量
+    try:
+        return float(token)
+    except ValueError:
+        pass
+    # 裸字符串（如 verdict == yes 中的 yes）
+    return token
 
 
 def emit_json(dest: str, payload: dict, log: Callable[..., None]) -> None:
@@ -274,6 +343,17 @@ def run_cli(main: Callable[[], None]) -> None:
     """
     from errors import AlphaForgeError, DataFetchError, InsufficientDataError, ValidationError
 
+    # 异常类型 -> 退出码 的映射（按继承层次从具体到通用排序）
+    _EXIT_CODE_MAP: list[tuple[type[BaseException], int]] = [
+        (ValidationError, 2),
+        (DataFetchError, 1),
+        (InsufficientDataError, 1),
+        (AlphaForgeError, 1),
+        (ValueError, 2),        # 参数/格式错误（向后兼容旧代码）
+        (RuntimeError, 1),      # 运行错误（向后兼容旧代码）
+        (OSError, 1),           # IO/网络错误
+    ]
+
     try:
         main()
     except KeyboardInterrupt:
@@ -286,39 +366,15 @@ def run_cli(main: Callable[[], None]) -> None:
                 print(exc.code, file=sys.stderr)
             sys.exit(2)
         raise
-    except ValidationError as exc:
-        # 领域参数/格式错误 → exit 2
+    except Exception as exc:
         if os.environ.get("ALPHA_FORGE_DEBUG"):
             raise
-        print(f"[error] {exc}", file=sys.stderr)
-        sys.exit(2)
-    except (DataFetchError, InsufficientDataError) as exc:
-        # 领域数据错误 → exit 1
-        if os.environ.get("ALPHA_FORGE_DEBUG"):
-            raise
-        print(f"[error] {exc}", file=sys.stderr)
-        sys.exit(1)
-    except AlphaForgeError as exc:
-        # 其他领域异常（未来扩展）→ exit 1
-        if os.environ.get("ALPHA_FORGE_DEBUG"):
-            raise
-        print(f"[error] {exc}", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as exc:
-        # 参数/格式错误 → exit 2（向后兼容旧代码）
-        if os.environ.get("ALPHA_FORGE_DEBUG"):
-            raise
-        print(f"[error] {exc}", file=sys.stderr)
-        sys.exit(2)
-    except (RuntimeError, OSError) as exc:
-        # 运行错误（数据/网络/IO）→ exit 1（向后兼容旧代码）
-        if os.environ.get("ALPHA_FORGE_DEBUG"):
-            raise
-        print(f"[error] {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:  # 未预期异常：保留类型名便于反馈
-        if os.environ.get("ALPHA_FORGE_DEBUG"):
-            raise
+        # 按映射表查找匹配的异常类型
+        for exc_type, code in _EXIT_CODE_MAP:
+            if isinstance(exc, exc_type):
+                print(f"[error] {exc}", file=sys.stderr)
+                sys.exit(code)
+        # 未预期异常：保留类型名便于反馈
         print(f"[error] 未预期异常 {type(exc).__name__}: {exc}", file=sys.stderr)
         print("（设置环境变量 ALPHA_FORGE_DEBUG=1 重跑可查看完整堆栈）", file=sys.stderr)
         sys.exit(1)

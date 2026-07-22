@@ -29,10 +29,11 @@ class BollingerStrategy(Strategy):
         num_std = float(self.params["num_std"])
         close = df["close"]
 
+        # 布林带三轨：中轨 = SMA，上下轨 = 中轨 ± N × 标准差
         mid = close.rolling(window).mean()
         std = close.rolling(window).std()
-        upper = mid + num_std * std
-        lower = mid - num_std * std
+        upper = mid + num_std * std  # 上轨：统计意义上的价格天花板
+        lower = mid - num_std * std  # 下轨：统计意义上的价格地板
 
         # 状态机：跌破下轨买入(1)，回到中轨上方或突破上轨卖出(0)
         # 开启做空时，突破上轨转为空头(-1)

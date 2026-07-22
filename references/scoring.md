@@ -100,11 +100,124 @@ snapshot 中记录 `adx14` 供审计。
 `--capital`（默认 10 万，0 关闭）与 `--risk-pct` 控制；JSON 输出在 `plan.sizing`
 （`suggested_shares` / `position_value` / `position_pct` / `risk_amount`）。
 
+资金/风险比例的取值优先级：**显式 CLI 参数 > 用户风险画像 > 内置默认**。
+用户可用 [`run_profile.py`](../scripts/run_profile.py) 登记风险偏好（保守/平衡/激进三档），
+之后评分的建议仓位会自动因人而异（详见下文「用户风险画像联动」）。
+
 ### 市场状态上下文
 
 评分输出同时附带**市场状态**（趋势上行/下行/震荡/高波动，由趋势效率 ER +
 波动率分位判定，见 `research/regime.py`）。状态是描述性上下文，**不参与评分裁决**；
 JSON 输出在 `regime` 字段（含 `regime_cn` / `suited_family` / `advice`）。
+
+### 估值历史分位（可选，`--valuation-pct`）
+
+绝对估值阈值（PE<20）无法区分行业差异——银行 PE 5 和成长股 PE 30 不可比。
+估值历史分位回答的是「**相对于这只股票自身，当前估值贵不贵**」：
+
+| 分位 | 含义 |
+|------|------|
+| PE 分位 20% | 当前 PE 处于近 N 年最低 20% 区间，相对低估 |
+| PB 分位 80% | 当前 PB 处于近 N 年最高 20% 区间，相对高估 |
+
+数据源：
+- **A 股**：akshare `stock_a_lg_indicator`（乐咕乐股，免费，日频 PE/PB/PS，精确）
+- **港美股**：yfinance 历史价格 / 当前 TTM EPS/BVPS 近似推算（精度有限，标注近似）
+
+分位计算采用中位秩（并列值各计一半），避免估值恒定时分位恒为 0 或 1。
+输出估值标签：低估（<20%）/ 偏低（20-40%）/ 合理（40-60%）/ 偏高（60-80%）/ 高估（>80%）。
+
+```bash
+# 附加估值历史分位（默认近 5 年）
+uv run python run_score.py --symbol 600519.SH --valuation-pct
+
+# 自定义回看年数
+uv run python run_score.py --symbol 600519.SH --valuation-pct --valuation-lookback 10
+```
+
+JSON 输出在 `valuation` 字段（含 `pe_percentile` / `pb_percentile` / `valuation_label` / `source`）。
+
+### 宏观环境上下文（可选，`--macro`）
+
+现有市场状态识别基于价格（效率比 + 波动率），是纯技术面视角。
+宏观环境上下文补充**宏观面视角**：
+
+| 指标 | 数据源 | 用途 |
+|------|--------|------|
+| 10 年期国债收益率 | akshare `bond_zh_us_rate` | 利率趋势（上行→收紧 / 下行→宽松） |
+| CPI 同比 | akshare `macro_china_cpi` | 通胀压力（>3% 偏高 / <0 通缩） |
+| PMI | akshare `macro_china_pmi` | 经济景气（>50 扩张 / <50 收缩） |
+
+三者组合给出宏观 regime 标签（描述性上下文，**不参与评分裁决**）：
+
+| PMI | 利率趋势 | 宏观 regime | 含义 |
+|-----|----------|-------------|------|
+| ≥50 | 上行 | 经济扩张 | 顺周期受益，注意估值压力 |
+| ≥50 | 下行/平稳 | 宽松有利 | 最有利环境，流动性支撑估值 |
+| <50 | 上行 | 滞胀压力 | 最不利环境，股债双杀风险 |
+| <50 | 下行/平稳 | 收缩衰退 | 等待政策转向信号 |
+
+CPI 作为辅助修正：CPI>3% 时加重通胀担忧（扩张→过热提示）。
+
+```bash
+# 附加宏观环境上下文
+uv run python run_score.py --symbol 600000.SH --macro
+
+# 估值分位 + 宏观环境一起看
+uv run python run_score.py --symbol 600519.SH --valuation-pct --macro
+```
+
+JSON 输出在 `macro_regime` / `macro_regime_cn` / `macro_advice` / `macro_snapshot` 字段。
+
+> 注：宏观数据仅覆盖中国（akshare 免费接口），港美股标的同样参考中国宏观
+> （A 股/港股直接相关；美股间接参考）。数据拉取失败时静默跳过，不中断评分流程。
+
+## 结构化证据链（Evidence Pack，Agent 可引用）
+
+`--json` 输出除 `layers`（各层人类可读理由）外，额外含 **`evidence`** 数组——
+把每层的关键判断提炼为**机器可读、可编号引用**的证据条目，供 Agent 深度解读时
+**引用证据而非自行推断**，从机制上避免事实性错误（如错报均线位置）。
+
+每条证据含：
+
+| 字段 | 含义 |
+|------|------|
+| `id` | 编号（E01, E02…），转述时可引用（如「因 E02 被否决」） |
+| `layer` | 产生层（alpha/veto/confirm/timing/fundamental/event_risk） |
+| `indicator` | 指标机器名（如 `close_vs_ma200`、`rsi14`、`macd_cross`） |
+| `value` | 实际值 |
+| `threshold` | 对比阈值（无则 null） |
+| `triggered` | 是否触发了状态变更 |
+| `impact` | 影响类型（veto/cap_watch/downgrade/none） |
+| `claim` | 一句话自然语言断言（Agent 可直接引用） |
+
+示例（结论被 MA200 否决时）：
+
+```json
+{
+  "id": "E02", "layer": "veto", "indicator": "close_vs_ma200",
+  "value": 7.82, "threshold": 8.15, "triggered": true, "impact": "veto",
+  "claim": "收盘 7.82 < MA200(8.15)，长期趋势破坏，直接否决"
+}
+```
+
+## 用户风险画像联动（个性化风控）
+
+[`run_profile.py`](../scripts/run_profile.py) 登记的风险画像（`outputs/profile.json`）
+让建议仓位因人而异：
+
+- 未显式传 `--capital`/`--risk-pct` 时，自动读取画像的 `capital`/`risk_pct`；
+- 三档预设（`conservative`/`balanced`/`aggressive`）自动填充建议的
+  `risk_pct`/`max_drawdown`/`max_single_position`；
+- `--json` 输出含 `profile` 上下文字段（`risk_tolerance`/`capital`/`risk_pct`/`max_drawdown`）。
+
+```bash
+# 登记为平衡型投资者，可用资金 20 万
+uv run python run_profile.py --set --risk-tolerance balanced --capital 200000
+
+# 之后评分自动用画像参数计算建议仓位（无需再传 --capital/--risk-pct）
+uv run python run_score.py --symbol 600000.SH
+```
 
 ## 命令行用法
 
@@ -146,7 +259,7 @@ uv run python run_paper.py --symbol 600000.SH --mode score
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `--benchmark` | 按市场自动 | 相对强度与大盘环境的基准 |
-| `--count` | 500 | 评分至少需 250 根有效 K 线 |
+| `--count` | 1250 | 评分至少需 250 根有效 K 线 |
 | `--brief` | 关 | 只输出结论与计划价位 |
 | `--replay [N]` | 关（N 默认 250） | 逐日回放 + 21/63 日前瞻收益事件研究 |
 | `--calibrate [N]` | 关（N 默认 250） | 阈值自校准：网格搜索最优 alpha_score 入场阈值 |
@@ -155,7 +268,10 @@ uv run python run_paper.py --symbol 600000.SH --mode score
 | `--fetch-events` | 关 | 抓新闻素材并生成待标注风险模板（事件风险闭环第一步，仅 A 股） |
 | `--cost` / `--shares` | 无 | 持仓成本/数量；缺省时依次探测账户 `account.json`、`outputs/paper_*.json` |
 | `--no-fundamental` | 关 | 跳过基本面否决层（ST/连续亏损/资不抵债检查）；默认启用 |
-| `--capital` / `--risk-pct` | 10 万 / 0.01 | 建议仓位的可用资金与单笔风险预算（capital=0 关闭） |
+| `--capital` / `--risk-pct` | 画像 > 10 万 / 0.01 | 建议仓位的可用资金与单笔风险预算；缺省读用户画像，无画像用默认（capital=0 关闭） |
+| `--valuation-pct` | 关 | 附加估值历史分位：当前 PE/PB 在近 N 年历史中的位置 |
+| `--valuation-lookback` | 5 | 估值分位回看年数 |
+| `--macro` | 关 | 附加宏观环境上下文：国债利率/CPI/PMI 组合判断宏观 regime |
 
 ### 主要参数（run_scan.py）
 
@@ -218,7 +334,28 @@ uv run python run_score.py --symbol 600000.SH --risk-file ../outputs/risk_600000
 | `run_screener.py` | 哪些被低估（基本面价值发现） | PE/PB/ROE/负债/分红/增速 | 综合评分排序候选 |
 | `run_factor.py` | 相对好坏（截面排名） | 多因子打分 | 分位选股 + 分层回测 |
 
-筛选基于公开财务快照（最近报告期），不构成投资建议。典型工作流：
+筛选基于公开财务快照（最近报告期），不构成投资建议。
+
+### 估值历史分位增强（`--valuation-pct`）
+
+绝对阈值（PE<20）无法区分行业差异。启用估值分位增强后，对通过初筛的候选标的
+逐只拉取近 N 年 PE/PB 历史，计算当前分位并调整综合评分：
+
+- **低分位（便宜）加分**：分位 0% → +10 分
+- **高分位（贵）减分**：分位 100% → -10 分
+- 分位 50% 不调整
+
+```bash
+# A 股全市场筛选 + 估值分位增强
+uv run python run_screener.py --valuation-pct
+
+# 自定义回看年数
+uv run python run_screener.py --valuation-pct --valuation-lookback 10
+```
+
+> 注：估值分位增强需逐只拉取历史数据，速度较慢，建议对初筛后的少量候选使用。
+
+典型工作流：
 `run_screener.py`（发现低估候选）→ `run_score.py`（技术面复核）→ `run_paper.py --mode score`（纸面跟踪）。
 
 ## 局限与免责声明

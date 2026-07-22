@@ -132,7 +132,7 @@ uv run python run_dca.py --symbol AAPL.US --dividends my_divs.csv
 | `--mode` | `fixed` | 定投模式：`fixed` / `ma` / `smart` / `dip` / `value_avg` |
 | `--freq` | `monthly` | 定投频率：`daily` / `weekly` / `monthly` |
 | `--amount` | `1000` | 每期基准投入金额；`value_avg` 下为每期目标市值增量 |
-| `--count` | `500` | 拉取 K 线数量 |
+| `--count` | `1250` | 拉取 K 线数量（约 5 年） |
 | `--commission` / `--slippage` | `0.0005` | 单边手续费率 / 滑点率 |
 | `--ma-window` | `60` | `ma` / `smart` 模式均线窗口 |
 | `--boost` | `2.0` | 加码基准倍数（`ma` 低于均线倍数；`smart` / `dip` 分档以此缩放） |

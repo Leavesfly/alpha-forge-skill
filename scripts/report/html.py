@@ -14,6 +14,27 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# ---------------------------------------------------------------------------
+# matplotlib 中文字体配置（消除 4 处重复）
+# ---------------------------------------------------------------------------
+
+#: 中文字体候选链（按平台优先级排列）
+_CN_FONTS = [
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Arial Unicode MS", "DejaVu Sans",
+]
+
+
+def _setup_matplotlib() -> None:
+    """配置 matplotlib 中文字体与负号显示（延迟导入，避免拖慢 CLI 启动）。"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = _CN_FONTS
+    plt.rcParams["axes.unicode_minus"] = False
+
 _METRIC_LABELS = [
     ("total_return", "累计收益率", "pct"),
     ("annual_return", "年化收益率", "pct"),
@@ -46,7 +67,13 @@ _METRIC_EXPLAIN = {
 }
 
 
-def _fmt(value: float, kind: str) -> str:
+def _fmt(value: float | None, kind: str) -> str:
+    """按类型格式化指标值。
+
+    Args:
+        value: 指标数值，None 显示为 '-'。
+        kind: 格式类型（pct=百分比 / int=整数 / num=两位小数）。
+    """
     if value is None:
         return "-"
     if kind == "pct":
@@ -58,16 +85,8 @@ def _fmt(value: float, kind: str) -> str:
 
 def _chart_base64(result) -> str:
     """把净值/回撤/价格买卖点渲染为 PNG 并返回 base64 data URI。"""
-    import matplotlib
-
-    matplotlib.use("Agg")
+    _setup_matplotlib()
     import matplotlib.pyplot as plt
-
-    plt.rcParams["font.sans-serif"] = [
-        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-        "Arial Unicode MS", "DejaVu Sans",
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
 
     fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
     eq, be = result.equity, result.benchmark_equity
@@ -92,16 +111,8 @@ def _chart_base64(result) -> str:
 
 def _rolling_chart_base64(result, window: int = 60) -> str:
     """滚动夏普（60 期窗口）+ 收益分布直方图的双联图 base64 data URI。"""
-    import matplotlib
-
-    matplotlib.use("Agg")
+    _setup_matplotlib()
     import matplotlib.pyplot as plt
-
-    plt.rcParams["font.sans-serif"] = [
-        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-        "Arial Unicode MS", "DejaVu Sans",
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
 
     from backtest.metrics import periods_per_year
 
@@ -152,7 +163,15 @@ def _metrics_table_html(metrics: dict, benchmark: dict) -> str:
 
 
 def _heat_color(value: float, scale: float = 0.08) -> str:
-    """收益幅度 -> 热力图背景色（正红负绿，A 股习惯），幅度越大颜色越深。"""
+    """收益幅度 -> 热力图背景色（正红负绿，A 股习惯）。
+
+    Args:
+        value: 收益率值（如 0.05 表示 +5%）。
+        scale: 颜色饱和阈值，超过此值颜色不再加深。
+
+    Returns:
+        CSS rgb() 颜色字符串，幅度越大颜色越深。
+    """
     ratio = max(-1.0, min(1.0, value / scale))
     if ratio >= 0:
         # 白 -> 红
@@ -165,7 +184,14 @@ def _heat_color(value: float, scale: float = 0.08) -> str:
 
 
 def _monthly_table_html(returns: pd.Series) -> str:
-    """按 年×月 展示月度收益率热力图（背景色按幅度渐变）。"""
+    """按 年×月 展示月度收益率热力图（背景色按幅度渐变）。
+
+    Args:
+        returns: 逐周期策略收益率序列（需有时间索引）。
+
+    Returns:
+        HTML 表格字符串；无时间索引或数据不足时返回提示文本。
+    """
     if not isinstance(returns.index, pd.DatetimeIndex):
         idx = pd.to_datetime(returns.index, errors="coerce")
         if idx.isna().all():
@@ -201,6 +227,15 @@ def _monthly_table_html(returns: pd.Series) -> str:
 
 
 def _trades_table_html(result, limit: int = 50) -> str:
+    """生成交易明细 HTML 表格。
+
+    Args:
+        result: BacktestResult 对象。
+        limit: 最多展示的交易笔数。
+
+    Returns:
+        HTML 表格字符串；无交易时返回提示文本。
+    """
     trades = result.trades.head(limit)
     if trades.empty:
         return "<p class='muted'>（无交易）</p>"
@@ -264,16 +299,8 @@ def _stress_html(stress: dict | None) -> str:
 
 def _yearly_chart_base64(result) -> str:
     """年度收益对比条形图（策略 vs 基准）；无法按年聚合时返回空串。"""
-    import matplotlib
-
-    matplotlib.use("Agg")
+    _setup_matplotlib()
     import matplotlib.pyplot as plt
-
-    plt.rcParams["font.sans-serif"] = [
-        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-        "Arial Unicode MS", "DejaVu Sans",
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
 
     def _yearly(ret: pd.Series) -> pd.Series | None:
         if not isinstance(ret.index, pd.DatetimeIndex):
@@ -462,16 +489,8 @@ def render_compare_report(
 
 def _compare_chart_base64(results: dict[str, object]) -> str:
     """多策略净值叠加图（含基准）的 base64 data URI。"""
-    import matplotlib
-
-    matplotlib.use("Agg")
+    _setup_matplotlib()
     import matplotlib.pyplot as plt
-
-    plt.rcParams["font.sans-serif"] = [
-        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-        "Arial Unicode MS", "DejaVu Sans",
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
 
     fig, ax = plt.subplots(figsize=(11, 5.5))
     for name, res in results.items():

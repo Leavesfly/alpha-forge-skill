@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any, ClassVar
 
 import pandas as pd
 
@@ -23,35 +24,50 @@ STRATEGIES: dict[str, type[Strategy]] = {}
 
 
 class Strategy(ABC):
-    """量化策略抽象基类。"""
+    """量化策略抽象基类。
+
+    子类实现约定：
+    1. 定义 ``name`` 类属性作为唯一标识（自动注册到 STRATEGIES）；
+    2. 覆盖 ``default_params()`` 返回默认参数；
+    3. 实现 ``generate_signals()`` 生成持仓信号；
+    4. 可选覆盖 ``validate_params()`` 校验参数合法性。
+
+    信号约定：
+    - 1 = 满仓多头，0 = 空仓，-1 = 满仓空头（仅 allow_short 时）；
+    - 引擎会对信号做 shift(1) 处理以避免前视偏差。
+    """
 
     #: 策略在注册表与 CLI 中使用的唯一名称
-    name: str = "base"
+    name: ClassVar[str] = "base"
 
     #: 策略中文显示名
-    display_name: str = "基础策略"
+    display_name: ClassVar[str] = "基础策略"
 
     #: 参数寻优时使用的默认参数网格：{参数名: [候选值, ...]}
-    param_grid: dict[str, list] = {}
+    param_grid: ClassVar[dict[str, list[Any]]] = {}
+
+    #: 是否自动注册到 STRATEGIES（需额外构造参数的策略如 DSL 自定义策略设为 False）
+    register: ClassVar[bool] = True
 
     def __init_subclass__(cls, **kwargs):
         """子类定义 name 后自动注册到 STRATEGIES。"""
         super().__init_subclass__(**kwargs)
-        # 跳过：抽象基类、私有类（_开头）、未定义 name 的中间类
+        # 跳过：抽象基类、私有类（_开头）、未定义 name 的中间类、显式退出注册的类
         if (
             cls.name != "base"
+            and cls.__dict__.get("register", True)
             and not cls.__name__.startswith("_")
             and not getattr(cls, "__abstractmethods__", None)
         ):
             STRATEGIES[cls.name] = cls
 
-    def __init__(self, **params):
+    def __init__(self, **params: Any) -> None:
         # 用默认参数占位，再用传入参数覆盖
-        self.params = {**self.default_params(), **params}
+        self.params: dict[str, Any] = {**self.default_params(), **params}
         self.validate_params()
 
     @classmethod
-    def default_params(cls) -> dict:
+    def default_params(cls) -> dict[str, Any]:
         """返回策略默认参数。子类应覆盖。"""
         return {}
 

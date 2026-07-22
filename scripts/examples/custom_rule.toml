@@ -1,0 +1,40 @@
+# Alpha Forge 自定义策略规则示例
+# 用法：uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml
+
+[meta]
+name = "golden_cross_rsi"
+description = "金叉且 RSI 未过热时买入，死叉或 RSI 超买时卖出"
+
+# ---------- 指标定义（白名单算子，按定义顺序计算） ----------
+
+[indicators.fast_ma]
+type = "sma"
+period = 10
+source = "close"
+
+[indicators.slow_ma]
+type = "sma"
+period = 30
+source = "close"
+
+[indicators.rsi14]
+type = "rsi"
+period = 14
+
+# ---------- 入场条件（全部满足 = AND） ----------
+
+[entry]
+logic = "and"
+conditions = [
+    "fast_ma crosses_above slow_ma",   # 金叉
+    "rsi14 < 70",                       # RSI 未过热
+]
+
+# ---------- 离场条件（任一满足 = OR） ----------
+
+[exit]
+logic = "or"
+conditions = [
+    "fast_ma crosses_below slow_ma",   # 死叉
+    "rsi14 > 80",                       # RSI 超买
+]

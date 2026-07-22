@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("Alpha Forge 机器学习策略（方向预测 + 走步 OOS）", __doc__)
     parser.add_argument("--symbol", required=True, help="标的代码，如 600000.SH")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=800, help="K 线数量，默认 800（越多样本外越充分）")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年，越多样本外越充分）")
     parser.add_argument("--model", choices=list(MODELS), default="lgbm", help="预测模型，默认 lgbm")
     parser.add_argument(
         "--label",

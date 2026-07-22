@@ -15,18 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
-
-
-def _atr(df: pd.DataFrame, window: int) -> pd.Series:
-    """平均真实波幅（用历史窗口，shift(1) 防前视）。"""
-    close = df["close"].astype(float)
-    high = df["high"].astype(float) if "high" in df.columns else close
-    low = df["low"].astype(float) if "low" in df.columns else close
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return tr.rolling(window).mean().shift(1)
+from .indicators import compute_atr, extract_ohlcv
 
 
 class TurtleStrategy(Strategy):
@@ -64,15 +53,14 @@ class TurtleStrategy(Strategy):
         atr_mult = float(self.params["atr_mult"])
         allow_short = bool(self.params.get("allow_short"))
 
-        close = df["close"].astype(float)
-        high = df["high"] if "high" in df.columns else close
-        low = df["low"] if "low" in df.columns else close
+        _, high, low, close = extract_ohlcv(df)
 
+        # 入场/离场通道：基于历史窗口（shift 1），不含当前 bar
         upper = high.rolling(entry).max().shift(1).to_numpy()
         lower = low.rolling(entry).min().shift(1).to_numpy()
         exit_low = low.rolling(exit_).min().shift(1).to_numpy()
         exit_high = high.rolling(exit_).max().shift(1).to_numpy()
-        atr = _atr(df, atr_window).to_numpy()
+        atr = compute_atr(df, atr_window).to_numpy()
         c = close.to_numpy()
 
         n = len(c)

@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", default=None, help="单标的详评（与 --symbols 二选一）")
     parser.add_argument("--symbols", default=None, help="逗号分隔的多标的（横截面 RS 百分位模式）")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=600, help="K 线数量，默认 600（52 周高点与 12 个月 RS 需 ≥260）")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年，52 周高点与 12 个月 RS 需 ≥260）")
     parser.add_argument("--benchmark", default=None, help="基准代码（L/M 依赖）；默认按市场自动选择（510300.SH/02800.HK/SPY.US）")
     parser.add_argument("--c-growth", type=float, default=0.25, help="C：当季 EPS 同比增速阈值，默认 0.25（欧奈尔原著）")
     parser.add_argument("--a-growth", type=float, default=0.25, help="A：年度 EPS 复合增速阈值，默认 0.25")

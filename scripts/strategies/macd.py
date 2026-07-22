@@ -29,9 +29,11 @@ class MACDStrategy(Strategy):
         signal_period = int(self.params["signal"])
         close = df["close"]
 
+        # DIF = EMA(fast) - EMA(slow)，反映短期与长期动量差
         ema_fast = close.ewm(span=fast, adjust=False).mean()
         ema_slow = close.ewm(span=slow, adjust=False).mean()
         dif = ema_fast - ema_slow
+        # DEA = DIF 的 EMA（信号线），用于平滑 DIF 噪声
         dea = dif.ewm(span=signal_period, adjust=False).mean()
 
         # DIF 在 DEA 之上则持有多头

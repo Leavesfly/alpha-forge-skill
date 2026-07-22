@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--strategy", required=True, choices=list(STRATEGIES), help="策略名称"
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument(
         "--params", nargs="*", default=[], help="策略参数，形如 fast=10 slow=30"

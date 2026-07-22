@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
+from .indicators import extract_ohlcv
 
 
 class DualThrustStrategy(Strategy):
@@ -43,18 +44,16 @@ class DualThrustStrategy(Strategy):
         k2 = float(self.params["k2"])
         allow_short = bool(self.params.get("allow_short"))
 
-        close = df["close"].astype(float)
-        high = df["high"].astype(float) if "high" in df.columns else close
-        low = df["low"].astype(float) if "low" in df.columns else close
-        open_ = df["open"].astype(float) if "open" in df.columns else close.shift(1)
+        open_, high, low, close = extract_ohlcv(df)
 
-        # Range 由过去 n 日区间构成（不含当日，防前视）
+        # Range = max(HH - LC, HC - LL)，由过去 n 日区间构成（不含当日，防前视）
         hh = high.rolling(n_days).max().shift(1)
         ll = low.rolling(n_days).min().shift(1)
         hc = close.rolling(n_days).max().shift(1)
         lc = close.rolling(n_days).min().shift(1)
         rng = pd.concat([hh - lc, hc - ll], axis=1).max(axis=1)
 
+        # 上轨 = 开盘 + k1 × Range，下轨 = 开盘 - k2 × Range
         upper = (open_ + k1 * rng).to_numpy()
         lower = (open_ - k2 * rng).to_numpy()
         c = close.to_numpy()

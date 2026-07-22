@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pre", type=int, default=-10, help="事件窗起点（相对交易日），默认 -10")
     parser.add_argument("--post", type=int, default=20, help="事件窗终点（相对交易日），默认 20")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=800, help="K 线数量，默认 800")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument("--plot", action="store_true", help="绘制 AAR/CAAR 曲线")
     parser.add_argument("--output", default=None, help="图表输出路径；默认自动命名")

@@ -1,6 +1,10 @@
 """CCI 商品通道指数策略（超买超卖均值回归）。
 
-CCI = (TP - SMA(TP)) / (0.015 × 平均绝对偏差)，TP = (high+low+close)/3。
+CCI = (TP - SMA(TP)) / (0.015 × MAD)，其中：
+- TP = (high + low + close) / 3（典型价格）；
+- MAD = 窗口内 |TP - SMA(TP)| 的均值（平均绝对偏差）；
+- 0.015 为 Lambert 原始设计中的缩放常数，使 CCI 在 ±100 附近具有统计意义。
+
 CCI 跌破 entry（默认 -100，超卖）买入并维持多头，直到回升越过
 exit（默认 +100，超买）卖出空仓（状态延续，避免频繁进出）。
 开启做空时在超买端反向持有空头，直到回落到超卖端平空。
@@ -12,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Strategy
+from .indicators import extract_ohlcv
 
 
 class CCIStrategy(Strategy):
@@ -42,13 +47,14 @@ class CCIStrategy(Strategy):
         exit_ = float(self.params["exit"])
         allow_short = bool(self.params.get("allow_short"))
 
-        close = df["close"].astype(float)
-        high = df["high"].astype(float) if "high" in df.columns else close
-        low = df["low"].astype(float) if "low" in df.columns else close
+        _, high, low, close = extract_ohlcv(df)
 
+        # 典型价格 TP = (H + L + C) / 3
         tp = (high + low + close) / 3.0
         sma = tp.rolling(period).mean()
-        mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+        # 平均绝对偏差 MAD：向量化实现（避免 rolling.apply 的逐窗口 Python 回调）
+        mad = (tp - sma).abs().rolling(period).mean()
+        # CCI = (TP - SMA) / (0.015 × MAD)，0.015 为 Lambert 缩放常数
         cci = ((tp - sma) / (0.015 * mad)).to_numpy()
 
         n = len(close)

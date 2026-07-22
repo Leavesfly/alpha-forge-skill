@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strategy", default=None, choices=list(STRATEGIES), help="策略名称（strategy 模式必填）")
     parser.add_argument("--benchmark", default=None, help="score 模式的评分基准；默认按市场自动选择")
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d")
-    parser.add_argument("--count", type=int, default=500, help="K 线数量，默认 500")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年）")
     parser.add_argument("--adjust", default="forward", help="复权口径，默认前复权")
     parser.add_argument("--params", nargs="*", default=[], help="策略参数，形如 fast=10 slow=30")
     parser.add_argument("--capital", type=float, default=100_000.0, help="初始虚拟资金（仅首次生效），默认 10 万")
