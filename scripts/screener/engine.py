@@ -26,7 +26,7 @@ class ScreenCriteria:
     max_pe: float = 20.0        # 市盈率上限
     max_pb: float = 3.0         # 市净率上限
     min_roe: float = 10.0       # ROE 下限(%)
-    max_debt: float = 70.0      # 资产负债率上限(%)
+    max_debt: float = 70.0      # 资产负债率上限(%)，默认会剔除高杠杆金融股，0=不筛
     min_div: float = 0.0        # 股息率下限(%)，0=不筛
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
     min_cap: float = 30.0       # 总市值下限(亿)

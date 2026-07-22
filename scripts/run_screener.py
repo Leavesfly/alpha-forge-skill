@@ -10,8 +10,14 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 
 筛选基于公开财务快照，不构成投资建议；数据为最近报告期，存在滞后。
 
+注意事项：
+- 默认负债率上限 70% 会剔除银行/保险/券商（金融业负债率普遍 85%~93%），
+  如需纳入金融股请加 --max-debt 0（或调高阈值）。
+- 静态低 PE 可能是周期股盈利顶部的假象（煤炭/航运/养殖等），
+  建议对周期行业加 --valuation-pct 用估值历史分位交叉验证。
+
 示例：
-    # A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 市值>30亿）
+    # A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 负债<70%, 市值>30亿）
     uv run python run_screener.py
 
     # 高分红低估值策略（股息率>3%, PE<15, PB<2）
@@ -19,6 +25,9 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 
     # 成长+质量策略（ROE>15%, 增速>20%, 负债<60%）
     uv run python run_screener.py --min-roe 15 --min-growth 20 --max-debt 60
+
+    # 纳入银行/保险等高杠杆金融股（放开负债率维度）
+    uv run python run_screener.py --max-debt 0
 
     # 港美股手动列表筛选
     uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
@@ -60,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-pe", type=float, default=20.0, help="市盈率上限，默认 20（0=不限）")
     parser.add_argument("--max-pb", type=float, default=3.0, help="市净率上限，默认 3.0（0=不限）")
     parser.add_argument("--min-roe", type=float, default=10.0, help="ROE 下限(%%)，默认 10（0=不限）")
-    parser.add_argument("--max-debt", type=float, default=70.0, help="资产负债率上限(%%)，默认 70（0=不限）")
+    parser.add_argument("--max-debt", type=float, default=70.0, help="资产负债率上限(%%)，默认 70（会剔除银行/保险等高杠杆金融股，0=不限）")
     parser.add_argument("--min-div", type=float, default=0.0, help="股息率下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-growth", type=float, default=0.0, help="净利润增速下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-cap", type=float, default=30.0, help="总市值下限(亿)，默认 30")
@@ -116,7 +125,6 @@ def main() -> None:
     log()
 
     # 执行筛选
-    n_total = len(symbols) if symbols else "全市场"
     with ProgressBar(total=len(symbols) if symbols else 0, description="价值筛选") as bar:
         result = run_screen(
             criteria,
@@ -161,6 +169,10 @@ def main() -> None:
         log("（无达标标的。当前阈值下全市场无满足条件的标的，可放宽阈值重试。）")
 
     log("\n提示：筛选基于公开财务快照，不构成投资建议。数据为最近报告期，存在滞后。")
+    if criteria.max_debt > 0:
+        log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
+    if not criteria.use_valuation_pct:
+        log("提示：低 PE 可能是周期股盈利顶部假象，可加 --valuation-pct 用估值历史分位交叉验证。")
     log_next_steps(
         log,
         "对候选标的做纪律评分复核 run_score.py --symbol <代码>（含技术面确认与交易计划）",

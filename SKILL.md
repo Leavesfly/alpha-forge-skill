@@ -648,7 +648,7 @@ uv run python run_canslim.py --symbol AAPL.US --fundamentals-csv aapl_eps.csv
 可选**估值历史分位增强**（拉取候选标的近 N 年 PE/PB 历史，低分位加分、高分位减分）：
 
 ```bash
-# A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 市值>30亿）
+# A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 负债<70%, 市值>30亿）
 uv run python run_screener.py
 
 # 高分红低估值策略（股息率>3%, PE<15, PB<2）
@@ -656,6 +656,9 @@ uv run python run_screener.py --max-pe 15 --max-pb 2 --min-div 3
 
 # 成长+质量策略（ROE>15%, 增速>20%, 负债<60%）
 uv run python run_screener.py --min-roe 15 --min-growth 20 --max-debt 60
+
+# 纳入银行/保险等高杠杆金融股（放开负债率维度）
+uv run python run_screener.py --max-debt 0
 
 # 估值历史分位增强：候选标的附加近 5 年 PE/PB 分位，低分位（便宜）加分
 uv run python run_screener.py --valuation-pct
@@ -668,6 +671,7 @@ uv run python run_screener.py --sort roe --top 20
 ```
 
 > 筛选基于公开财务快照（最近报告期），不构成投资建议；与 `run_scan.py`（趋势动量纪律过滤）和 `run_factor.py`（多因子截面排名）互补——本命令定位是"哪些被低估"，建议对候选再跑 `run_score.py` 做技术面复核。
+> 两个默认值的副作用：负债率<70% 会剔除银行/保险/券商（金融业负债率普遍 85%~93%，纳入请加 `--max-debt 0`）；静态低 PE 可能是周期股盈利顶部假象，对周期行业建议加 `--valuation-pct` 交叉验证。
 
 ### 统一持仓账户（跨命令联动）
 
