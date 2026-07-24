@@ -358,6 +358,31 @@ uv run python run_score.py --symbol 600000.SH --json
 | "帮我盯着这只股票" | `run_paper.py --symbol ... --mode score` |
 | "符合 CAN SLIM 吗" | `run_canslim.py --symbol ... --json` |
 
+**对话意图路由表（完整版）：**
+
+| 用户大致会说…… | 执行 | 转述时必须包含 |
+|----------------|------|--------------|
+| "XX 现在能买吗 / 值不值得入手 / 帮我看看 XX" | `run_score.py --symbol <代码> --json` | 结论五态中文（verdict_cn）+ 哪一层给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
+| "我持有 XX，成本 N，该不该卖/减仓" | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
+| "帮我记一下持仓 / 我的持仓怎么样了" | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
+| "我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万" | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
+| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
+| "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
+| "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
+| "XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛" | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
+| "XX 用什么策略好 / 哪个策略适合 XX" | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
+| "帮我回测一下 XX 的 YY 策略" | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
+| "我想自己定义一个策略：金叉且 RSI 不过热时买……" | agent 按用户描述生成 TOML 规则文件，再 `run_custom.py --symbol <代码> --rules <文件> --json` | 规则如何被解析（入场/离场条件）+ 回测结果 vs 基准；提醒自定义规则未经样本外验证 |
+| "帮我调参 / 找最优参数" | `run_optimize.py --symbol <代码> --strategy <策略> --json`（大网格加 `--method random`） | 最优参数 + DSR 诊断结论；DSR<90% 时必须提醒过拟合风险并建议 run_validate |
+| "这策略靠谱吗 / 是不是过拟合" | `run_validate.py --symbol <代码> --strategy <策略> --pbo --json` | 样本外夏普 vs 样本内、PBO 概率；以样本外为准 |
+| "这几只股票帮我做个组合" | `run_portfolio.py --symbols <列表> --strategy momentum --json` | 组合 vs 等权基准；调仓频率与成本假设 |
+| "我想定投 XX" | `run_dca.py --symbol <代码> --json`（A 股可加 `--dividends` 显式建模分红） | XIRR 与一次性投入对比；定投价值在纪律而非必然更高收益 |
+| "每天帮我盯着 XX 该买该卖" | 首次 `run_paper.py --symbol <代码> --mode score`（或 `--strategy <策略>`），以后每日重跑；只看信号用 `run_signal.py` | 今日动作 + 当前持仓/净值；不自动下单，仅纸面跟踪 |
+| "拉一下 XX 的行情/K 线/财务" | 直接用 TickFlow SDK（见 data-fetching.md） | 数据口径（复权/周期） |
+| "出个报告给我" | 在对应命令加 `--report`（HTML）或 `--plot`（图） | 文件路径（outputs/ 下） |
+| "帮我看看今天整体情况 / 出个总览" | `run_dashboard.py`（可加 `--symbols` 附信号） | Dashboard HTML 路径 + 风控提示摘要 |
+| 命令报错 / 环境不确定 | `run_list.py --doctor`；再查 faq.md | 失败项与修复建议 |
+
 > 📖 Agent 完整集成指南 → [references/use-cases.md](references/use-cases.md)
 
 ---
