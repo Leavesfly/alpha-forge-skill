@@ -83,9 +83,23 @@ uv run python run_factor.py --universe CN_Equity_A --limit 50 --top-quantile 0.2
 
 参数：`--universe`/`--symbols`（二选一）、`--limit`、`--factors`（默认全部）、`--top-quantile`（默认 0.2）、
 `--layers`（默认 5）、`--lookback`、`--lag-days`、`--rebalance`、`--period`、`--count`、
-`--commission`/`--slippage`、`--plot`/`--output`。
+`--commission`/`--slippage`、`--ic`、`--plot`/`--output`。
 
 输出：Top 组合 vs 等权基准绩效、各分层累计收益（单调性检验）、最新选股清单。
+
+## 因子研究（`--ic`：IC/IR/衰减/相关性）
+
+在选股回测之外，`--ic` 附加输出每个因子的预测力诊断（`factors/analysis.py`）：
+
+```bash
+uv run python run_factor.py --symbols 600000.SH,000001.SZ,600519.SH,000858.SZ,600809.SH \
+    --factors momentum,low_vol --ic
+```
+
+- **IC/IR**：因子得分与下期收益的横截面秩相关（Rank IC）均值与稳定度（IR = IC 均值/标准差），|IC|>0.03 且 IR>0.3 通常才值得关注；
+- **t 值**：IC 显著性检验；
+- **衰减**：不同前瞻期（1/5/10/20 日）IC 变化，判断因子适合的调仓频率；
+- **相关性矩阵**：因子间秩相关，高相关因子合成时信息冗余，建议只保留其一。
 
 ## 编程方式调用
 

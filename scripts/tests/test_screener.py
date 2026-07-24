@@ -7,17 +7,17 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from screener import ScreenCriteria, ScreenResult, composite_score, run_screen
+from screener import PRESETS, ScreenCriteria, ScreenResult, composite_score, run_screen
 from screener.engine import (
     _check_all_criteria,
     _check_detail_criteria,
     _code_to_symbol,
+    _filter_price_position,
     _sort_results,
     screen_astock_phase1,
     screen_astock_phase2,
     screen_yfinance,
 )
-
 
 # ---------------------------------------------------------------------------
 # ScreenCriteria
@@ -34,6 +34,11 @@ class TestScreenCriteria:
         assert c.min_div == 0.0
         assert c.min_growth == 0.0
         assert c.min_cap == 30.0
+        # 十倍股维度默认全部不启用（不改变存量行为）
+        assert c.max_cap == 0.0
+        assert c.min_cash_yield == 0.0
+        assert c.smart_growth is False
+        assert c.max_price_pos == 0.0
 
     def test_to_dict(self):
         c = ScreenCriteria(max_pe=15, min_div=3)
@@ -41,6 +46,38 @@ class TestScreenCriteria:
         assert d["max_pe"] == 15
         assert d["min_div"] == 3
         assert "max_pb" in d
+        # 未启用的十倍股维度不出现在契约中
+        assert "max_cap" not in d
+        assert "smart_growth" not in d
+
+    def test_to_dict_multibagger_dims(self):
+        c = ScreenCriteria(max_cap=200, min_cash_yield=6, smart_growth=True, max_price_pos=0.5)
+        d = c.to_dict()
+        assert d["max_cap"] == 200
+        assert d["min_cash_yield"] == 6
+        assert d["smart_growth"] is True
+        assert d["max_price_pos"] == 0.5
+
+
+class TestPresets:
+    def test_multibagger_preset_exists(self):
+        assert "multibagger" in PRESETS
+
+    def test_multibagger_preset_keys_are_criteria_fields(self):
+        """预设键必须是 ScreenCriteria 字段（同时也是 CLI dest）。"""
+        fields = set(ScreenCriteria.__dataclass_fields__)
+        for key in PRESETS["multibagger"]:
+            assert key in fields
+
+    def test_multibagger_preset_semantics(self):
+        """预设语义：小市值+便宜+现金流+聪明增长+低位，不看 PE、不要求高增长。"""
+        p = PRESETS["multibagger"]
+        assert p["max_pe"] == 0.0            # 不看 PE
+        assert 0 < p["max_pb"] <= 2.0        # 便宜
+        assert p["max_cap"] > p["min_cap"]   # 市值区间合法
+        assert p["min_cash_yield"] > 0       # 现金流因子启用
+        assert p["smart_growth"] is True
+        assert 0 < p["max_price_pos"] <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +181,25 @@ class TestCheckDetailCriteria:
         metrics = {"roe": None, "debt_ratio": None}
         assert _check_detail_criteria(metrics, c) == []
 
+    def test_cash_yield_pass_fail(self):
+        c = ScreenCriteria(min_roe=0, max_debt=0, min_cash_yield=6)
+        assert _check_detail_criteria({"cash_yield": 8.0}, c) == []
+        reasons = _check_detail_criteria({"cash_yield": 3.0}, c)
+        assert any("现金流" in r for r in reasons)
+        reasons = _check_detail_criteria({"cash_yield": None}, c)
+        assert any("缺失" in r for r in reasons)
+
+    def test_smart_growth_pass_fail(self):
+        c = ScreenCriteria(min_roe=0, max_debt=0, smart_growth=True)
+        # 资产增速 < 利润增速 → 通过
+        assert _check_detail_criteria({"asset_growth": 5, "profit_growth": 20}, c) == []
+        # 资产增速 ≥ 利润增速 → 扩张低效
+        reasons = _check_detail_criteria({"asset_growth": 30, "profit_growth": 10}, c)
+        assert any("扩张低效" in r for r in reasons)
+        # 数据缺失（如港美股无资产增速）→ 剔除
+        reasons = _check_detail_criteria({"asset_growth": None, "profit_growth": 10}, c)
+        assert any("缺失" in r for r in reasons)
+
 
 # ---------------------------------------------------------------------------
 # _check_all_criteria
@@ -174,6 +230,23 @@ class TestCheckAllCriteria:
         metrics = {"div_yield": 1}
         reasons = _check_all_criteria(metrics, c)
         assert any("股息" in r for r in reasons)
+
+    def test_max_cap_fail(self):
+        """市值上限：十倍股筛选要求小市值起步。"""
+        c = ScreenCriteria(max_cap=200)
+        metrics = {"total_mv": 500}
+        reasons = _check_all_criteria(metrics, c)
+        assert any("市值" in r and ">" in r for r in reasons)
+        assert _check_all_criteria({"total_mv": 100}, ScreenCriteria(max_cap=200, max_pe=0, max_pb=0, min_roe=0, max_debt=0)) == []
+
+    def test_price_pos_fail(self):
+        """52 周位置：位置偏高或数据缺失都剔除。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_cap=0, max_price_pos=0.5)
+        assert _check_all_criteria({"price_pos": 0.3}, c) == []
+        reasons = _check_all_criteria({"price_pos": 0.9}, c)
+        assert any("位置偏高" in r for r in reasons)
+        reasons = _check_all_criteria({"price_pos": None}, c)
+        assert any("缺失" in r for r in reasons)
 
     def test_all_pass(self):
         c = ScreenCriteria(max_pe=20, max_pb=3, min_cap=30, min_div=2, min_roe=10, max_debt=0, min_growth=0)
@@ -313,6 +386,16 @@ class TestScreenAstockPhase1:
         # 只排除 ST
         assert len(survivors) == 3
 
+    @patch("screener.engine.fetch_astock_snapshot")
+    def test_max_cap_filter(self, mock_fetch):
+        """市值上限：剔除大市值，只留小市值（十倍股预设路径）。"""
+        mock_fetch.return_value = self._mock_snapshot()
+        criteria = ScreenCriteria(max_pe=0, max_pb=0, min_cap=0, max_cap=3000)
+        survivors, _ = screen_astock_phase1(criteria)
+        codes = [s["code"] for s in survivors]
+        assert "300750" not in codes  # 市值 9000 亿 > 3000 亿
+        assert "600000" in codes
+
 
 # ---------------------------------------------------------------------------
 # Phase 2: screen_astock_phase2 (mock)
@@ -366,6 +449,27 @@ class TestScreenAstockPhase2:
         results = screen_astock_phase2(survivors, criteria)
         assert len(results) == 1
         mock_detail.assert_not_called()
+
+    @patch("screener.engine.fetch_astock_detail")
+    def test_cash_yield_computed(self, mock_detail):
+        """现金流收益率 = 每股经营现金流 / 股价，并参与阈值过滤。"""
+        mock_detail.return_value = {
+            "roe": 8, "debt_ratio": 40, "profit_growth": 15,
+            "asset_growth": 5, "ocf_per_share": 1.2,
+        }
+        survivors = [
+            {"code": "600000", "name": "测试", "pe": 10, "pb": 1,
+             "total_mv": 100, "div_yield": 2, "close": 10.0},
+        ]
+        # 1.2/10 = 12% ≥ 6% → 通过；同时验证聪明增长（5 < 15）
+        criteria = ScreenCriteria(min_roe=5, max_debt=70, min_cash_yield=6, smart_growth=True)
+        results = screen_astock_phase2(survivors, criteria)
+        assert len(results) == 1
+        assert results[0].metrics["cash_yield"] == pytest.approx(12.0)
+        # 阈值抬高到 15% → 剔除
+        criteria = ScreenCriteria(min_roe=5, max_debt=70, min_cash_yield=15)
+        results = screen_astock_phase2(survivors, criteria)
+        assert len(results) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +532,75 @@ class TestRunScreen:
         assert result["n_scanned"] == 5000
         assert result["n_final"] == 1
         assert len(result["candidates"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: _filter_price_position (mock)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterPricePosition:
+    def _make_results(self):
+        return [
+            ScreenResult("600001.SH", "低位", {"pb": 1.0, "price_pos": None}, 50, True),
+            ScreenResult("600002.SH", "高位", {"pb": 1.0, "price_pos": None}, 50, True),
+            ScreenResult("600003.SH", "无数据", {"pb": 1.0, "price_pos": None}, 50, True),
+        ]
+
+    @patch("screener.engine.fetch_price_position")
+    def test_filter_keeps_low_position(self, mock_pos):
+        mock_pos.side_effect = [0.2, 0.9, None]
+        criteria = ScreenCriteria(max_pb=3, max_price_pos=0.5)
+        kept = _filter_price_position(self._make_results(), criteria)
+        assert [r.symbol for r in kept] == ["600001.SH"]
+        assert kept[0].metrics["price_pos"] == 0.2
+
+    @patch("screener.engine.fetch_price_position")
+    def test_precomputed_position_not_refetched(self, mock_pos):
+        """已有 price_pos（如 yfinance 路径）不重复拉日 K。"""
+        r = ScreenResult("AAPL.US", "Apple", {"pb": 2.0, "price_pos": 0.3}, 50, True)
+        criteria = ScreenCriteria(max_pb=3, max_price_pos=0.5)
+        kept = _filter_price_position([r], criteria)
+        assert len(kept) == 1
+        mock_pos.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# CLI 预设应用（_apply_preset）
+# ---------------------------------------------------------------------------
+
+
+class TestApplyPreset:
+    def _parse(self, argv):
+        import run_screener
+
+        args = run_screener.build_parser().parse_args(argv)
+        return run_screener._apply_preset(args, argv)
+
+    def test_no_preset_keeps_defaults(self):
+        args = self._parse([])
+        assert args.max_pe == 20.0
+        assert args.max_cap == 0.0
+        assert args.smart_growth is False
+
+    def test_multibagger_preset_applied(self):
+        args = self._parse(["--preset", "multibagger"])
+        p = PRESETS["multibagger"]
+        assert args.max_pe == p["max_pe"]
+        assert args.max_pb == p["max_pb"]
+        assert args.max_cap == p["max_cap"]
+        assert args.min_cash_yield == p["min_cash_yield"]
+        assert args.smart_growth is True
+        assert args.max_price_pos == p["max_price_pos"]
+
+    def test_explicit_arg_overrides_preset(self):
+        """显式参数 > 预设：--max-cap 300 覆盖预设的 200。"""
+        args = self._parse(["--preset", "multibagger", "--max-cap", "300"])
+        assert args.max_cap == 300.0
+        # 未显式提供的项仍用预设
+        assert args.max_pb == PRESETS["multibagger"]["max_pb"]
+
+    def test_explicit_equals_form_overrides(self):
+        """--max-cap=300 等号形式也能识别为显式参数。"""
+        args = self._parse(["--preset", "multibagger", "--max-cap=300"])
+        assert args.max_cap == 300.0

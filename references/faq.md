@@ -14,7 +14,7 @@
 | 数据陈旧（缓存命中旧行情） | K 线本地缓存未过期 | 加 `--no-cache` 强制重拉；或 `ALPHA_FORGE_NO_CACHE=1` 全局关闭；TTL 分级：日线默认 1 天、分钟线 30 分钟，`ALPHA_FORGE_CACHE_TTL`（秒）可显式覆盖 |
 | 网络抖动偶发失败 | 单次请求超时/连接重置 | 内置自动重试（默认 2 次，退避 1s/2s），`ALPHA_FORGE_RETRIES` 可调（0 关闭）；重试仍失败自动降级下一数据源，且存在过期缓存时回退使用 |
 | `ValueError: 双均线参数要求 fast < slow` 等 | 策略参数组合非法 | 按提示修正参数；各策略约束见 [strategies.md](strategies.md)（如 donchian/turtle 要求 exit <= entry、cci 要求 entry < exit） |
-| `未知策略 'xxx'` | 策略名拼写错误 | `uv run python run_list.py` 查看全部 14 个策略名与参数 |
+| `未知策略 'xxx'` | 策略名拼写错误 | `uv run python run_list.py` 查看全部内置策略名与参数 |
 | `历史长度不足`（run_ml / run_validate） | K 线根数撑不起训练窗/走步折 | 增大 `--count`（建议 ≥ 800）或减小 `--train-window` / 折数 |
 | `command not found: uv` | 未安装 uv 或 PATH 未包含 | 安装：`curl -LsSf https://astral.sh/uv/install.sh \| sh`；或把 `~/.local/bin` 加入 PATH |
 | `ModuleNotFoundError`（pandas/tickflow 等） | 依赖未安装 | `cd scripts && uv sync`（跑测试需 `uv sync --group dev`） |

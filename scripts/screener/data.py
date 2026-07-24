@@ -101,26 +101,33 @@ def fetch_astock_snapshot(log: Callable[..., None] | None = None) -> pd.DataFram
 
 
 def fetch_astock_detail(code: str) -> dict | None:
-    """A 股单标的深度财务指标：ROE/资产负债率/净利润增速。
+    """A 股单标的深度财务指标：ROE/资产负债率/净利润增速/资产增速/每股经营现金流。
 
-    调用 ``ak.stock_financial_analysis_indicator(symbol)``（东财财务分析指标）。
+    调用 ``ak.stock_financial_analysis_indicator(symbol, start_year)``（新浪财务分析指标）。
+    注意：start_year 缺省值（1900）会返回空表，必须传近年份；取近两年保证至少有一个年报期。
 
     Returns:
-        ``{"roe": float|None, "debt_ratio": float|None, "profit_growth": float|None}``；
-        接口异常时返回 None。
+        ``{"roe", "debt_ratio", "profit_growth", "asset_growth", "ocf_per_share"}``
+        （值均为 float|None）；接口异常时返回 None。
     """
     try:
+        from datetime import date
+
         import akshare as ak
 
+        start_year = str(date.today().year - 1)
         with contextlib.redirect_stdout(sys.stderr):
-            df = ak.stock_financial_analysis_indicator(symbol=code)
+            df = ak.stock_financial_analysis_indicator(symbol=code, start_year=start_year)
     except Exception:
         return None
 
     if df is None or len(df) == 0:
         return None
 
-    result: dict = {"roe": None, "debt_ratio": None, "profit_growth": None}
+    result: dict = {
+        "roe": None, "debt_ratio": None, "profit_growth": None,
+        "asset_growth": None, "ocf_per_share": None,
+    }
 
     # 取最新一期（按日期降序取第一行）
     date_col = _find_col(df, ["日期", "报告期", "date"])
@@ -154,7 +161,48 @@ def fetch_astock_detail(code: str) -> dict | None:
         if pd.notna(val):
             result["profit_growth"] = float(val)
 
+    # 总资产增长率（十倍股「聪明增长」维度：资产增速应低于利润增速）
+    asset_col = _find_col(df, ["总资产增长率(%)", "总资产增长率", "asset_growth"])
+    if asset_col:
+        val = pd.to_numeric(latest.get(asset_col), errors="coerce")
+        if pd.notna(val):
+            result["asset_growth"] = float(val)
+
+    # 每股经营性现金流（现金流收益率 = 每股经营现金流 / 股价，FCF Yield 的免费近似）
+    ocf_col = _find_col(df, ["每股经营性现金流(元)", "每股经营性现金流", "ocf_per_share"])
+    if ocf_col:
+        val = pd.to_numeric(latest.get(ocf_col), errors="coerce")
+        if pd.notna(val):
+            result["ocf_per_share"] = float(val)
+
     return result
+
+
+def fetch_price_position(symbol: str, lookback: int = 250) -> float | None:
+    """52 周价格位置：(当前价 - 区间最低) / (区间最高 - 区间最低)，取值 0~1。
+
+    十倍股研究（Yartseva 2025）发现多数十倍股从 12 个月低点附近启动，
+    低位置（左侧）优于追高。走 datafeed 免费日 K（约 250 交易日 ≈ 52 周）。
+
+    Returns:
+        0~1 的位置值；数据不足或拉取失败返回 None。
+    """
+    try:
+        from datafeed import fetch_ohlcv
+
+        df = fetch_ohlcv(symbol, period="1d", count=lookback)
+    except Exception:
+        return None
+
+    if df is None or len(df) < 60:  # 至少一个季度数据才有意义
+        return None
+
+    close = float(df["close"].iloc[-1])
+    high = float(df["high"].max()) if "high" in df.columns else float(df["close"].max())
+    low = float(df["low"].min()) if "low" in df.columns else float(df["close"].min())
+    if high <= low:
+        return None
+    return (close - low) / (high - low)
 
 
 def fetch_yfinance_metrics(symbol: str) -> dict | None:
@@ -195,6 +243,17 @@ def fetch_yfinance_metrics(symbol: str) -> dict | None:
     market_cap = info.get("marketCap")
     total_mv = market_cap / 1e8 if market_cap else None
 
+    # 现金流收益率：自由现金流 / 市值（十倍股研究的最强单一预测因子）
+    fcf = info.get("freeCashflow")
+    cash_yield = fcf / market_cap * 100.0 if fcf is not None and market_cap else None
+
+    # 52 周价格位置：(现价 - 52周低) / (52周高 - 52周低)
+    close = info.get("currentPrice") or info.get("regularMarketPrice")
+    hi, lo = info.get("fiftyTwoWeekHigh"), info.get("fiftyTwoWeekLow")
+    price_pos = None
+    if close is not None and hi is not None and lo is not None and hi > lo:
+        price_pos = (close - lo) / (hi - lo)
+
     return {
         "name": info.get("shortName") or info.get("longName") or symbol,
         "close": info.get("currentPrice") or info.get("regularMarketPrice"),
@@ -205,4 +264,7 @@ def fetch_yfinance_metrics(symbol: str) -> dict | None:
         "debt_ratio": debt_ratio,
         "profit_growth": profit_growth,
         "total_mv": total_mv,
+        "cash_yield": cash_yield,
+        "price_pos": price_pos,
+        "asset_growth": None,  # yfinance .info 无资产增速，聪明增长维度仅 A 股支持
     }

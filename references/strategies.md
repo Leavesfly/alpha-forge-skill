@@ -1,6 +1,6 @@
 # 量化策略参考
 
-本文档详细说明 `scripts/strategies/` 中内置的 14 个**单标的信号策略**。所有策略继承自
+本文档详细说明 `scripts/strategies/` 中内置的全部**单标的信号策略**。所有策略继承自
 [`Strategy`](../scripts/strategies/base.py) 基类，接收 OHLCV DataFrame，输出取值
 `{0, 1}` 的目标持仓信号（1=满仓多头，0=空仓）。回测引擎会对信号做 `shift(1)`
 处理，因此策略内部可直接使用当日收盘价计算指标而不引入未来函数。
@@ -201,7 +201,7 @@
 
 ## 自定义规则策略（DSL，Agent 可生成）
 
-内置 14 个策略是「固定菜单」；**自定义规则 DSL** 让用户（或 Agent）用自然语言
+内置策略是「固定菜单」；**自定义规则 DSL** 让用户（或 Agent）用自然语言
 描述策略想法，生成 TOML 规则文件后直接回测验证——策略空间不再受限。对应
 CLI：[`run_custom.py`](../scripts/run_custom.py)，引擎：[`strategies/custom.py`](../scripts/strategies/custom.py)。
 

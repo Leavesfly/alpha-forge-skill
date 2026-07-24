@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""低估值/潜力机会全市场筛选 CLI：基本面硬阈值漏斗（PE/PB/ROE/负债/分红/增速）。
+"""低估值/潜力机会全市场筛选 CLI：基本面硬阈值漏斗（PE/PB/ROE/负债/分红/增速/现金流/位置）。
 
 定位：用绝对估值/质量/分红/成长阈值从全市场中筛出低估+优质+潜力标的。
 与 run_scan.py（趋势动量纪律过滤）和 run_factor.py（多因子截面排名）互补。
 
 A 股走 akshare 免费批量接口（无需 API Key）：
-  Phase 1 全市场快照过滤 PE/PB/市值 → Phase 2 逐只深度过滤 ROE/负债/增速。
+  Phase 1 全市场快照过滤 PE/PB/市值 → Phase 2 逐只深度过滤 ROE/负债/增速/现金流
+  → Phase 3 位置过滤（仅启用 --max-price-pos 时，逐只拉日 K）。
 港美股走 yfinance 逐只拉取（需 --symbols 手动指定）。
+
+内置预设（--preset，显式参数可覆盖预设项）：
+- multibagger：十倍股统计特征筛选，取自 Yartseva(2025) 464 只美股十倍股实证
+  与 Alta Fox(2020) 研究：小市值(15~200亿) + 便宜(PB<1.6) + 财务健康(ROE>5%)
+  + 现金流收益率>6% + 聪明增长(资产增速<利润增速) + 52 周区间下半部(左侧)。
+  注意：这是历史十倍股的统计共性，不是收益预测；命中靠组合持有而非单点押注。
 
 筛选基于公开财务快照，不构成投资建议；数据为最近报告期，存在滞后。
 
@@ -15,10 +22,18 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   如需纳入金融股请加 --max-debt 0（或调高阈值）。
 - 静态低 PE 可能是周期股盈利顶部的假象（煤炭/航运/养殖等），
   建议对周期行业加 --valuation-pct 用估值历史分位交叉验证。
+- 聪明增长维度（--smart-growth）依赖资产增速数据，仅 A 股支持；
+  港美股会因数据缺失被剔除。
 
 示例：
     # A 股全市场默认筛选（PE<20, PB<3, ROE>10%, 负债<70%, 市值>30亿）
     uv run python run_screener.py
+
+    # 十倍股特征筛选（小市值+便宜+现金流好+聪明增长+低位左侧）
+    uv run python run_screener.py --preset multibagger
+
+    # 十倍股预设 + 局部调整（显式参数覆盖预设：放宽市值上限到 300 亿）
+    uv run python run_screener.py --preset multibagger --max-cap 300
 
     # 高分红低估值策略（股息率>3%, PE<15, PB<2）
     uv run python run_screener.py --max-pe 15 --max-pb 2 --min-div 3
@@ -39,6 +54,7 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 from __future__ import annotations
 
 import argparse
+import sys
 
 from cli_common import (
     add_json_arg,
@@ -52,7 +68,7 @@ from cli_common import (
 )
 from cli_config import parse_args_with_config
 from report import ProgressBar, attach_meta
-from screener import ScreenCriteria, run_screen
+from screener import PRESETS, ScreenCriteria, run_screen
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="手动标的列表（逗号分隔）；港美股必须用此模式",
     )
 
+    # 预设方案
+    parser.add_argument(
+        "--preset", default=None, choices=sorted(PRESETS),
+        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；显式参数可覆盖预设项",
+    )
+
     # 阈值参数
     parser.add_argument("--max-pe", type=float, default=20.0, help="市盈率上限，默认 20（0=不限）")
     parser.add_argument("--max-pb", type=float, default=3.0, help="市净率上限，默认 3.0（0=不限）")
@@ -73,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-div", type=float, default=0.0, help="股息率下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-growth", type=float, default=0.0, help="净利润增速下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-cap", type=float, default=30.0, help="总市值下限(亿)，默认 30")
+    parser.add_argument("--max-cap", type=float, default=0.0, help="总市值上限(亿)，默认 0=不限（十倍股研究：小市值起步）")
+    parser.add_argument("--min-cash-yield", type=float, default=0.0, help="现金流收益率下限(%%)，默认 0=不限（A 股=每股经营现金流/股价，港美股=FCF/市值）")
+    parser.add_argument("--smart-growth", action="store_true", help="启用聪明增长过滤：要求资产增速 < 净利润增速（扩张有效率，仅 A 股有数据）")
+    parser.add_argument("--max-price-pos", type=float, default=0.0, help="52 周价格位置上限(0~1)，默认 0=不限；如 0.5=只要区间下半部（左侧低位，逐只拉日 K 较慢）")
 
     # 输出控制
     parser.add_argument("--top", type=int, default=30, help="最多输出达标标的数，默认 30")
@@ -95,8 +121,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_preset(args: argparse.Namespace, argv: list[str]) -> argparse.Namespace:
+    """应用预设方案：仅覆盖命令行未显式提供的参数（显式参数 > 预设 > 默认）。"""
+    if not args.preset:
+        return args
+    explicit = {
+        a.split("=")[0].lstrip("-").replace("-", "_")
+        for a in argv if a.startswith("--")
+    }
+    for dest, value in PRESETS[args.preset].items():
+        if dest not in explicit:
+            setattr(args, dest, value)
+    return args
+
+
 def main() -> None:
     args = parse_args_with_config(build_parser())
+    args = _apply_preset(args, sys.argv[1:])
     json_stdout, log = init_log(args)
 
     criteria = ScreenCriteria(
@@ -107,6 +148,10 @@ def main() -> None:
         min_div=args.min_div,
         min_growth=args.min_growth,
         min_cap=args.min_cap,
+        max_cap=args.max_cap,
+        min_cash_yield=args.min_cash_yield,
+        smart_growth=args.smart_growth,
+        max_price_pos=args.max_price_pos,
         use_valuation_pct=args.valuation_pct,
         valuation_lookback=args.valuation_lookback,
     )
@@ -116,6 +161,8 @@ def main() -> None:
         symbols = split_symbols(args.symbols, min_count=1, what="筛选")
 
     # 打印筛选条件
+    if args.preset:
+        log(f"预设方案：{args.preset}（显式参数已覆盖对应预设项）")
     active_dims = _active_dimensions(criteria)
     log(f"筛选条件：{active_dims}")
     if symbols:
@@ -149,6 +196,8 @@ def main() -> None:
             roe_str = f"ROE {item['roe']:.1f}%" if item.get("roe") else "ROE N/A"
             div_str = f"股息 {item['div_yield']:.1f}%" if item.get("div_yield") else ""
             growth_str = f"增速 {item['profit_growth']:+.0f}%" if item.get("profit_growth") else ""
+            cash_str = f"现金流 {item['cash_yield']:.1f}%" if item.get("cash_yield") else ""
+            pos_str = f"52周位置 {item['price_pos']:.0%}" if item.get("price_pos") is not None else ""
             # 估值分位（可选）
             val_str = ""
             if item.get("valuation"):
@@ -163,28 +212,53 @@ def main() -> None:
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {val_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {cash_str}  {pos_str}  {val_str}"
             )
     else:
         log("（无达标标的。当前阈值下全市场无满足条件的标的，可放宽阈值重试。）")
 
     log("\n提示：筛选基于公开财务快照，不构成投资建议。数据为最近报告期，存在滞后。")
+    if args.preset == "multibagger":
+        log("提示：multibagger 是历史十倍股的统计共性筛选，不是收益预测；"
+            "十倍股为极右尾事件（A 股占比约 2%），建议组合持有 20~50 只候选并用移动止损让赢家奔跑。")
     if criteria.max_debt > 0:
         log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
     if not criteria.use_valuation_pct:
         log("提示：低 PE 可能是周期股盈利顶部假象，可加 --valuation-pct 用估值历史分位交叉验证。")
-    log_next_steps(
-        log,
-        "对候选标的做纪律评分复核 run_score.py --symbol <代码>（含技术面确认与交易计划）",
-        "回测验证候选标的 run_backtest.py --symbol <代码> --strategy ma_cross",
-    )
+    if args.preset == "multibagger":
+        log_next_steps(
+            log,
+            "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（盈利加速+RS 强度）",
+            "候选组合回测（含移动止损） run_portfolio.py --symbols <候选列表>",
+        )
+    else:
+        log_next_steps(
+            log,
+            "对候选标的做纪律评分复核 run_score.py --symbol <代码>（含技术面确认与交易计划）",
+            "回测验证候选标的 run_backtest.py --symbol <代码> --strategy ma_cross",
+        )
 
     # JSON 输出
     if args.json is not None:
         top_sym = candidates[0]["symbol"] if candidates else "无"
+        if args.preset == "multibagger":
+            next_steps = build_next_steps(
+                {"action": "canslim", "reason": "对候选做 CAN SLIM 成长面交叉确认（盈利加速+RS 强度）",
+                 "command": "run_canslim.py --symbols <候选列表> --json"},
+                {"action": "portfolio", "reason": "候选组合回测，用移动止损让赢家奔跑",
+                 "command": "run_portfolio.py --symbols <候选列表> --json"},
+            )
+        else:
+            next_steps = build_next_steps(
+                {"action": "score", "reason": "对达标候选做技术面纪律评分复核",
+                 "command": "run_score.py --symbol <代码> --json"},
+                {"action": "backtest", "reason": "回测验证候选标的策略表现",
+                 "command": "run_backtest.py --symbol <代码> --strategy ma_cross --json"},
+            )
         payload = attach_meta(
             {
                 "criteria": criteria.to_dict(),
+                "preset": args.preset,
                 "n_scanned": n_scanned,
                 "n_phase1": result.get("n_phase1"),
                 "n_final": n_final,
@@ -193,12 +267,7 @@ def main() -> None:
                     f"扫描 {n_scanned} 只标的：{n_final} 只达标。"
                     f"最优候选：{top_sym}。筛选基于基本面快照，非收益预测。"
                 ),
-                "next_steps": build_next_steps(
-                    {"action": "score", "reason": "对达标候选做技术面纪律评分复核",
-                     "command": "run_score.py --symbol <代码> --json"},
-                    {"action": "backtest", "reason": "回测验证候选标的策略表现",
-                     "command": "run_backtest.py --symbol <代码> --strategy ma_cross --json"},
-                ),
+                "next_steps": next_steps,
             },
             command="screener",
         )
@@ -222,6 +291,14 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"增速>{criteria.min_growth:.0f}%")
     if criteria.min_cap > 0:
         parts.append(f"市值>{criteria.min_cap:.0f}亿")
+    if criteria.max_cap > 0:
+        parts.append(f"市值<{criteria.max_cap:.0f}亿")
+    if criteria.min_cash_yield > 0:
+        parts.append(f"现金流收益率>{criteria.min_cash_yield:.0f}%")
+    if criteria.smart_growth:
+        parts.append("聪明增长(资产增速<利润增速)")
+    if criteria.max_price_pos > 0:
+        parts.append(f"52周位置<{criteria.max_price_pos:.0%}")
     if criteria.use_valuation_pct:
         parts.append(f"估值分位增强(近{criteria.valuation_lookback}年)")
     return "、".join(parts) if parts else "无限制"

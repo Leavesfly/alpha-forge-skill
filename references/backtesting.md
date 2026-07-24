@@ -1,6 +1,7 @@
 # 回测引擎参考
 
-本文档说明 `scripts/backtest/` 中的回测引擎、绩效指标、可视化与参数寻优。
+本文档说明 `scripts/backtest/` 中的回测引擎、绩效指标、可视化与参数寻优，
+以及 `scripts/research/` 的稳健性验证（走步样本外 + PBO）与事件研究。
 
 ## 架构总览
 
@@ -184,6 +185,70 @@ uv run python run_optimize.py --symbol 600000.SH --strategy macd --method bayes 
 参数：`--metric`（默认 sharpe）、`--top`（默认 10）、`--method grid|random|bayes`、
 `--n-iter`（random/bayes 评估组数，默认 60）、`--seed`（默认 42）、`--allow-short`、
 `--stop-loss`、`--take-profit`、`--vol-target`、`--vol-window`、`--max-leverage`，其余与回测一致。
+
+## 交易保真度（成本/规则/成交价）
+
+回测可信度的根基。`run_backtest.py` / `run_optimize.py` / `run_validate.py` 均支持：
+
+```bash
+# A 股真实成本（卖出印花税 5bp + 双边过户费）+ 主板涨跌停/停牌不可成交 + 次日开盘成交
+uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross \
+    --market astock --limit-board main --exec-price open
+
+# 显式指定复权口径（前复权默认，回测推荐）；--no-cache 强制重新拉取
+uv run python run_backtest.py --symbol 600519.SH --strategy macd --adjust hfq --no-cache
+```
+
+- `--market {generic,astock}`：成本预设（astock 含卖出印花税 + 过户费）。
+- `--exec-price {close,open}`：收盘成交（默认）或次日开盘成交（更贴近现实，不吃建仓前的隔夜跳空）。
+- `--limit-board {main,star,chinext,st}`：启用 A 股涨跌停/停牌「不可成交」建模。
+- `--adjust {forward|qfq, backward|hfq, none}`：复权口径显式化；默认前复权。
+- K 线数据本地缓存与增量更新、数据源自动兜底降级（baostock/akshare/yfinance）及相关
+  环境变量（`ALPHA_FORGE_NO_CACHE` / `ALPHA_FORGE_CACHE_TTL` / `ALPHA_FORGE_DATA_SOURCE`
+  / `ALPHA_FORGE_RETRIES` 等）见 [data-fetching.md](data-fetching.md) 与 [faq.md](faq.md)。
+
+## 稳健性验证（run_validate.py：走步样本外 + PBO）
+
+「寻优挑出来的漂亮曲线」到了新数据上还灵不灵？用 `run_validate.py`：
+
+```bash
+# 走步（walk-forward）样本外验证：滚动重寻优，只在样本外计价
+uv run python run_validate.py --symbol 600000.SH --strategy ma_cross
+
+# 加做 PBO（组合对称交叉验证）估计过拟合概率
+uv run python run_validate.py --symbol AAPL.US --strategy macd --pbo --count 800
+```
+
+输出样本外净值/夏普 vs 基准、各走步折的选参与样本外收益，以及 PBO（>50% 意味过拟合风险高）。
+判断策略真伪应以样本外/DSR/PBO 为准，而非样本内指标。
+
+## 事件研究（run_event.py：AAR/CAAR）
+
+给定事件日期列表（如财报日、政策日），统计事件窗内的平均异常收益（AAR）与累计平均异常收益（CAAR）：
+
+```bash
+# 两次财报日的事件反应（默认窗口 [-10, +20] 交易日）
+uv run python run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30
+
+# 相对指数基准的超额反应 + CAAR 曲线图
+uv run python run_event.py --symbol 600519.SH --events 2025-04-25 \
+    --benchmark 510300.SH --pre -5 --post 15 --plot
+```
+
+> 小样本事件研究噪声很大，事件数 < 10 时结论仅供参考。
+
+## 编程方式调用
+
+```python
+from datafeed import fetch_ohlcv
+from strategies import get_strategy
+from backtest import run_backtest, format_report
+
+df = fetch_ohlcv("600519.SH", period="1d", count=500)
+strategy = get_strategy("ma_cross", fast=10, slow=30)
+result = run_backtest(df, strategy, symbol="600519.SH")
+print(format_report(result.metrics))
+```
 
 ## 仓位模式总结
 

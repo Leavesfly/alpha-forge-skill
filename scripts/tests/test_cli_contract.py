@@ -24,6 +24,7 @@ CLI_COMMANDS = [
     "run_backtest.py",
     "run_optimize.py",
     "run_compare.py",
+    "run_custom.py",
     "run_validate.py",
     "run_portfolio.py",
     "run_factor.py",
@@ -33,11 +34,13 @@ CLI_COMMANDS = [
     "run_dca.py",
     "run_score.py",
     "run_scan.py",
+    "run_screener.py",
     "run_canslim.py",
     "run_signal.py",
     "run_paper.py",
     "run_event.py",
     "run_account.py",
+    "run_profile.py",
     "run_dashboard.py",
     "run_list.py",
     "run_verify.py",
@@ -130,12 +133,15 @@ def test_error_prefix_convention():
     assert "[error]" in result.stderr
 
 
-# ─── 命令数量锁定 ─────────────────────────────────────────────────────────────
+# ─── 命令清单同步 ───────────────────────────────────────────────────────────────
 
 
-def test_cli_command_count():
-    """锁定 CLI 命令数量为 20（SKILL.md 文档约定）。"""
-    assert len(CLI_COMMANDS) == 20, "CLI 命令数量变更需同步更新 SKILL.md"
+def test_cli_commands_match_filesystem():
+    """CLI_COMMANDS 应与 scripts/ 下实际 run_*.py 文件一致（防文档/契约漂移）。"""
+    actual = sorted(p.name for p in SCRIPTS_DIR.glob("run_*.py"))
+    assert sorted(CLI_COMMANDS) == actual, (
+        "CLI 命令清单与实际文件不一致，需同步更新本清单与 SKILL.md 路由表"
+    )
 
 
 def test_all_cli_files_exist():

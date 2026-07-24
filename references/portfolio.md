@@ -94,9 +94,21 @@ uv run python run_portfolio.py --symbols 600000.SH,600519.SH,000858.SZ --strateg
 
 参数：`--symbols`（逗号分隔，至少 2 个）、`--strategy`（momentum/equal_weight/inverse_vol/min_variance/max_sharpe/hrp/min_cvar）、
 `--period`、`--count`、`--lookback`、`--top-k`、`--rebalance`、`--cvar-alpha`（min_cvar 置信水平，默认 0.95）、`--commission`、`--slippage`、
-`--plot`、`--output`。
+`--max-weight`（单标的权重上限）、`--risk`、`--attribution`、`--plot`、`--output`。
 
 输出组合与等权基准的绩效对比（累计/年化收益、夏普、最大回撤、卡玛等）及调仓次数。
+
+## 风险管理与业绩归因
+
+```bash
+# 单标的权重上限 + 风险报告（VaR/CVaR/溃疡指数）+ 收益归因
+uv run python run_portfolio.py --symbols 600000.SH,000001.SZ,600519.SH \
+    --strategy momentum --max-weight 0.5 --risk --attribution
+```
+
+- `--max-weight`：调仓日截断超限权重并归一化，控制单标的集中度；
+- `--risk`：附加组合风险报告（历史 VaR/CVaR、溃疡指数等，`risk/metrics.py`）；
+- `--attribution`：按标的分解组合收益贡献（`risk/attribution.py`），识别谁在赚钱谁在拖累。
 
 ## 编程方式调用
 

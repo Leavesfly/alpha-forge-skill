@@ -50,7 +50,7 @@ Level 6  端到端闭环     →  用例 8（研究闭环）+ 决策闭环（扫
 
 2. **要不要 API Key？** 免费服务即可获取历史日 K 线并完成**单标的回测、参数寻优、机器学习**——
    新手无需任何 Key。仅实时/分钟 K 线、股票池 `--universe`、财务因子才需要 `TICKFLOW_API_KEY`
-   （详见 [SKILL.md「环境配置」](../SKILL.md)）。
+   （申请与配置方式见 [faq.md](faq.md)）。
 
 3. **自检**：
 
@@ -325,7 +325,8 @@ print(format_report(result.metrics))
 | 定投（定期定额） | `run_dca.py --symbol 600000.SH --plot` | 按周期定额投入，看资金加权 IRR 与一次性投入对比 | [dca.md](dca.md) |
 | 事件研究 | `run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30 --plot` | 看财报日/政策日前后的平均超额反应（AAR/CAAR） | [backtesting.md](backtesting.md) |
 | 市场扫描 | `run_scan.py --symbols 600000.SH,600519.SH,000001.SZ,601398.SH --top 5` | 对一篮子/股票池跑纪律评分漏斗，筛出「是/观察」候选 | [scoring.md](scoring.md) |
-| 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（六维硬阈值漏斗，A 股免费，`--valuation-pct` 估值分位增强） | [scoring.md](scoring.md) |
+| 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（十维硬阈值漏斗，A 股免费，`--valuation-pct` 估值分位增强） | [scoring.md](scoring.md) |
+| 十倍股特征筛选 | `run_screener.py --preset multibagger` | 十倍股统计共性初筛（小市值+便宜+现金流+聪明增长+低位，非收益预测），建议接 canslim 交叉确认 + portfolio 组合持有 | [scoring.md](scoring.md) |
 
 （上表命令均以 `uv run python` 前缀在 `scripts/` 下运行，如 `uv run python run_factor.py ...`。）
 
@@ -379,12 +380,12 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 
 | 约定 | 说明 |
 |------|------|
-| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部 23 个命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` |
+| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` |
 | JSON 结构 | 顶层固定含 `schema`（当前 `alpha-forge/1`）、`command`、`generated_at` 三个元信息键，按 `command` 分发解析；字段只增不删 |
 | Agent 友好字段 | 所有命令的 JSON 输出含 **`summary`**（1–2 句自然语言结论，可直接引用或改写后转述给用户）和 **`next_steps`**（结构化后续动作列表，每项含 `action`/`reason`/`command`，部分项含可选 `condition`，仅条件成立时才提议）。`run_score` 额外含 **`evidence`** 结构化证据链（编号可引用，避免转述事实性错误） |
 | 能力发现 | `run_list.py --json`（`command=list`）返回全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，agent 可据此动态构造后续命令 |
 | 退出码 | 0=成功；1=运行错误（数据/网络/计算，含非法策略参数组合）；2=参数错误；130=用户中断。失败信息以 `[error] ` 前缀输出到 stderr |
-| 配置文件 | 全部 23 个 `run_*.py` 支持 `--config <TOML>`（显式命令行参数优先；未知键报错并给出近似建议） |
+| 配置文件 | 全部 `run_*.py` 支持 `--config <TOML>`（显式命令行参数优先；未知键报错并给出近似建议） |
 | 输出命名 | 图表/报告默认落 `outputs/<命令>_<关键参数>.png|html`，同配置重跑才覆盖；`--output` 可显式指定 |
 | 调试 | 设置 `ALPHA_FORGE_DEBUG=1` 可在出错时查看完整 Python 堆栈 |
 
@@ -420,7 +421,7 @@ uv run python run_score.py --symbol 600519.SH --valuation-pct --macro --json > s
 幂等）；用户追问“这套评分靠谱吗”→ `run_score.py --symbol 600519.SH --replay 120 --json` 用历史回放自证。
 
 > **Agent 提示**：优先使用 `.summary` 字段作为转述起点，再根据 `.next_steps` 主动提议下一步，
-> 而非等待用户追问。链式引导话术模板见 [SKILL.md「链式引导模板」](../SKILL.md)。
+> 而非等待用户追问。链式引导约定见 [SKILL.md「JSON 输出 Agent 字段与链式引导」](../SKILL.md)。
 > **深度解读时引用 `.evidence`**：如「收盘低于 MA200（E02）所以被否决」，而非自行推断指标值；
 > **`.next_steps` 含 `condition` 的项**（如 `verdict != no`）仅在条件成立时才向用户提议。
 

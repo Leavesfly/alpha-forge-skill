@@ -14,6 +14,7 @@ from typing import Callable
 from .data import (
     fetch_astock_detail,
     fetch_astock_snapshot,
+    fetch_price_position,
     fetch_yfinance_metrics,
     is_a_share,
 )
@@ -21,7 +22,7 @@ from .data import (
 
 @dataclass
 class ScreenCriteria:
-    """六维筛选阈值（0 表示不启用该维度）+ 可选估值分位增强。"""
+    """十维筛选阈值（0/False 表示不启用该维度）+ 可选估值分位增强。"""
 
     max_pe: float = 20.0        # 市盈率上限
     max_pb: float = 3.0         # 市净率上限
@@ -30,6 +31,10 @@ class ScreenCriteria:
     min_div: float = 0.0        # 股息率下限(%)，0=不筛
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
     min_cap: float = 30.0       # 总市值下限(亿)
+    max_cap: float = 0.0        # 总市值上限(亿)，0=不筛（十倍股：小市值起步）
+    min_cash_yield: float = 0.0  # 现金流收益率下限(%)，0=不筛（FCF Yield 近似）
+    smart_growth: bool = False  # 聪明增长：要求资产增速 < 净利润增速（仅 A 股有数据）
+    max_price_pos: float = 0.0  # 52 周价格位置上限(0~1)，0=不筛（低位左侧启动）
     use_valuation_pct: bool = False  # 是否启用估值历史分位增强（逐只拉取，较慢）
     valuation_lookback: int = 5      # 估值分位回看年数
 
@@ -43,10 +48,35 @@ class ScreenCriteria:
             "min_growth": self.min_growth,
             "min_cap": self.min_cap,
         }
+        if self.max_cap > 0:
+            d["max_cap"] = self.max_cap
+        if self.min_cash_yield > 0:
+            d["min_cash_yield"] = self.min_cash_yield
+        if self.smart_growth:
+            d["smart_growth"] = True
+        if self.max_price_pos > 0:
+            d["max_price_pos"] = self.max_price_pos
         if self.use_valuation_pct:
             d["use_valuation_pct"] = True
             d["valuation_lookback"] = self.valuation_lookback
         return d
+
+
+#: 预设筛选方案：键为 CLI 参数名（dest 形式），值为预设默认，显式参数可覆盖。
+#: multibagger 取自 Yartseva(2025) 464 只美股十倍股实证 + Alta Fox(2020) 研究，
+#: 阈值按 A 股口径本土化：小市值/便宜/现金流好/聪明增长/低位左侧，不要求高增长。
+PRESETS: dict[str, dict] = {
+    "multibagger": {
+        "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
+        "max_pb": 1.6,          # 便宜：Book-to-Market 前 30% 的绝对阈值近似
+        "min_roe": 5.0,         # 财务健康即可（十倍股起点 ROE 中位数仅 9%）
+        "min_cap": 15.0,        # 流动性/壳风险底线
+        "max_cap": 200.0,       # 小市值：十倍股几乎都从中小市值起步
+        "min_cash_yield": 6.0,  # 现金流收益率：研究中最强单一预测因子
+        "smart_growth": True,   # 资产增速 < 利润增速（扩张有效率）
+        "max_price_pos": 0.5,   # 52 周区间下半部（左侧启动，不追高）
+    },
+}
 
 
 @dataclass
@@ -100,6 +130,8 @@ _WEIGHTS = {
     "debt": 0.10,
     "div": 0.10,
     "growth": 0.10,
+    "cash": 0.15,
+    "pos": 0.10,
 }
 
 
@@ -151,6 +183,18 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         scores["growth"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["growth"] = _WEIGHTS["growth"]
 
+    cash = metrics.get("cash_yield")
+    if criteria.min_cash_yield > 0 and cash is not None:
+        ratio = cash / criteria.min_cash_yield
+        scores["cash"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["cash"] = _WEIGHTS["cash"]
+
+    pos = metrics.get("price_pos")
+    if criteria.max_price_pos > 0 and pos is not None:
+        # 位置越低（越靠近 52 周低点）得分越高
+        scores["pos"] = (1.0 - min(max(pos, 0.0), 1.0)) * 100.0
+        weights["pos"] = _WEIGHTS["pos"]
+
     if not weights:
         return 0.0
 
@@ -194,9 +238,11 @@ def screen_astock_phase1(
     if criteria.max_pb > 0 and "pb" in df.columns:
         df = df[(df["pb"] > 0) & (df["pb"] <= criteria.max_pb)]
 
-    # 市值过滤
+    # 市值过滤（下限/上限）
     if criteria.min_cap > 0 and "total_mv" in df.columns:
         df = df[df["total_mv"] >= criteria.min_cap]
+    if criteria.max_cap > 0 and "total_mv" in df.columns:
+        df = df[df["total_mv"] <= criteria.max_cap]
 
     survivors = df.to_dict("records")
     if log:
@@ -229,6 +275,7 @@ def screen_astock_phase2(
     # 判断是否需要 Phase 2（有深度指标阈值启用时才逐只拉取）
     need_detail = (
         criteria.min_roe > 0 or criteria.max_debt > 0 or criteria.min_growth > 0
+        or criteria.min_cash_yield > 0 or criteria.smart_growth
     )
 
     results: list[ScreenResult] = []
@@ -248,6 +295,8 @@ def screen_astock_phase2(
             "roe": None,
             "debt_ratio": None,
             "profit_growth": None,
+            "asset_growth": None,
+            "cash_yield": None,
         }
 
         # 股息率 Phase 1 过滤（如果快照有该字段且阈值启用）
@@ -269,6 +318,12 @@ def screen_astock_phase2(
             metrics["roe"] = detail.get("roe")
             metrics["debt_ratio"] = detail.get("debt_ratio")
             metrics["profit_growth"] = detail.get("profit_growth")
+            metrics["asset_growth"] = detail.get("asset_growth")
+            # 现金流收益率 = 每股经营现金流 / 股价（FCF Yield 的 A 股免费近似）
+            ocf = detail.get("ocf_per_share")
+            close = metrics.get("close")
+            if ocf is not None and close:
+                metrics["cash_yield"] = ocf / close * 100.0
 
         # 深度过滤
         fail_reasons = _check_detail_criteria(metrics, criteria)
@@ -320,6 +375,21 @@ def _check_detail_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]
             reasons.append("增速数据缺失")
         elif growth < criteria.min_growth:
             reasons.append(f"净利润增速 {growth:.1f}% < {criteria.min_growth:.0f}%")
+
+    if criteria.min_cash_yield > 0:
+        cash = metrics.get("cash_yield")
+        if cash is None:
+            reasons.append("现金流数据缺失")
+        elif cash < criteria.min_cash_yield:
+            reasons.append(f"现金流收益率 {cash:.1f}% < {criteria.min_cash_yield:.0f}%")
+
+    if criteria.smart_growth:
+        asset_g = metrics.get("asset_growth")
+        profit_g = metrics.get("profit_growth")
+        if asset_g is None or profit_g is None:
+            reasons.append("聪明增长数据缺失（资产/利润增速）")
+        elif asset_g >= profit_g:
+            reasons.append(f"资产增速 {asset_g:.1f}% ≥ 利润增速 {profit_g:.1f}%（扩张低效）")
 
     return reasons
 
@@ -410,6 +480,18 @@ def _check_all_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]:
         if mv is not None and mv < criteria.min_cap:
             reasons.append(f"市值 {mv:.0f} 亿 < {criteria.min_cap:.0f} 亿")
 
+    if criteria.max_cap > 0:
+        mv = metrics.get("total_mv")
+        if mv is not None and mv > criteria.max_cap:
+            reasons.append(f"市值 {mv:.0f} 亿 > {criteria.max_cap:.0f} 亿")
+
+    if criteria.max_price_pos > 0:
+        pos = metrics.get("price_pos")
+        if pos is None:
+            reasons.append("52 周价格位置数据缺失")
+        elif pos > criteria.max_price_pos:
+            reasons.append(f"52 周位置 {pos:.0%} > {criteria.max_price_pos:.0%}（位置偏高）")
+
     if criteria.min_div > 0:
         div = metrics.get("div_yield")
         if div is None or div < criteria.min_div:
@@ -471,6 +553,10 @@ def run_screen(
         n_phase1 = len(survivors)
         all_results = screen_astock_phase2(survivors, criteria, log, on_progress)
 
+        # Phase 3：52 周价格位置过滤（仅对通过基本面的候选逐只拉日 K，较慢）
+        if criteria.max_price_pos > 0 and all_results:
+            all_results = _filter_price_position(all_results, criteria, log, on_progress)
+
     # 估值分位增强（可选，逐只拉取历史 PE/PB）
     if criteria.use_valuation_pct and all_results:
         all_results = _enrich_valuation(
@@ -487,6 +573,44 @@ def run_screen(
         "n_phase1": n_phase1 if not symbols else None,
         "n_final": len(all_results),
     }
+
+
+def _filter_price_position(
+    results: list[ScreenResult],
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> list[ScreenResult]:
+    """Phase 3：逐只拉取日 K 计算 52 周价格位置，保留低位（左侧）标的。
+
+    位置计入综合评分（越低越高分）；日 K 拉取失败视为数据缺失剔除。
+    """
+    if log:
+        log(f"Phase 3 位置过滤：拉取 {len(results)} 只候选的近 52 周日 K...")
+
+    kept: list[ScreenResult] = []
+    n_high, n_missing = 0, 0
+    for i, r in enumerate(results):
+        pos = r.metrics.get("price_pos")
+        if pos is None:
+            pos = fetch_price_position(r.symbol)
+        if pos is None:
+            n_missing += 1
+        elif pos > criteria.max_price_pos:
+            n_high += 1
+        else:
+            r.metrics["price_pos"] = pos
+            r.score = composite_score(r.metrics, criteria)
+            kept.append(r)
+        if on_progress:
+            on_progress(i + 1, r.symbol)
+
+    if log:
+        log(
+            f"Phase 3 位置过滤：{len(results)} 只 → {len(kept)} 只存活"
+            f"（位置偏高 {n_high} 只，数据缺失 {n_missing} 只）"
+        )
+    return kept
 
 
 def _screen_astock_manual(
@@ -518,9 +642,18 @@ def _screen_astock_manual(
             "div_yield": (info or {}).get("div_yield"),
             "debt_ratio": (detail or {}).get("debt_ratio"),
             "profit_growth": (detail or {}).get("profit_growth"),
+            "asset_growth": (detail or {}).get("asset_growth"),
             "total_mv": (info or {}).get("total_mv"),
             "close": (info or {}).get("close"),
+            "cash_yield": (info or {}).get("cash_yield"),
+            "price_pos": (info or {}).get("price_pos"),
         }
+
+        # A 股优先用财报口径：每股经营现金流 / 股价（与全市场批量路径一致）
+        ocf = (detail or {}).get("ocf_per_share")
+        close = metrics.get("close")
+        if ocf is not None and close:
+            metrics["cash_yield"] = ocf / close * 100.0
 
         fail_reasons = _check_all_criteria(metrics, criteria)
         passed = len(fail_reasons) == 0

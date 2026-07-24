@@ -215,9 +215,33 @@ JSON 输出在 `macro_regime` / `macro_regime_cn` / `macro_advice` / `macro_snap
 # 登记为平衡型投资者，可用资金 20 万
 uv run python run_profile.py --set --risk-tolerance balanced --capital 200000
 
+# 自定义（激进 + 显式覆盖最大回撤）；查看用 --json，重置用 --reset
+uv run python run_profile.py --set --risk-tolerance aggressive --max-drawdown 0.4
+
 # 之后评分自动用画像参数计算建议仓位（无需再传 --capital/--risk-pct）
 uv run python run_score.py --symbol 600000.SH
 ```
+
+优先级：显式 CLI 参数 > 用户画像 > 内置默认。
+
+## 统一持仓账户联动（run_account.py）
+
+真实持仓登记在 `outputs/account.json`，各命令自动联动（仅登记，不做交易执行）：
+
+```bash
+# 登记/更新持仓（同标的重复 --set 即更新）
+uv run python run_account.py --set --symbol 600000.SH --shares 1000 --cost 8.50
+
+# 查看账户（默认拉最新收盘价算浮盈亏；--no-quote 离线）
+uv run python run_account.py
+
+# 移除持仓
+uv run python run_account.py --remove --symbol 600000.SH
+```
+
+联动效果：`run_score.py` 未传 `--cost` 时自动带入账户成本给操作建议（优先级：显式
+`--cost` > 账户登记 > 模拟盘探测）；`run_scan.py` 对已持标的标注「已持有」，
+`--exclude-held` 可直接排除。
 
 ## 命令行用法
 
@@ -331,7 +355,7 @@ uv run python run_score.py --symbol 600000.SH --risk-file ../outputs/risk_600000
 |------|------|----------|------|
 | `run_score.py` | 现在能不能买（趋势动量纪律） | 价量结构 + 市场环境 | 结论五态 + 交易计划 |
 | `run_scan.py` | 批量纪律过滤（强势标的） | 同上，批量执行 | 达标/降级候选分列 |
-| `run_screener.py` | 哪些被低估（基本面价值发现） | PE/PB/ROE/负债/分红/增速 | 综合评分排序候选 |
+| `run_screener.py` | 哪些被低估（基本面价值发现） | PE/PB/ROE/负债/分红/增速/市值区间/现金流/聪明增长/52周位置 | 综合评分排序候选 |
 | `run_factor.py` | 相对好坏（截面排名） | 多因子打分 | 分位选股 + 分层回测 |
 
 筛选基于公开财务快照（最近报告期），不构成投资建议。
@@ -345,6 +369,20 @@ uv run python run_score.py --symbol 600000.SH --risk-file ../outputs/risk_600000
   而 A 股低 PE 低 PB 池子恰以金融股为主力。需纳入金融股时加 `--max-debt 0`。
 - **静态低 PE 存在周期陷阱**：盈利周期顶部的煤炭/航运/养殖类利润高→PE 假性低，
   建议对周期行业加 `--valuation-pct` 用估值历史分位交叉验证。
+
+常用组合示例：
+
+```bash
+# 高分红低估值（股息率>3%, PE<15, PB<2）
+uv run python run_screener.py --max-pe 15 --max-pb 2 --min-div 3
+
+# 成长+质量（ROE>15%, 增速>20%, 负债<60%）
+uv run python run_screener.py --min-roe 15 --min-growth 20 --max-debt 60
+
+# 港美股手动列表筛选（yfinance 逐只）；排序与截断用 --sort/--top
+uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
+uv run python run_screener.py --sort roe --top 20
+```
 
 ### 估值历史分位增强（`--valuation-pct`）
 
@@ -364,6 +402,33 @@ uv run python run_screener.py --valuation-pct --valuation-lookback 10
 ```
 
 > 注：估值分位增强需逐只拉取历史数据，速度较慢，建议对初筛后的少量候选使用。
+
+### 十倍股统计特征预设（`--preset multibagger`）
+
+取自两份十倍股实证研究的统计共性，阈值按 A 股口径本土化：
+
+- **Yartseva(2025)**：464 只美股十倍股（2009-2024）的预测性建模——起飞前小市值、
+  估值便宜、盈利平庸；最强单一预测因子是自由现金流收益率；动量为负向因子
+  （多从 12 个月低点启动）；资产增速超过 EBITDA 增速的公司跑输。
+- **Alta Fox(2020)**：104 只 5 年 350%+ 公司——84% 起点市值 <\$20 亿，82% 起点估值合理。
+
+预设阈值：市值 15~200 亿 + PB<1.6 + ROE>5%（财务健康即可，不要求高增长）+
+现金流收益率>6%（A 股=每股经营现金流/股价，港美股=FCF/市值）+ 聪明增长
+（资产增速<净利润增速，仅 A 股有数据）+ 52 周位置<50%（左侧低位，逐只拉日 K 较慢）。
+显式参数可覆盖任意预设项（如 `--preset multibagger --max-cap 300`）。
+
+```bash
+# 十倍股特征筛选 + JSON 输出
+uv run python run_screener.py --preset multibagger --json
+```
+
+> 转述时不可省略：这是历史十倍股的统计共性，**不是收益预测**；十倍股为极右尾
+> 事件（A 股近五年占比约 2%），命中靠组合持有（20~50 只）+移动止损让赢家奔跑，
+> 而非单点押注。阈值源于美股实证未经 A 股样本外验证。
+
+十倍股典型工作流：
+`run_screener.py --preset multibagger`（统计特征初筛）→ `run_canslim.py --symbols <候选>`
+（盈利加速+RS 强度交叉确认）→ `run_portfolio.py`（组合持有+移动止损）。
 
 典型工作流：
 `run_screener.py`（发现低估候选）→ `run_score.py`（技术面复核）→ `run_paper.py --mode score`（纸面跟踪）。

@@ -5,10 +5,12 @@
 - run_factor.py：多因子截面排名（相对好坏）
 - run_screener.py（本模块）：基本面价值发现（哪些被低估）
 
-两阶段漏斗：批量快照过滤（PE/PB/市值）→ 逐只深度过滤（ROE/负债/分红/增速）。
+两阶段漏斗：批量快照过滤（PE/PB/市值）→ 逐只深度过滤（ROE/负债/分红/增速/现金流）；
+启用 52 周位置维度时追加 Phase 3 位置过滤。内置 multibagger（十倍股特征）预设。
 """
 
 from .engine import (
+    PRESETS,
     ScreenCriteria,
     ScreenResult,
     composite_score,
@@ -19,6 +21,7 @@ from .engine import (
 )
 
 __all__ = [
+    "PRESETS",
     "ScreenCriteria",
     "ScreenResult",
     "composite_score",
