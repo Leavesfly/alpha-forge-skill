@@ -7,11 +7,20 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from screener import PRESETS, ScreenCriteria, ScreenResult, composite_score, run_screen
+from screener import (
+    PRESETS,
+    ScreenCriteria,
+    ScreenResult,
+    composite_score,
+    market_regime,
+    run_screen,
+)
 from screener.engine import (
     _check_all_criteria,
     _check_detail_criteria,
+    _check_tech_criteria,
     _code_to_symbol,
+    _filter_monster_tech,
     _filter_price_position,
     _sort_results,
     screen_astock_phase1,
@@ -39,6 +48,12 @@ class TestScreenCriteria:
         assert c.min_cash_yield == 0.0
         assert c.smart_growth is False
         assert c.max_price_pos == 0.0
+        # 猛兽股技术维度默认全部不启用（不改变存量行为）
+        assert c.min_price_pos == 0.0
+        assert c.trend_filter is False
+        assert c.rs_filter is False
+        assert c.min_updown_vol == 0.0
+        assert c.market_filter is False
 
     def test_to_dict(self):
         c = ScreenCriteria(max_pe=15, min_div=3)
@@ -58,16 +73,39 @@ class TestScreenCriteria:
         assert d["smart_growth"] is True
         assert d["max_price_pos"] == 0.5
 
+    def test_to_dict_monster_dims(self):
+        c = ScreenCriteria(
+            min_price_pos=0.75, trend_filter=True, rs_filter=True,
+            min_updown_vol=1.2, market_filter=True,
+        )
+        d = c.to_dict()
+        assert d["min_price_pos"] == 0.75
+        assert d["trend_filter"] is True
+        assert d["rs_filter"] is True
+        assert d["min_updown_vol"] == 1.2
+        assert d["market_filter"] is True
+        # 未启用时不出现在契约中
+        d2 = ScreenCriteria().to_dict()
+        for key in ("min_price_pos", "trend_filter", "rs_filter", "min_updown_vol", "market_filter"):
+            assert key not in d2
+
 
 class TestPresets:
     def test_multibagger_preset_exists(self):
         assert "multibagger" in PRESETS
 
-    def test_multibagger_preset_keys_are_criteria_fields(self):
+    def test_hundredbagger_preset_exists(self):
+        assert "hundredbagger" in PRESETS
+
+    def test_monster_preset_exists(self):
+        assert "monster" in PRESETS
+
+    def test_preset_keys_are_criteria_fields(self):
         """预设键必须是 ScreenCriteria 字段（同时也是 CLI dest）。"""
         fields = set(ScreenCriteria.__dataclass_fields__)
-        for key in PRESETS["multibagger"]:
-            assert key in fields
+        for preset in PRESETS.values():
+            for key in preset:
+                assert key in fields
 
     def test_multibagger_preset_semantics(self):
         """预设语义：小市值+便宜+现金流+聪明增长+低位，不看 PE、不要求高增长。"""
@@ -78,6 +116,32 @@ class TestPresets:
         assert p["min_cash_yield"] > 0       # 现金流因子启用
         assert p["smart_growth"] is True
         assert 0 < p["max_price_pos"] <= 1.0
+
+    def test_hundredbagger_preset_semantics(self):
+        """预设语义（迈耶百倍股标准）：高 ROE+双高增+小市值+低杠杆，不卡 PB、不左侧择时。"""
+        p = PRESETS["hundredbagger"]
+        assert p["min_roe"] >= 20.0          # 核心：高 ROE 复利发动机
+        assert p["min_growth"] > 0           # 利润高增
+        assert p["min_rev_growth"] > 0       # 营收驱动
+        assert p["max_pb"] == 0.0            # 不卡 PB（与高 ROE 不矛盾）
+        assert p["max_pe"] > 0               # 合理价格宽松上限
+        assert 0 < p["max_debt"] <= 70.0     # 低杠杆
+        assert p["max_cap"] > p["min_cap"]   # 市值区间合法
+        assert "max_price_pos" not in p      # 不择时：买对拿住
+
+    def test_monster_preset_semantics(self):
+        """预设语义（波伊克《猛兽股》）：右侧强势——大势+盈利高增+高位+RS+量价，不看估值。"""
+        p = PRESETS["monster"]
+        assert p["max_pe"] == 0.0            # 不看 PE：成长领导股 PE 普遍偏高
+        assert p["max_pb"] == 0.0            # 不看 PB：买强不买便宜
+        assert p["min_roe"] > 0              # 领导股质量
+        assert p["min_growth"] >= 25.0       # 盈利高增（欧奈尔 C 标准）
+        assert 0.5 <= p["min_price_pos"] <= 1.0  # 52 周高位：买强不买弱
+        assert p["trend_filter"] is True     # 多头结构
+        assert p["rs_filter"] is True        # RS 线跑赢基准
+        assert p["min_updown_vol"] > 1.0     # 上涨放量下跌缩量
+        assert p["market_filter"] is True    # 大势确认（必要条件）
+        assert "max_price_pos" not in p      # 与左侧低位口径互斥
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +201,27 @@ class TestCompositeScore:
         score = composite_score(metrics, c)
         assert score == 0.0
 
+    def test_min_price_pos_high_is_better(self):
+        """猛兽股口径：位置越高（越接近 52 周新高）得分越高，与左侧口径相反。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_price_pos=0.75)
+        high = composite_score({"price_pos": 0.95}, c)
+        low = composite_score({"price_pos": 0.76}, c)
+        assert high > low
+        assert high == 95.0  # 位置 95% → 95 分（唯一启用维度）
+
+    def test_rs_excess_score(self):
+        """RS 超额 0~50pp 线性映射；超过 50pp 封顶。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, rs_filter=True)
+        assert composite_score({"rs_excess": 25.0}, c) == 50.0
+        assert composite_score({"rs_excess": 80.0}, c) == 100.0
+        assert composite_score({"rs_excess": -10.0}, c) == 0.0
+
+    def test_updown_vol_score(self):
+        """量比达标程度评分：阈值处 50 分，2 倍阈值封顶 100 分。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_updown_vol=1.2)
+        assert composite_score({"updown_vol_ratio": 1.2}, c) == 50.0
+        assert composite_score({"updown_vol_ratio": 2.4}, c) == 100.0
+
 
 # ---------------------------------------------------------------------------
 # _check_detail_criteria
@@ -187,6 +272,15 @@ class TestCheckDetailCriteria:
         reasons = _check_detail_criteria({"cash_yield": 3.0}, c)
         assert any("现金流" in r for r in reasons)
         reasons = _check_detail_criteria({"cash_yield": None}, c)
+        assert any("缺失" in r for r in reasons)
+
+    def test_rev_growth_pass_fail(self):
+        """营收增速维度（百倍股：增长须由营收驱动）。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, min_rev_growth=15)
+        assert _check_detail_criteria({"revenue_growth": 20.0}, c) == []
+        reasons = _check_detail_criteria({"revenue_growth": 5.0}, c)
+        assert any("营收增速" in r for r in reasons)
+        reasons = _check_detail_criteria({"revenue_growth": None}, c)
         assert any("缺失" in r for r in reasons)
 
     def test_smart_growth_pass_fail(self):
@@ -566,6 +660,156 @@ class TestFilterPricePosition:
 
 
 # ---------------------------------------------------------------------------
+# 猛兽股：market_regime / _check_tech_criteria / _filter_monster_tech (mock)
+# ---------------------------------------------------------------------------
+
+
+class TestMarketRegime:
+    def _make_series(self, trend: str) -> pd.Series:
+        if trend == "up":
+            return pd.Series(range(100, 400))  # 单调上行：收盘 > MA50 > MA200
+        return pd.Series(range(400, 100, -1))  # 单调下行
+
+    def test_uptrend(self):
+        regime = market_regime(self._make_series("up"))
+        assert regime is not None
+        assert regime["uptrend"] is True
+        assert regime["close"] > regime["ma50"] > regime["ma200"]
+
+    def test_downtrend(self):
+        regime = market_regime(self._make_series("down"))
+        assert regime is not None
+        assert regime["uptrend"] is False
+
+    def test_insufficient_data(self):
+        assert market_regime(None) is None
+        assert market_regime(pd.Series(range(100))) is None  # 不足 200 根
+
+
+class TestCheckTechCriteria:
+    def _profile(self, **overrides) -> dict:
+        base = {
+            "price_pos": 0.9, "close": 100.0, "ma50": 90.0, "ma200": 80.0,
+            "trend_ok": True, "rs_excess": 12.0, "updown_vol_ratio": 1.5,
+        }
+        base.update(overrides)
+        return base
+
+    def _criteria(self) -> ScreenCriteria:
+        return ScreenCriteria(
+            max_pe=0, max_pb=0, min_roe=0, max_debt=0,
+            min_price_pos=0.75, trend_filter=True, rs_filter=True,
+            min_updown_vol=1.2, market_filter=True,
+        )
+
+    def test_all_pass(self):
+        regime = {"uptrend": True, "close": 4000, "ma50": 3900, "ma200": 3800}
+        assert _check_tech_criteria(self._profile(), self._criteria(), regime) == []
+
+    def test_profile_missing(self):
+        reasons = _check_tech_criteria(None, self._criteria(), None)
+        assert any("技术面数据缺失" in r for r in reasons)
+
+    def test_low_position_fail(self):
+        regime = {"uptrend": True, "close": 1, "ma50": 1, "ma200": 1}
+        reasons = _check_tech_criteria(self._profile(price_pos=0.3), self._criteria(), regime)
+        assert any("买强不买弱" in r for r in reasons)
+
+    def test_trend_fail(self):
+        regime = {"uptrend": True, "close": 1, "ma50": 1, "ma200": 1}
+        reasons = _check_tech_criteria(self._profile(trend_ok=False), self._criteria(), regime)
+        assert any("趋势结构" in r for r in reasons)
+
+    def test_rs_weak_fail(self):
+        regime = {"uptrend": True, "close": 1, "ma50": 1, "ma200": 1}
+        reasons = _check_tech_criteria(self._profile(rs_excess=-5.0), self._criteria(), regime)
+        assert any("RS 线弱势" in r for r in reasons)
+        # RS 数据缺失也剔除（无法核查即不买）
+        reasons = _check_tech_criteria(self._profile(rs_excess=None), self._criteria(), regime)
+        assert any("RS 相对强度数据缺失" in r for r in reasons)
+
+    def test_updown_vol_fail(self):
+        regime = {"uptrend": True, "close": 1, "ma50": 1, "ma200": 1}
+        reasons = _check_tech_criteria(self._profile(updown_vol_ratio=0.8), self._criteria(), regime)
+        assert any("派发重于吸筹" in r for r in reasons)
+
+    def test_market_downtrend_fail(self):
+        regime = {"uptrend": False, "close": 3000, "ma50": 3100, "ma200": 3200}
+        reasons = _check_tech_criteria(self._profile(), self._criteria(), regime)
+        assert any("大势未确认上行" in r for r in reasons)
+        # 大势数据缺失同样剔除
+        reasons = _check_tech_criteria(self._profile(), self._criteria(), None)
+        assert any("大势数据缺失" in r for r in reasons)
+
+    def test_disabled_dims_skip(self):
+        """未启用的维度不检查（即使指标很差）。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0)
+        profile = self._profile(price_pos=0.1, trend_ok=False, rs_excess=-20, updown_vol_ratio=0.5)
+        assert _check_tech_criteria(profile, c, None) == []
+
+
+class TestFilterMonsterTech:
+    def _make_results(self):
+        return [
+            ScreenResult("600001.SH", "强势", {"roe": 20.0}, 50, True),
+            ScreenResult("600002.SH", "弱势", {"roe": 20.0}, 50, True),
+            ScreenResult("600003.SH", "无数据", {"roe": 20.0}, 50, True),
+        ]
+
+    def _criteria(self) -> ScreenCriteria:
+        return ScreenCriteria(
+            max_pe=0, max_pb=0, min_roe=0, max_debt=0,
+            min_price_pos=0.75, trend_filter=True, rs_filter=True, min_updown_vol=1.2,
+        )
+
+    @patch("screener.engine.fetch_benchmark_close")
+    @patch("screener.engine.fetch_technical_profile")
+    def test_keeps_strong_drops_weak(self, mock_profile, mock_bench):
+        mock_bench.return_value = pd.Series(range(100, 400))
+        strong = {
+            "price_pos": 0.9, "close": 100.0, "ma50": 90.0, "ma200": 80.0,
+            "trend_ok": True, "rs_excess": 15.0, "updown_vol_ratio": 1.6,
+        }
+        weak = {
+            "price_pos": 0.4, "close": 50.0, "ma50": 55.0, "ma200": 60.0,
+            "trend_ok": False, "rs_excess": -8.0, "updown_vol_ratio": 0.9,
+        }
+        mock_profile.side_effect = [strong, weak, None]
+        kept = _filter_monster_tech(self._make_results(), self._criteria())
+        assert [r.symbol for r in kept] == ["600001.SH"]
+        # 技术指标写入 metrics 并重算评分
+        assert kept[0].metrics["price_pos"] == 0.9
+        assert kept[0].metrics["rs_excess"] == 15.0
+        assert kept[0].metrics["updown_vol_ratio"] == 1.6
+        assert kept[0].score > 0
+
+    @patch("screener.engine.fetch_benchmark_close")
+    @patch("screener.engine.fetch_technical_profile")
+    def test_no_bench_fetch_when_not_needed(self, mock_profile, mock_bench):
+        """未启用 RS/大势维度时不拉基准。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_price_pos=0.75)
+        mock_profile.return_value = {
+            "price_pos": 0.9, "close": 100.0, "ma50": 90.0, "ma200": 80.0,
+            "trend_ok": True, "rs_excess": None, "updown_vol_ratio": None,
+        }
+        kept = _filter_monster_tech(self._make_results(), c)
+        assert len(kept) == 3
+        mock_bench.assert_not_called()
+
+
+class TestRunScreenMarketFilter:
+    @patch("screener.engine.fetch_benchmark_close")
+    def test_bulk_halts_when_market_down(self, mock_bench):
+        """大势未确认上行：纪律性不筛，直接返回空结果 + market_regime。"""
+        mock_bench.return_value = pd.Series(range(400, 100, -1))  # 下行基准
+        criteria = ScreenCriteria(market_filter=True)
+        result = run_screen(criteria, symbols=None)
+        assert result["candidates"] == []
+        assert result["n_scanned"] == 0
+        assert result["market_regime"]["uptrend"] is False
+
+
+# ---------------------------------------------------------------------------
 # CLI 预设应用（_apply_preset）
 # ---------------------------------------------------------------------------
 
@@ -593,6 +837,18 @@ class TestApplyPreset:
         assert args.smart_growth is True
         assert args.max_price_pos == p["max_price_pos"]
 
+    def test_hundredbagger_preset_applied(self):
+        args = self._parse(["--preset", "hundredbagger"])
+        p = PRESETS["hundredbagger"]
+        assert args.min_roe == p["min_roe"]
+        assert args.min_growth == p["min_growth"]
+        assert args.min_rev_growth == p["min_rev_growth"]
+        assert args.max_pb == 0.0            # 不卡 PB
+        assert args.max_cap == p["max_cap"]
+        # 未在预设中的项保持 CLI 默认：不启用左侧择时
+        assert args.max_price_pos == 0.0
+        assert args.smart_growth is False
+
     def test_explicit_arg_overrides_preset(self):
         """显式参数 > 预设：--max-cap 300 覆盖预设的 200。"""
         args = self._parse(["--preset", "multibagger", "--max-cap", "300"])
@@ -604,3 +860,23 @@ class TestApplyPreset:
         """--max-cap=300 等号形式也能识别为显式参数。"""
         args = self._parse(["--preset", "multibagger", "--max-cap=300"])
         assert args.max_cap == 300.0
+
+    def test_monster_preset_applied(self):
+        args = self._parse(["--preset", "monster"])
+        p = PRESETS["monster"]
+        assert args.max_pe == p["max_pe"]
+        assert args.min_roe == p["min_roe"]
+        assert args.min_growth == p["min_growth"]
+        assert args.min_price_pos == p["min_price_pos"]
+        assert args.trend_filter is True
+        assert args.rs_filter is True
+        assert args.min_updown_vol == p["min_updown_vol"]
+        assert args.market_filter is True
+        # 不启用左侧低位口径（与 min_price_pos 互斥）
+        assert args.max_price_pos == 0.0
+
+    def test_monster_explicit_override(self):
+        """显式参数 > 预设：放宽 52 周位置下限到 0.6。"""
+        args = self._parse(["--preset", "monster", "--min-price-pos", "0.6"])
+        assert args.min_price_pos == 0.6
+        assert args.rs_filter is True  # 未显式提供的项仍用预设

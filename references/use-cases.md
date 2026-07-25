@@ -327,6 +327,8 @@ print(format_report(result.metrics))
 | 市场扫描 | `run_scan.py --symbols 600000.SH,600519.SH,000001.SZ,601398.SH --top 5` | 对一篮子/股票池跑纪律评分漏斗，筛出「是/观察」候选 | [scoring.md](scoring.md) |
 | 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（十维硬阈值漏斗，A 股免费，`--valuation-pct` 估值分位增强） | [scoring.md](scoring.md) |
 | 十倍股特征筛选 | `run_screener.py --preset multibagger` | 十倍股统计共性初筛（小市值+便宜+现金流+聪明增长+低位，非收益预测），建议接 canslim 交叉确认 + portfolio 组合持有 | [scoring.md](scoring.md) |
+| 百倍股质量成长筛选 | `run_screener.py --preset hundredbagger` | 迈耶《如何找到100倍回报的股票》标准（高ROE+营收/利润双高增+小市值+低杠杆，非收益预测），百倍靠 20+ 年买对拿住，建议接 canslim 验证盈利持续性 | [scoring.md](scoring.md) |
+| 猛兽股右侧强势筛选 | `run_screener.py --preset monster` | 波伊克《猛兽股》标准（大势确认+盈利高增+接近 52 周新高+RS 跑赢基准+量价吸筹，非收益预测），大势不对时纪律性不筛，买强势股须带止损，建议接 score 生成交易计划 | [scoring.md](scoring.md) |
 
 （上表命令均以 `uv run python` 前缀在 `scripts/` 下运行，如 `uv run python run_factor.py ...`。）
 

@@ -14,7 +14,9 @@ from typing import Callable
 from .data import (
     fetch_astock_detail,
     fetch_astock_snapshot,
+    fetch_benchmark_close,
     fetch_price_position,
+    fetch_technical_profile,
     fetch_yfinance_metrics,
     is_a_share,
 )
@@ -30,11 +32,17 @@ class ScreenCriteria:
     max_debt: float = 70.0      # 资产负债率上限(%)，默认会剔除高杠杆金融股，0=不筛
     min_div: float = 0.0        # 股息率下限(%)，0=不筛
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
+    min_rev_growth: float = 0.0  # 营收增速下限(%)，0=不筛（百倍股：增长须由营收驱动）
     min_cap: float = 30.0       # 总市值下限(亿)
     max_cap: float = 0.0        # 总市值上限(亿)，0=不筛（十倍股：小市值起步）
     min_cash_yield: float = 0.0  # 现金流收益率下限(%)，0=不筛（FCF Yield 近似）
     smart_growth: bool = False  # 聪明增长：要求资产增速 < 净利润增速（仅 A 股有数据）
     max_price_pos: float = 0.0  # 52 周价格位置上限(0~1)，0=不筛（低位左侧启动）
+    min_price_pos: float = 0.0  # 52 周价格位置下限(0~1)，0=不筛（猛兽股：买强不买弱）
+    trend_filter: bool = False  # 多头趋势结构：收盘 > MA50 且 MA50 > MA200
+    rs_filter: bool = False     # RS 线：加权相对强度（3/6/9/12 月）跑赢基准
+    min_updown_vol: float = 0.0  # 近 50 日上涨日均量/下跌日均量下限，0=不筛（吸筹特征）
+    market_filter: bool = False  # 大势确认：基准站上 MA50 与 MA200（猛兽股必要条件）
     use_valuation_pct: bool = False  # 是否启用估值历史分位增强（逐只拉取，较慢）
     valuation_lookback: int = 5      # 估值分位回看年数
 
@@ -48,6 +56,8 @@ class ScreenCriteria:
             "min_growth": self.min_growth,
             "min_cap": self.min_cap,
         }
+        if self.min_rev_growth > 0:
+            d["min_rev_growth"] = self.min_rev_growth
         if self.max_cap > 0:
             d["max_cap"] = self.max_cap
         if self.min_cash_yield > 0:
@@ -56,6 +66,16 @@ class ScreenCriteria:
             d["smart_growth"] = True
         if self.max_price_pos > 0:
             d["max_price_pos"] = self.max_price_pos
+        if self.min_price_pos > 0:
+            d["min_price_pos"] = self.min_price_pos
+        if self.trend_filter:
+            d["trend_filter"] = True
+        if self.rs_filter:
+            d["rs_filter"] = True
+        if self.min_updown_vol > 0:
+            d["min_updown_vol"] = self.min_updown_vol
+        if self.market_filter:
+            d["market_filter"] = True
         if self.use_valuation_pct:
             d["use_valuation_pct"] = True
             d["valuation_lookback"] = self.valuation_lookback
@@ -65,6 +85,13 @@ class ScreenCriteria:
 #: 预设筛选方案：键为 CLI 参数名（dest 形式），值为预设默认，显式参数可覆盖。
 #: multibagger 取自 Yartseva(2025) 464 只美股十倍股实证 + Alta Fox(2020) 研究，
 #: 阈值按 A 股口径本土化：小市值/便宜/现金流好/聪明增长/低位左侧，不要求高增长。
+#: hundredbagger 取自迈耶《如何找到100倍回报的股票》365 只百倍股研究（1962-2014）：
+#: 高 ROE 持续再投资 + 营收/利润双高增 + 小市值起点 + 低杠杆 + 合理价格；
+#: 与 multibagger 的关键差异：质量成长路线（不卡 PB、不左侧择时）vs 便宜左侧路线。
+#: monster 取自波伊克《猛兽股》（Monster Stocks, 2007）：年内翻倍股的必要条件
+#: 与共同特征——大势确认上行（必要条件）+ 盈利高增的领导股 + 接近 52 周新高
+#: （买强不买弱）+ RS 线跑赢基准 + 上涨放量下跌缩量 + 沿 MA50 上行；
+#: 与两个左侧/质量预设互补：monster 是右侧趋势追踪（突破后买强），非底部潜伏。
 PRESETS: dict[str, dict] = {
     "multibagger": {
         "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
@@ -75,6 +102,27 @@ PRESETS: dict[str, dict] = {
         "min_cash_yield": 6.0,  # 现金流收益率：研究中最强单一预测因子
         "smart_growth": True,   # 资产增速 < 利润增速（扩张有效率）
         "max_price_pos": 0.5,   # 52 周区间下半部（左侧启动，不追高）
+    },
+    "hundredbagger": {
+        "max_pe": 50.0,         # 合理价格即可（宽松上限防纯故事股）：书中不要求便宜
+        "max_pb": 0.0,          # 不看 PB：高 ROE 复利机器 PB 必然不低，卡 PB 与高 ROE 自相矛盾
+        "min_roe": 20.0,        # 核心标准：ROE>20% 持续高回报再投资（复利发动机）
+        "max_debt": 60.0,       # 低杠杆：百倍股靠经营复利而非债务支撑 ROE
+        "min_growth": 15.0,     # 利润高增：百倍股需 ~20% 年化复合，单期同比口径留容差
+        "min_rev_growth": 15.0,  # 营收驱动：利润增长须有营收支撑，防纯削减成本
+        "min_cap": 15.0,        # 流动性/壳风险底线（同 multibagger）
+        "max_cap": 100.0,       # 小市值起点：书中建议 <10 亿美元，A 股口径≈100 亿
+    },
+    "monster": {
+        "max_pe": 0.0,          # 不看 PE：猛兽股为成长领导股，强势阶段 PE 普遍偏高
+        "max_pb": 0.0,          # 不看 PB：同上，买强不买便宜
+        "min_roe": 15.0,        # 领导股质量：欧奈尔系 ROE ≥ 17% 的 A 股宽松口径
+        "min_growth": 25.0,     # 盈利高增：书中猛兽股启动前普遍利润高增（欧奈尔 C 标准）
+        "min_price_pos": 0.75,  # 52 周区间上四分之一：接近新高，买强不买弱
+        "trend_filter": True,   # 收盘 > MA50 且 MA50 > MA200：沿 50 日线上行的多头结构
+        "rs_filter": True,      # RS 线跑赢基准：猛兽股突破时 RS 线同步/领先创新高
+        "min_updown_vol": 1.2,  # 上涨日均量/下跌日均量 ≥ 1.2：放量上涨缩量回调（吸筹）
+        "market_filter": True,  # 大势确认：书中必要条件——猛兽股几乎只在新一轮升势中产生
     },
 }
 
@@ -130,8 +178,11 @@ _WEIGHTS = {
     "debt": 0.10,
     "div": 0.10,
     "growth": 0.10,
+    "rev_growth": 0.10,
     "cash": 0.15,
     "pos": 0.10,
+    "rs": 0.15,
+    "vol": 0.10,
 }
 
 
@@ -183,6 +234,12 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         scores["growth"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["growth"] = _WEIGHTS["growth"]
 
+    rev = metrics.get("revenue_growth")
+    if criteria.min_rev_growth > 0 and rev is not None:
+        ratio = rev / criteria.min_rev_growth
+        scores["rev_growth"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["rev_growth"] = _WEIGHTS["rev_growth"]
+
     cash = metrics.get("cash_yield")
     if criteria.min_cash_yield > 0 and cash is not None:
         ratio = cash / criteria.min_cash_yield
@@ -194,6 +251,22 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         # 位置越低（越靠近 52 周低点）得分越高
         scores["pos"] = (1.0 - min(max(pos, 0.0), 1.0)) * 100.0
         weights["pos"] = _WEIGHTS["pos"]
+    elif criteria.min_price_pos > 0 and pos is not None:
+        # 猛兽股口径相反：位置越高（越接近 52 周新高）得分越高，买强不买弱
+        scores["pos"] = min(max(pos, 0.0), 1.0) * 100.0
+        weights["pos"] = _WEIGHTS["pos"]
+
+    rs = metrics.get("rs_excess")
+    if criteria.rs_filter and rs is not None:
+        # RS 超额 0~50 个百分点线性映射到 0~100 分
+        scores["rs"] = min(max(rs, 0.0), 50.0) / 50.0 * 100.0
+        weights["rs"] = _WEIGHTS["rs"]
+
+    updown = metrics.get("updown_vol_ratio")
+    if criteria.min_updown_vol > 0 and updown is not None:
+        ratio = updown / criteria.min_updown_vol
+        scores["vol"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["vol"] = _WEIGHTS["vol"]
 
     if not weights:
         return 0.0
@@ -275,6 +348,7 @@ def screen_astock_phase2(
     # 判断是否需要 Phase 2（有深度指标阈值启用时才逐只拉取）
     need_detail = (
         criteria.min_roe > 0 or criteria.max_debt > 0 or criteria.min_growth > 0
+        or criteria.min_rev_growth > 0
         or criteria.min_cash_yield > 0 or criteria.smart_growth
     )
 
@@ -295,6 +369,7 @@ def screen_astock_phase2(
             "roe": None,
             "debt_ratio": None,
             "profit_growth": None,
+            "revenue_growth": None,
             "asset_growth": None,
             "cash_yield": None,
         }
@@ -318,6 +393,7 @@ def screen_astock_phase2(
             metrics["roe"] = detail.get("roe")
             metrics["debt_ratio"] = detail.get("debt_ratio")
             metrics["profit_growth"] = detail.get("profit_growth")
+            metrics["revenue_growth"] = detail.get("revenue_growth")
             metrics["asset_growth"] = detail.get("asset_growth")
             # 现金流收益率 = 每股经营现金流 / 股价（FCF Yield 的 A 股免费近似）
             ocf = detail.get("ocf_per_share")
@@ -376,6 +452,13 @@ def _check_detail_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]
         elif growth < criteria.min_growth:
             reasons.append(f"净利润增速 {growth:.1f}% < {criteria.min_growth:.0f}%")
 
+    if criteria.min_rev_growth > 0:
+        rev = metrics.get("revenue_growth")
+        if rev is None:
+            reasons.append("营收增速数据缺失")
+        elif rev < criteria.min_rev_growth:
+            reasons.append(f"营收增速 {rev:.1f}% < {criteria.min_rev_growth:.0f}%")
+
     if criteria.min_cash_yield > 0:
         cash = metrics.get("cash_yield")
         if cash is None:
@@ -428,6 +511,7 @@ def screen_yfinance(
             "div_yield": info.get("div_yield"),
             "debt_ratio": info.get("debt_ratio"),
             "profit_growth": info.get("profit_growth"),
+            "revenue_growth": info.get("revenue_growth"),
             "total_mv": info.get("total_mv"),
             "close": info.get("close"),
         }
@@ -525,8 +609,10 @@ def run_screen(
         on_progress: 进度回调。
 
     Returns:
-        {"candidates": [...], "n_scanned": int, "n_phase1": int, "n_final": int}
+        {"candidates": [...], "n_scanned": int, "n_phase1": int, "n_final": int}；
+        启用 market_filter 且走 A 股全市场时附加 "market_regime"。
     """
+    market_info: dict | None = None
     if symbols:
         # 手动列表：按市场分流
         a_symbols = [s for s in symbols if is_a_share(s)]
@@ -548,6 +634,19 @@ def run_screen(
         n_scanned = len(symbols)
         n_phase1 = n_scanned  # 手动模式无分阶段
     else:
+        # 大势前置检查（猛兽股必要条件）：大势不对不筛，避免白跑全市场漏斗
+        if criteria.market_filter:
+            market_info = market_regime(fetch_benchmark_close("510300.SH"))
+            if market_info is not None and not market_info["uptrend"]:
+                if log:
+                    log(
+                        "大势过滤：基准（沪深300）未站上 MA50/MA200，"
+                        "猛兽股纪律为大势不对不买，本次不筛选"
+                    )
+                return {
+                    "candidates": [], "n_scanned": 0, "n_phase1": 0,
+                    "n_final": 0, "market_regime": market_info,
+                }
         # A 股全市场批量
         survivors, n_scanned = screen_astock_phase1(criteria, log)
         n_phase1 = len(survivors)
@@ -556,6 +655,14 @@ def run_screen(
         # Phase 3：52 周价格位置过滤（仅对通过基本面的候选逐只拉日 K，较慢）
         if criteria.max_price_pos > 0 and all_results:
             all_results = _filter_price_position(all_results, criteria, log, on_progress)
+
+    # 猛兽股技术面过滤（52 周高位/均线多头/RS 线/量价，逐只拉日 K 较慢）
+    tech_needed = (
+        criteria.min_price_pos > 0 or criteria.trend_filter or criteria.rs_filter
+        or criteria.min_updown_vol > 0 or criteria.market_filter
+    )
+    if tech_needed and all_results:
+        all_results = _filter_monster_tech(all_results, criteria, log, on_progress)
 
     # 估值分位增强（可选，逐只拉取历史 PE/PB）
     if criteria.use_valuation_pct and all_results:
@@ -567,12 +674,145 @@ def run_screen(
     all_results = _sort_results(all_results, sort_by)
     candidates = all_results[:top]
 
-    return {
+    out = {
         "candidates": [r.to_dict() for r in candidates],
         "n_scanned": n_scanned,
         "n_phase1": n_phase1 if not symbols else None,
         "n_final": len(all_results),
     }
+    if market_info is not None:
+        out["market_regime"] = market_info
+    return out
+
+
+def market_regime(bench_close) -> dict | None:
+    """基准大势判定：收盘站上 MA50 与 MA200 才算确认上行。
+
+    《猛兽股》必要条件：猛兽股几乎只在新一轮升势中产生（与 CAN SLIM
+    的 M 判定同口径）。
+
+    Returns:
+        ``{"uptrend": bool, "close", "ma50", "ma200"}``；基准数据不足 200 根
+        或缺失返回 None（调用方自行决定降级策略）。
+    """
+    if bench_close is None:
+        return None
+    bench = bench_close.dropna().astype(float)
+    if len(bench) < 200:
+        return None
+    last = float(bench.iloc[-1])
+    ma50 = float(bench.rolling(50).mean().iloc[-1])
+    ma200 = float(bench.rolling(200).mean().iloc[-1])
+    return {
+        "uptrend": bool(last > ma50 and last > ma200),
+        "close": round(last, 2),
+        "ma50": round(ma50, 2),
+        "ma200": round(ma200, 2),
+    }
+
+
+def _check_tech_criteria(profile: dict | None, criteria: ScreenCriteria, regime: dict | None) -> list[str]:
+    """检查猛兽股技术面维度是否达标，返回失败原因列表。
+
+    数据缺失视为不达标（书中纪律：无法核查即不买）。
+    """
+    if profile is None:
+        return ["技术面数据缺失（日 K 不足 200 根或拉取失败）"]
+
+    reasons: list[str] = []
+    if criteria.min_price_pos > 0:
+        pos = profile.get("price_pos")
+        if pos is None:
+            reasons.append("52 周价格位置数据缺失")
+        elif pos < criteria.min_price_pos:
+            reasons.append(
+                f"52 周位置 {pos:.0%} < {criteria.min_price_pos:.0%}（远离强势区，买强不买弱）"
+            )
+
+    if criteria.trend_filter and not profile.get("trend_ok"):
+        reasons.append(
+            f"趋势结构不满足：收盘 {profile.get('close'):.2f} 需站上 "
+            f"MA50 {profile.get('ma50'):.2f} 且 MA50 > MA200 {profile.get('ma200'):.2f}"
+        )
+
+    if criteria.rs_filter:
+        rs = profile.get("rs_excess")
+        if rs is None:
+            reasons.append("RS 相对强度数据缺失（无基准或样本不足 12 个月）")
+        elif rs <= 0:
+            reasons.append(f"RS 线弱势：加权相对强度落后基准 {rs:+.1f} 个百分点")
+
+    if criteria.min_updown_vol > 0:
+        updown = profile.get("updown_vol_ratio")
+        if updown is None:
+            reasons.append("量能数据缺失，无法核查量价关系")
+        elif updown < criteria.min_updown_vol:
+            reasons.append(
+                f"上涨/下跌日均量比 {updown:.2f} < {criteria.min_updown_vol:.1f}（派发重于吸筹）"
+            )
+
+    if criteria.market_filter:
+        if regime is None:
+            reasons.append("大势数据缺失（基准不足 200 根），无法确认市场方向")
+        elif not regime["uptrend"]:
+            reasons.append(
+                f"大势未确认上行：基准收盘 {regime['close']} 未同时站上 "
+                f"MA50 {regime['ma50']} 与 MA200 {regime['ma200']}"
+            )
+
+    return reasons
+
+
+def _filter_monster_tech(
+    results: list[ScreenResult],
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> list[ScreenResult]:
+    """猛兽股技术面过滤：52 周高位 + 均线多头 + RS 跑赢基准 + 量价吸筹 + 大势。
+
+    逐只拉取近 260 根日 K 计算技术画像；同一基准（如沪深300）只拉一次。
+    技术指标写入 metrics 并重算综合评分；数据缺失视为不达标剔除。
+    """
+    if log:
+        log(f"技术面过滤：拉取 {len(results)} 只候选的日 K 与基准 RS 线...")
+
+    need_bench = criteria.rs_filter or criteria.market_filter
+    regime_cache: dict[str, dict | None] = {}
+    kept: list[ScreenResult] = []
+    n_fail, n_missing = 0, 0
+
+    for i, r in enumerate(results):
+        bench_close = fetch_benchmark_close(r.symbol) if need_bench else None
+        regime = None
+        if criteria.market_filter:
+            bench_key = r.symbol.rsplit(".", 1)[-1].upper() if "." in r.symbol else ""
+            if bench_key not in regime_cache:
+                regime_cache[bench_key] = market_regime(bench_close)
+            regime = regime_cache[bench_key]
+
+        profile = fetch_technical_profile(r.symbol, bench_close)
+        reasons = _check_tech_criteria(profile, criteria, regime)
+        if reasons:
+            if profile is None:
+                n_missing += 1
+            else:
+                n_fail += 1
+        else:
+            r.metrics["price_pos"] = profile.get("price_pos")
+            r.metrics["rs_excess"] = profile.get("rs_excess")
+            r.metrics["updown_vol_ratio"] = profile.get("updown_vol_ratio")
+            r.score = composite_score(r.metrics, criteria)
+            kept.append(r)
+        if on_progress:
+            on_progress(i + 1, r.symbol)
+
+    if log:
+        log(
+            f"技术面过滤：{len(results)} 只 → {len(kept)} 只存活"
+            f"（技术面不达标 {n_fail} 只，数据缺失 {n_missing} 只）"
+        )
+    return kept
 
 
 def _filter_price_position(
@@ -642,6 +882,8 @@ def _screen_astock_manual(
             "div_yield": (info or {}).get("div_yield"),
             "debt_ratio": (detail or {}).get("debt_ratio"),
             "profit_growth": (detail or {}).get("profit_growth"),
+            "revenue_growth": (detail or {}).get("revenue_growth")
+            if detail else (info or {}).get("revenue_growth"),
             "asset_growth": (detail or {}).get("asset_growth"),
             "total_mv": (info or {}).get("total_mv"),
             "close": (info or {}).get("close"),

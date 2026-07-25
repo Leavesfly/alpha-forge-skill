@@ -430,6 +430,79 @@ uv run python run_screener.py --preset multibagger --json
 `run_screener.py --preset multibagger`（统计特征初筛）→ `run_canslim.py --symbols <候选>`
 （盈利加速+RS 强度交叉确认）→ `run_portfolio.py`（组合持有+移动止损）。
 
+### 百倍股质量成长预设（`--preset hundredbagger`）
+
+取自克里斯托弗·迈耶《如何找到100倍回报的股票》（*100 Baggers*, 2015）对
+1962-2014 年 365 只美股百倍股的研究，阈值按 A 股口径本土化：
+
+| 书中标准 | 预设阈值 | 本土化说明 |
+| --- | --- | --- |
+| ROE 持续 >20%（复利发动机） | `min_roe=20` | 核心标准，高回报再投资 |
+| 市值 <10 亿美元 | `min_cap=15, max_cap=100` 亿 | 上限≈14 亿美元略放宽；下限防壳股 |
+| 利润高增（百倍需 ~20% 年化复合） | `min_growth=15` | 单期同比口径留容差 |
+| 营收驱动的增长 | `min_rev_growth=15` | 防纯削减成本的假增长 |
+| 低杠杆（不靠债务支撑 ROE） | `max_debt=60` | 顺带剔除金融股 |
+| 合理价格（可以不便宜） | `max_pe=50`，不卡 PB | 高 ROE 机器 PB 必然不低 |
+| 买对拿住、不择时 | 不启用 `max_price_pos` | 与 multibagger 的关键差异 |
+
+与 `multibagger`（便宜+现金流+左侧低位的统计路线）哲学相反：
+hundredbagger 是质量成长路线，不要求便宜、不做左侧择时，靠长期复利。
+两个预设的候选重叠度很低，可分别跑一遍对比。
+
+```bash
+# 百倍股质量成长筛选 + JSON 输出
+uv run python run_screener.py --preset hundredbagger --json
+
+# 放宽市值上限到 300 亿（显式参数覆盖预设）
+uv run python run_screener.py --preset hundredbagger --max-cap 300
+```
+
+> 转述时不可省略：这是历史百倍股的统计共性，**不是收益预测**；书中百倍
+> 回报平均需 20~25 年买对拿住（咖啡罐组合），途中需忍受 50%+ 回撤；
+> 单期同比增速仅是复合增速的近似，阈值源于美股实证未经 A 股样本外验证。
+
+百倍股典型工作流：
+`run_screener.py --preset hundredbagger`（质量成长初筛）→ `run_canslim.py --symbols <候选>`
+（验证盈利持续性与加速度）→ `run_portfolio.py`（组合长期持有）。
+
+### 猛兽股右侧强势预设（`--preset monster`）
+
+取自约翰·波伊克《猛兽股》（*Monster Stocks*, 2007）对年内至少翻倍股票的
+研究：猛兽股产生的必要条件与共同的技术面/基本面特征，阈值按 A 股口径本土化：
+
+| 书中特征 | 预设阈值 | 落地口径 |
+| --- | --- | --- |
+| 必要条件：大势处于新一轮升势 | `market_filter=True` | 基准（沪深300）站上 MA50 与 MA200，否则纪律性不筛 |
+| 盈利高增的领导股 | `min_growth=25, min_roe=15` | 欧奈尔 C 标准 + 领导股质量，不看 PE/PB（买强不买便宜） |
+| 接近/创 52 周新高（买强不买弱） | `min_price_pos=0.75` | 52 周区间上四分之一，与 multibagger 左侧口径相反 |
+| 沿 MA50 上行的多头结构 | `trend_filter=True` | 收盘 > MA50 且 MA50 > MA200 |
+| RS 线同步/领先创新高 | `rs_filter=True` | 加权相对强度（3/6/9/12 月，IBD RS 近似）跑赢对应市场基准 |
+| 上涨放量、下跌缩量（吸筹） | `min_updown_vol=1.2` | 近 50 日上涨日均量/下跌日均量 ≥ 1.2 |
+
+与另两个预设的定位差异：multibagger 是便宜左侧潜伏，hundredbagger 是质量
+长期复利，monster 是**右侧趋势追踪**（突破后买强）；三者候选重叠度极低。
+技术面维度需逐只拉日 K（较慢）；`--min-price-pos` 与 `--max-price-pos` 互斥。
+
+```bash
+# 猛兽股右侧强势筛选 + JSON 输出
+uv run python run_screener.py --preset monster --json
+
+# 放宽 52 周位置下限到 0.6（显式参数覆盖预设）
+uv run python run_screener.py --preset monster --min-price-pos 0.6
+
+# 手动组合猛兽股技术维度（不用预设）
+uv run python run_screener.py --min-growth 25 --min-price-pos 0.75 --trend-filter --rs-filter
+```
+
+> 转述时不可省略：这是历史翻倍股的统计共性，**不是收益预测**；买强势股
+> 必须搭配严格止损纪律（书中：跌破 MA50 放量即退出）；大势未确认上行时
+> 命令会纪律性返回空结果（JSON 含 `market_regime`），这是特性而非故障；
+> 阈值源于美股经验未经 A 股样本外验证。
+
+猛兽股典型工作流：
+`run_screener.py --preset monster`（右侧强势初筛）→ `run_score.py --symbol <候选>`
+（纪律评分 + 含止损位的交易计划）→ `run_backtest.py --strategy supertrend`（趋势策略验证，让利润奔跑）。
+
 典型工作流：
 `run_screener.py`（发现低估候选）→ `run_score.py`（技术面复核）→ `run_paper.py --mode score`（纸面跟踪）。
 

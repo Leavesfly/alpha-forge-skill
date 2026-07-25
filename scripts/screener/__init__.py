@@ -6,7 +6,9 @@
 - run_screener.py（本模块）：基本面价值发现（哪些被低估）
 
 两阶段漏斗：批量快照过滤（PE/PB/市值）→ 逐只深度过滤（ROE/负债/分红/增速/现金流）；
-启用 52 周位置维度时追加 Phase 3 位置过滤。内置 multibagger（十倍股特征）预设。
+启用 52 周位置维度时追加 Phase 3 位置过滤；启用猛兽股技术维度（高位/均线多头/
+RS 线/量价/大势）时追加技术面过滤。内置预设：multibagger（十倍股统计特征）、
+hundredbagger（百倍股质量成长）、monster（猛兽股右侧强势，取自波伊克《猛兽股》）。
 """
 
 from .engine import (
@@ -14,6 +16,7 @@ from .engine import (
     ScreenCriteria,
     ScreenResult,
     composite_score,
+    market_regime,
     run_screen,
     screen_astock_phase1,
     screen_astock_phase2,
@@ -25,6 +28,7 @@ __all__ = [
     "ScreenCriteria",
     "ScreenResult",
     "composite_score",
+    "market_regime",
     "run_screen",
     "screen_astock_phase1",
     "screen_astock_phase2",

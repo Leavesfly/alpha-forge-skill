@@ -46,6 +46,8 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
+| "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
+| "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
@@ -216,7 +218,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
 | 单股纪律评分 | `run_score.py` 四层否决式评分 + 交易计划与建议仓位；`--valuation-pct` 估值分位、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量评分，达标/降级分列 | scoring.md |
-| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场）；`--preset multibagger` 十倍股统计特征 | scoring.md |
+| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
 | 持仓登记与体检 | `run_account.py --set` 登记，run_score/run_scan 自动联动 | scoring.md |
 | 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>`，run_score 建议仓位因人而异 | scoring.md |
