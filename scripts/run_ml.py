@@ -104,7 +104,7 @@ def run_meta(args, df, log, json_stdout) -> None:
     metrics_table(
         {
             f"原始 {strategy.display_name}（OOS）": base_m,
-            f"meta 过滤后（OOS）": filt_m,
+            "meta 过滤后（OOS）": filt_m,
             "基准 Buy&Hold": result.base_backtest.benchmark_metrics,
         },
         title=f"{args.symbol} meta-labeling（{args.meta} × {args.model}）",

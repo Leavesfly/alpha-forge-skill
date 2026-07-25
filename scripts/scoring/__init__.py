@@ -1,20 +1,27 @@
-"""纪律评分决策层：四层否决式评分、交易计划、历史回放与市场扫描。
+"""买点三灯决策层：价/势/时三维评估、交易计划、历史回放与市场扫描。
 
-设计源自「分层否决」架构（借鉴 worth-buy-stocks）：
-ALPHA 加权只管排名，风险否决只封顶/否决，技术确认只拦截，
-事件风险只降级不加分，持仓状态只改操作建议。
+不把指标混成一个黑箱总分，而是三个**正交**维度各自亮灯（绿/黄/红/灰）：
 
-增强能力：
-- 动态自适应阈值：波动率缩放因子 vol_k 调整 RSI/MA 偏离/量能阈值；
-- ADX 趋势强度感知：强趋势放宽 RSI 拦截并豁免 KDJ 死叉；
-- 基本面否决层（可选）：ST/连续亏损/资不抵债一票否决。
+- 价（值不值得拥有）：基本面硬伤否决 + 估值历史分位；
+- 势（市场是否认同）：趋势分（动量/相对强度/趋势效率）+ 均线周线结构；
+- 时（是不是好买点）：过热偏离、回调状态、RSI、量价、事件风险。
+
+三灯经决策矩阵输出行动结论（趋势买点/纯趋势仓/等回踩/左侧观察/回避/
+持仓需减风险/无法评分），灰灯诚实标注数据缺失，不猜测补齐。
+时灯阈值受波动率缩放因子 vol_k 动态调整。
 """
 
 from .engine import (
-    ADX_MODERATE,
-    ADX_STRONG,
+    ACTIONABLE_VERDICTS,
+    COLOR_CN,
     DEFAULT_BENCHMARKS,
+    LIGHT_CN,
+    LIGHTS,
     MIN_BARS,
+    TREND_GREEN,
+    TREND_RED,
+    VAL_GREEN,
+    VAL_RED,
     VERDICT_CN,
     VERDICTS,
     VOL_K_MAX,
@@ -24,15 +31,21 @@ from .engine import (
     score_symbol,
 )
 from .plan import attach_position_sizing, build_trade_plan, format_plan
-from .present import DISCLAIMER, LAYER_CN, print_score_report
+from .present import DISCLAIMER, print_score_report
 from .replay import format_replay_report, replay_study, replay_verdicts
 from .scan import scan_symbols
 
 __all__ = [
-    "ADX_MODERATE",
-    "ADX_STRONG",
+    "ACTIONABLE_VERDICTS",
+    "COLOR_CN",
     "DEFAULT_BENCHMARKS",
+    "LIGHT_CN",
+    "LIGHTS",
     "MIN_BARS",
+    "TREND_GREEN",
+    "TREND_RED",
+    "VAL_GREEN",
+    "VAL_RED",
     "VERDICT_CN",
     "VERDICTS",
     "VOL_K_MAX",
@@ -44,7 +57,6 @@ __all__ = [
     "attach_position_sizing",
     "format_plan",
     "DISCLAIMER",
-    "LAYER_CN",
     "print_score_report",
     "format_replay_report",
     "replay_study",

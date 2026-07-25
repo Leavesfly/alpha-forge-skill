@@ -119,8 +119,8 @@ def main() -> None:
     if args.fundamentals_csv and args.symbols:
         raise SystemExit("[error] --fundamentals-csv 仅支持单标的模式（多标的请依赖 A 股自动获取）。")
 
-    from datafeed import fetch_ohlcv
     from canslim import canslim_check, rs_weighted_return
+    from datafeed import fetch_ohlcv
     from scoring import default_benchmark
 
     if args.symbol:
@@ -131,7 +131,7 @@ def main() -> None:
     log("\n提示：CAN SLIM 是纪律检查清单而非收益预测，阈值未经 A 股样本外验证，不构成投资建议。")
     log_next_steps(
         log,
-        "对结论「是」的标的做四层纪律评分复核 run_score.py --symbol <代码>（含交易计划与仓位）",
+        "对结论「是」的标的做买点三灯复核 run_score.py --symbol <代码>（含交易计划与仓位）",
         "回测动量/突破族策略验证价格趋势 run_backtest.py --symbol <代码> --strategy donchian",
     )
 
@@ -151,7 +151,7 @@ def main() -> None:
                     f"最优：{top.symbol}（通过 {top.passed}/7）。这是纪律清单核查，不是收益预测。"
                 ),
                 "next_steps": build_next_steps(
-                    {"action": "score", "reason": "对达标标的做四层纪律评分复核（交易计划+仓位）",
+                    {"action": "score", "reason": "对达标标的做买点三灯复核（交易计划+仓位）",
                      "command": "run_score.py --symbol <代码> --json"},
                     {"action": "backtest", "reason": "用突破/动量族策略回测验证价格趋势",
                      "command": "run_backtest.py --symbol <代码> --strategy donchian --json"},

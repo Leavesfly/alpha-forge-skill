@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""单股纪律评分 CLI：分层否决式评分 -> 结论 -> 交易计划 -> 可选回放验证。
+"""单股买点三灯 CLI：价/势/时三维亮灯 -> 决策矩阵结论 -> 交易计划 -> 可选回放验证。
 
-回答的不是「这个标的好不好」，而是：按当前价量结构、市场环境和风险约束，
-现在是否适合参与。结论五态：是 / 观察 / 否 / 持仓需减风险 / 无法评分。
+回答的不是「这家公司好不好」，而是把「现在能不能买」拆成三个正交问题，
+各自亮灯（绿/黄/红/灰，灰=数据缺失诚实标注）：
+    价（值不值得拥有）：基本面硬伤否决（ST/连续亏损/资不抵债）+ 估值历史分位
+    势（市场是否认同）：趋势分（动量 55 · 相对强度 35 · 趋势效率 10）+ 均线/周线/大盘结构
+    时（是不是好买点）：偏离 MA20 过热 · 回调状态 · RSI · 量价 · 事件风险（受 vol_k 动态阈值调节）
 
-分层各司其职、单向降级（利好不能救弱势标的）：
-    ⓪ 基本面否决（ST/连续亏损/资不抵债，默认启用，--no-fundamental 跳过）
-    ① ALPHA 加权（动量 55 · 相对强度 35 · 趋势效率 10）→ 排名分
-    ② 风险否决（MA60/MA200 · 周线结构 · 大盘环境）→ 封顶或否决
-    ③ 技术确认（MACD · RSI · KDJ · 量价，受 vol_k 动态阈值与 ADX 趋势感知调节）→ 只拦截「是」
-    ④ 入场时机（过热降级 · 回调确认，受 vol_k 动态阈值调节）→ 调整入场结论
+三灯经决策矩阵输出行动结论（七态）：趋势买点 / 纯趋势仓 / 等回踩 /
+左侧观察 / 回避 / 持仓需减风险 / 无法评分。矩阵是纪律预设：宁可错过、
+不可逆势/追高/踩雷；利好不能救弱势标的。
 
 示例：
-    # 单股评分（A 股基准自动取 510300.SH，免费日 K 即可）
+    # 单股三灯评估（A 股基准自动取 510300.SH，估值分位默认拉取）
     uv run python run_score.py --symbol 600000.SH
 
-    # 只要结论与计划价位（简短模式）
-    uv run python run_score.py --symbol AAPL.US --brief
+    # 只要结论与计划价位（简短模式）；--no-valuation 跳过估值拉取（价灯灰，更快）
+    uv run python run_score.py --symbol AAPL.US --brief --no-valuation
 
-    # 历史回放验证：最近 250 日逐日评分 + 21/63 日前瞻收益事件研究
+    # 历史回放验证：最近 250 日逐日评估 + 21/63 日前瞻收益事件研究
     uv run python run_score.py --symbol 600519.SH --count 800 --replay --plot
 
     # 结合持仓成本给操作建议（结论可能变为「持仓需减风险」）
@@ -53,6 +53,7 @@ from datafeed import fetch_ohlcv
 from naming import default_output, outputs_dir, sanitize
 from report import attach_meta
 from scoring import (
+    TREND_GREEN,
     attach_position_sizing,
     default_benchmark,
     format_replay_report,
@@ -60,13 +61,13 @@ from scoring import (
     replay_verdicts,
     score_symbol,
 )
-from scoring.present import DISCLAIMER, LAYER_CN, print_score_report
+from scoring.present import DISCLAIMER, print_score_report
 from scoring.replay import calibrate_threshold
 from utils import extract_close
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = make_parser("Alpha Forge 单股纪律评分（四层否决式）", __doc__)
+    parser = make_parser("Alpha Forge 单股买点三灯（价·势·时 + 决策矩阵）", __doc__)
     parser.add_argument("--symbol", required=True, help="标的代码，如 600000.SH / AAPL.US")
     parser.add_argument(
         "--benchmark",
@@ -74,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="基准代码；默认按市场自动选择（A股 510300.SH / 港股 02800.HK / 美股 SPY.US）",
     )
     parser.add_argument("--period", default="1d", help="K 线周期，默认 1d（评分按日线纪律设计）")
-    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年，评分至少需 250 根）")
+    parser.add_argument("--count", type=int, default=1250, help="K 线数量，默认 1250（约 5 年，评估至少需 250 根）")
     parser.add_argument("--brief", action="store_true", help="简短模式：只输出结论与计划价位")
     parser.add_argument(
         "--replay",
@@ -83,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         type=int,
         metavar="N",
-        help="历史回放验证：最近 N 个交易日逐日评分 + 21/63 日前瞻收益事件研究（默认 250）",
+        help="历史回放验证：最近 N 个交易日逐日评估 + 21/63 日前瞻收益事件研究（默认 250，仅覆盖势/时维度）",
     )
     parser.add_argument(
         "--calibrate",
@@ -92,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         type=int,
         metavar="N",
-        help="阈值自校准：回放最近 N 日，网格搜索最优 alpha_score 入场阈值（默认 250）",
+        help="阈值自校准：回放最近 N 日，网格搜索最优 trend_score 入场阈值（默认 250）",
     )
     parser.add_argument("--calibrate-horizon", type=int, default=21, help="校准前瞻窗口（交易日），默认 21")
     parser.add_argument(
@@ -110,15 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-fundamental",
         action="store_true",
-        help="跳过基本面否决层（ST/连续亏损/资不抵债检查）；默认启用",
+        help="跳过价灯的基本面硬伤检查（ST/连续亏损/资不抵债）；默认启用",
     )
     parser.add_argument("--capital", type=float, default=None, help="可用资金（用于交易计划建议仓位）；默认读用户画像，无画像时 10 万；0 关闭建议仓位")
     parser.add_argument("--risk-pct", type=float, default=None, help="单笔交易风险预算占资金比例；默认读用户画像，无画像时 0.01（止损时约亏资金的 1%%）")
-    # 估值分位与宏观环境（可选上下文）
+    # 估值分位（价灯数据源，默认拉取）与宏观环境（可选上下文）
     parser.add_argument(
-        "--valuation-pct",
+        "--no-valuation",
         action="store_true",
-        help="附加估值历史分位：拉取近 N 年 PE/PB 历史，计算当前估值在自身历史中的位置",
+        help="跳过估值历史分位拉取（价灯降级为灰，结论仅基于势/时）；默认拉取",
     )
     parser.add_argument(
         "--valuation-lookback", type=int, default=5,
@@ -129,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="附加宏观环境上下文：拉取国债利率/CPI/PMI，判断宏观 regime（扩张/宽松/滞胀/收缩）",
     )
-    parser.add_argument("--plot", action="store_true", help="生成评分图（价格 + 均线 + 计划价位；回放时背景按结论着色）")
+    parser.add_argument("--plot", action="store_true", help="生成三灯评估图（价格 + 均线 + 计划价位；回放时背景按结论着色）")
     parser.add_argument("--output", default=None, help="图表输出路径；默认 ../outputs/score_<标的>.png")
     add_json_arg(parser)
     return parser
@@ -272,7 +273,7 @@ def _run_replay(args, df, bench_close, log):
     log(f"回放最近 {args.replay} 个交易日（逐日 final-only 重算，无前视）...")
     verdict_series = replay_verdicts(df, benchmark_close=bench_close, days=args.replay, symbol=args.symbol)
     replay_payload = replay_study(df, verdict_series, benchmark_close=bench_close)
-    log("--- 回放验证（评分是否有用，用数据说话） ---")
+    log("--- 回放验证（三灯规则是否有用，用数据说话；仅覆盖势/时维度） ---")
     for line in format_replay_report(replay_payload):
         log(line)
     return replay_payload, verdict_series
@@ -288,15 +289,15 @@ def _run_calibrate(args, df, bench_close, log) -> dict:
     )
     log("--- 阈值校准结果 ---")
     if payload.get("best_threshold") is not None:
-        log(f"  最优阈值    : alpha_score >= {payload['best_threshold']:.0f}")
+        log(f"  最优阈值    : trend_score >= {payload['best_threshold']:.0f}")
         log(f"  胜率        : {payload['best_hit_rate'] * 100:.1f}%"
             f"（{payload['best_n']} 个样本）")
         log(f"  平均前瞻收益: {payload['best_avg_return'] * 100:+.2f}%"
             f"（{args.calibrate_horizon} 日）")
-        log("  当前预设    : ALPHA_YES=60（原著值，未经样本外验证）")
-        if payload["best_threshold"] != 60.0:
+        log(f"  当前预设    : TREND_GREEN={TREND_GREEN:.0f}（纪律预设值，未经样本外验证）")
+        if payload["best_threshold"] != TREND_GREEN:
             log(f"  建议        : 可考虑将入场阈值调整为 {payload['best_threshold']:.0f}"
-                "（需自知偏离原著标准的风险）")
+                "（需自知偏离纪律预设的风险）")
     else:
         log(f"  无法校准：{payload.get('note', '样本不足')}")
     if payload.get("grid"):
@@ -312,25 +313,21 @@ def _build_json_payload(args, result, regime, bench_symbol, replay_payload, cali
     digest = hashlib.sha1(
         f"{args.symbol}|{args.period}|{args.count}|{bench_symbol}|{result.asof}".encode()
     ).hexdigest()[:12]
-    layer_reason = ""
-    for ly in result.layers:
-        if ly["status"] in ("veto", "cap", "downgrade"):
-            tag = LAYER_CN.get(ly["name"], ly["name"])
-            layer_reason = f"（{tag}层拦截）"
-            break
     plan_str = ""
     if result.plan:
         plan_str = f"参考计划：入场 {result.plan.get('entry')} / 止损 {result.plan.get('stop')}。"
+    rule = result.decision.get("rule", "")
+    rule_str = f"（{rule}）" if rule else ""
     summary = (
-        f"{args.symbol} 纪律评分结论：{result.verdict_cn}{layer_reason}。"
+        f"{args.symbol} 买点三灯：{result.lights_summary} → {result.verdict_cn}{rule_str}。"
         f"{plan_str}"
-        f"评分是纪律过滤而非涨跌预测，不构成投资建议。"
+        f"三灯是纪律过滤而非涨跌预测，不构成投资建议。"
     )
     next_steps = build_next_steps(
-        {"action": "paper", "reason": "结论为是/观察，按评分裁决每日纸面跟踪",
-         "condition": "verdict != no",
+        {"action": "paper", "reason": "结论非回避，按三灯裁决每日纸面跟踪",
+         "condition": "verdict != avoid",
          "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
-        {"action": "replay", "reason": "回放验证评分有效性",
+        {"action": "replay", "reason": "回放验证三灯规则有效性（仅势/时维度）",
          "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
         {"action": "backtest", "reason": "用策略回测验证历史表现",
          "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},
@@ -346,7 +343,7 @@ def _build_json_payload(args, result, regime, bench_symbol, replay_payload, cali
         "summary": summary,
         "next_steps": next_steps,
     }
-    # 估值分位（可选）
+    # 估值分位（价灯数据源）
     if valuation is not None:
         payload["valuation"] = valuation.to_dict()
     # 宏观 regime（可选）
@@ -402,10 +399,23 @@ def main() -> None:
     else:
         position = detect_account_position(args.symbol, log)
 
-    # 基本面否决层：默认启用，--no-fundamental 跳过
+    # 价灯数据源：基本面硬伤（默认启用，--no-fundamental 跳过）
     fundamentals = None
     if not args.no_fundamental:
         fundamentals = _fetch_scoring_fundamentals(args.symbol, log)
+
+    # 价灯数据源：估值历史分位（默认拉取，--no-valuation 跳过；失败降级灰灯）
+    valuation = None
+    if not args.no_valuation:
+        from data.valuation import fetch_valuation_percentile
+
+        log("拉取估值历史分位（价灯数据源）...")
+        try:
+            valuation = fetch_valuation_percentile(args.symbol, args.valuation_lookback)
+        except Exception as exc:
+            print(f"[warn] 估值分位拉取失败（{type(exc).__name__}: {exc}），价灯降级为灰", file=sys.stderr)
+        if valuation is None:
+            print(f"[warn] {args.symbol} 估值历史数据不可用，价灯降级为灰（结论仅基于势/时）", file=sys.stderr)
 
     result = score_symbol(
         df,
@@ -415,22 +425,13 @@ def main() -> None:
         risk_events=risk_events,
         position=position,
         fundamentals=fundamentals,
+        valuation=valuation,
     )
 
-    # 市场状态（描述性上下文，不参与评分裁决）
+    # 市场状态（描述性上下文，不参与三灯裁决）
     from research.regime import detect_regime
 
     regime = detect_regime(df["close"])
-
-    # 估值历史分位（可选）
-    valuation = None
-    if args.valuation_pct:
-        from data.valuation import fetch_valuation_percentile
-
-        log("拉取估值历史分位...")
-        valuation = fetch_valuation_percentile(args.symbol, args.valuation_lookback)
-        if valuation is None:
-            print(f"[warn] {args.symbol} 估值历史数据不可用，跳过估值分位", file=sys.stderr)
 
     # 宏观环境上下文（可选）
     macro_regime = None
@@ -477,7 +478,7 @@ def main() -> None:
             close,
             plan=result.plan,
             verdicts=verdict_series,
-            title=f"{args.symbol} 纪律评分：{result.verdict_cn}（截至 {result.asof}）",
+            title=f"{args.symbol} 买点三灯：{result.verdict_cn}（截至 {result.asof}）",
             output=output,
         )
         log(f"图表已保存：{path}")

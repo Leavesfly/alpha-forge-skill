@@ -12,7 +12,6 @@ from run_signal import _action, latest_signal
 from strategies import get_strategy
 from tests.helpers import make_ohlcv
 
-
 # ---------- 信号服务 ----------
 
 def test_latest_signal_fields():

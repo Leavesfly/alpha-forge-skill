@@ -1,6 +1,6 @@
 ---
 name: alpha-forge-skill
-description: A股/港股/美股量化研究与交易辅助：行情/财务数据获取、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、纪律评分决策（能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、每日信号与模拟盘、统一持仓账户。对话式触发："XX现在能买吗""持仓该不该卖""买多少合适""帮我回测/调参/做组合/定投""最近有什么值得买的""有没有低估值的股票""这只股符不符合CAN SLIM""每天帮我盯盘"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
+description: A股/港股/美股量化研究与交易辅助：行情/财务数据获取、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、买点三灯决策（价·势·时三维判断能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、每日信号与模拟盘、统一持仓账户。对话式触发："XX现在能买吗""持仓该不该卖""买多少合适""帮我回测/调参/做组合/定投""最近有什么值得买的""有没有低估值的股票""这只股符不符合CAN SLIM""每天帮我盯盘"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
@@ -8,7 +8,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 # Alpha Forge Skill
 
 通过 TickFlow Python SDK 获取 A 股、港股、美股、期货等市场的行情、K 线与财务数据，
-并内置经典量化策略、回测引擎与纪律评分决策层。本文件足以完成意图路由与命令执行；
+并内置经典量化策略、回测引擎与买点三灯决策层。本文件足以完成意图路由与命令执行；
 参数细节、原理解释与结果深度解读按需查阅 references/ 对应文档。
 
 ## 能力导航
@@ -24,7 +24,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | [references/ml-strategy.md](references/ml-strategy.md) | 机器学习策略：特征/标签（含三重障碍）、可插拔模型、走步样本外验证、meta-labeling |
 | [references/sentiment.md](references/sentiment.md) | 新闻情绪交易：抓新闻 → agent（LLM）情绪打分 → 情绪信号回测 |
 | [references/dca.md](references/dca.md) | 定投 DCA：现金流账本、XIRR、智能定投/超跌加码/价值平均、分红建模、双基准对比 |
-| [references/scoring.md](references/scoring.md) | 纪律评分与市场扫描：分层否决式评分、结论五态、交易计划与建议仓位、估值分位/宏观环境、回放验证、持仓账户与风险画像联动、低估值筛选（run_screener） |
+| [references/scoring.md](references/scoring.md) | 买点三灯与市场扫描：价/势/时三维亮灯 + 决策矩阵、结论七态、交易计划与建议仓位、估值分位/宏观环境、回放验证、持仓账户与风险画像联动、低估值筛选（run_screener） |
 | [references/canslim.md](references/canslim.md) | CAN SLIM 检查清单：欧奈尔七项法则纪律化核查与横截面 RS 排名 |
 | [references/stress-testing.md](references/stress-testing.md) | 压力测试（历史情景重放 + 蒙特卡洛冲击）与 TOML 配置文件（--config） |
 | [references/live-signal.md](references/live-signal.md) | 每日信号服务（含 webhook 推送）与模拟盘纸面交易 + 偏差追踪 |
@@ -39,11 +39,11 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 | 用户大致会说…… | 执行 | 转述时必须包含 |
 |----------------|------|--------------|
-| “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 结论五态中文（verdict_cn）+ 哪一层给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
+| “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 三灯速览（lights_summary，如「价绿·势绿·时黄」）+ 结论七态中文（verdict_cn）+ 哪盏灯给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测；价灯灰（无估值数据）时要如实告知结论仅基于势/时 |
 | “我持有 XX，成本 N，该不该卖/减仓” | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
 | “帮我记一下持仓 / 我的持仓怎么样了” | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
 | “我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万” | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
-| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
+| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；扫描仅覆盖势/时维度（价灯未评估），建议对入选者再跑 run_score 补全价维度复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
@@ -60,6 +60,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “拉一下 XX 的行情/K 线/财务” | 直接用 TickFlow SDK（见 [references/data-fetching.md](references/data-fetching.md)） | 数据口径（复权/周期） |
 | “出个报告给我” | 在对应命令加 `--report`（HTML）或 `--plot`（图） | 文件路径（outputs/ 下） |
 | “帮我看看今天整体情况 / 出个总览” | `run_dashboard.py`（可加 `--symbols` 附信号） | Dashboard HTML 路径 + 风控提示摘要 |
+| “你有哪些功能 / 都能做什么 / 功能列表” | 不执行命令，按「功能总览话术」分门别类介绍（见下） | 七大类能力 + 每类一句话 + 邀请用户选一个试试 |
 | 命令报错 / 环境不确定 | `run_list.py --doctor`；再查 [references/faq.md](references/faq.md) | 失败项与修复建议 |
 
 标的代码需补全市场后缀（600519 → `600519.SH`，腾讯 → `00700.HK`，苹果 → `AAPL.US`）；
@@ -76,21 +77,43 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 ### 首次用户引导协议
 
-当用户首次使用或问“你能做什么 / 怎么用”时，**不要输出功能清单**，而是用三选一引导：
+区分两种意图，用不同话术回应：
+
+**① 用户想上手**（“怎么用 / 帮我试试 / 从哪开始”）——不要输出功能清单，用三选一引导：
 
 > “我可以帮你：
-> ① 看一只股票现在能不能买（纪律评分，10 秒出结论）
+> ① 看一只股票现在能不能买（买点三灯，10 秒出结论）
 > ② 回测一个策略的历史表现（看看过去赚不赚钱）
 > ③ 制定定投计划（每月定额，看长期收益）
 > 你想先试哪个？或者直接告诉我你关心哪只股票。”
 
 用户选择后立即执行对应命令，不再追问。
 
+**② 用户想了解全貌**（“有哪些功能 / 都能做什么 / 功能列表 / 介绍一下”）——按下方「功能总览话术」分门别类、言简意赅地全面介绍，不执行命令、不粘贴命令行细节。
+
+### 功能总览话术
+
+用户问“有哪些功能”时按七大类介绍（每类 1–2 句白话，不列命令参数），结尾邀请用户挑一个试：
+
+| 类别 | 白话介绍（转述给用户） |
+|------|----------------------|
+| 🎯 买卖决策 | 一只股票**现在能不能买、持仓该不该卖、买多少合适**：买点三灯（价·势·时各亮绿黄红灯）给出结论 + 交易计划与建议仓位；还能按 CAN SLIM 七项法则逐条核查 |
+| 🔍 选股筛选 | **全市场找机会**：低估值/高分红筛选、潜在十倍股/百倍股/猛兽股预设筛选、多因子打分选股、自选池批量扫描 |
+| 📊 策略回测 | **验证想法靠不靠谱**：14 个内置策略回测与一键对比、用自然语言自定义策略规则、参数寻优 + 过拟合检验（样本外/DSR/PBO）、压力测试 |
+| 💼 组合管理 | **多只股票怎么配**：动量轮动、等权/风险平价/HRP 等组合优化、风险归因、配对交易套利 |
+| 🤖 智能与另类 | 机器学习走步预测方向、新闻情绪打分并回测情绪信号 |
+| 💰 定投规划 | 定期定额/智能定投/超跌加码/价值平均，算 XIRR 真实年化并与一次性投入对比 |
+| 📋 日常跟踪 | 登记持仓自动体检、记住风险偏好、每日盯盘信号（可推送）、模拟盘纸面演练、一页 Dashboard 总览 |
+
+介绍后追加一句边界声明：“全部输出仅供研究参考，不构成投资建议，也不会自动下单。想先从哪个开始？直接说股票名字也行。”
+
+用户追问某一类细节时，再展开该类下的具体玩法（对照「能力总览」表），仍不必读 references 文档。
+
 ### 模糊意图消歧
 
 | 用户说 | 判断策略 |
 |---------|----------|
-| “帮我分析一下 XX” / “看看 XX” / “XX 怎么样” | 默认走 `run_score.py`（最轻量的“看一眼”，评分结论先行） |
+| “帮我分析一下 XX” / “看看 XX” / “XX 怎么样” | 默认走 `run_score.py`（最轻量的“看一眼”，三灯结论先行） |
 | “帮我研究一下 XX” / “XX 用什么策略” | 走 `run_compare.py`（多策略对比） |
 | “帮我理财” / “推荐一下” | 先问目的（想买/想研究/想定投），再路由 |
 | 无法判断 | 主动问一句：“你是想看它现在能不能买，还是想研究它的历史表现？” |
@@ -99,7 +122,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 | 级别 | 触发场景 | 转述内容 |
 |------|----------|----------|
-| 一句话 | 用户问“能买吗”“怎么样” | 结论 + 1 个关键理由 + 免责 |
+| 一句话 | 用户问“能买吗”“怎么样” | 三灯速览 + 结论 + 1 个关键理由 + 免责 |
 | 摘要 | 用户问“表现如何”“回测一下” | 结论 + 3 个数字（收益/夏普/回撤）+ 与基准对比 |
 | 详解 | 用户追问“为什么”“详细说说” | 分层展开 + 图表路径 + 下一步建议 |
 
@@ -126,8 +149,8 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
   validate 样本外验证、run_scan/run_screener 后提议对第一名跑 score 复核、run_score 后提议 paper 纸面跟踪）。
 
 此外 `run_score.py --json` 输出含 **`evidence`** 结构化证据链：每条证据含 `id`（E01/E02…）、
-`indicator`、`value`、`threshold`、`triggered`、`impact` 与 `claim`（一句话断言）。
-**Agent 深度解读评分时应引用证据而非自行推断**（如「收盘低于 MA200（E02）所以被否决」），从机制上避免事实性错误。
+`light`（产生维度 value/trend/timing）、`indicator`、`value`、`threshold`、`triggered`、`impact` 与 `claim`（一句话断言）。
+**Agent 深度解读三灯时应引用证据而非自行推断**（如「收盘低于 MA200（E02）所以势灯红」），从机制上避免事实性错误。
 
 ### 优雅降级与预判式错误规避
 
@@ -136,7 +159,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | 场景 | 降级话术 |
 |------|----------|
 | 用户要分钟 K 线但无 API Key | “分钟 K 线需要 API Key，不过用日 K 线也能看到趋势，要试试吗？” |
-| 新股/次新股 K 线不足 | “这只股票上市不到一年，评分可能不准，我可以帮你做个回测看看历史表现。” |
+| 新股/次新股 K 线不足 | “这只股票上市不到一年，三灯无法评估（需 250 根 K 线），我可以帮你做个回测看看历史表现。” |
 | 用户说公司名无法确定代码 | “你说的是 XX 还是 YY？请确认一下股票代码。” |
 | 财务因子无权限 | “财务因子需要 API Key，我先用价格因子（动量+低波）帮你分析。” |
 | 命令失败两次 | 停止重试，向用户说明失败原因并建议 `run_list.py --doctor` 自检 |
@@ -175,7 +198,7 @@ uv run python run_list.py --doctor
 三类典型目的各一条命令直达（`scripts/` 下运行，免费日 K 即可）：
 
 ```bash
-# ① 知道这只股票现在能不能买（结论先行：是/观察/否 + 交易计划）
+# ① 知道这只股票现在能不能买（买点三灯：价·势·时亮灯 + 结论 + 交易计划）
 uv run python run_score.py --symbol 600000.SH
 
 # ② 研究一个策略的历史表现（回测 + 出图）
@@ -216,14 +239,14 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 机器学习 | `run_ml.py` 走步样本外方向预测；`--label triple` 三重障碍、`--meta <策略>` 信号过滤 | ml-strategy.md |
 | 新闻情绪 | `run_sentiment.py --stage fetch` 抓新闻 → agent 打分 → `--stage backtest`（agent-in-the-loop 三步） | sentiment.md |
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
-| 单股纪律评分 | `run_score.py` 四层否决式评分 + 交易计划与建议仓位；`--valuation-pct` 估值分位、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
-| 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量评分，达标/降级分列 | scoring.md |
+| 单股买点三灯 | `run_score.py` 价/势/时三维亮灯 + 决策矩阵结论 + 交易计划与建议仓位；估值分位默认拉取（`--no-valuation` 跳过）、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
+| 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量三灯（仅势/时维度），达标/降级分列 | scoring.md |
 | 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
 | 持仓登记与体检 | `run_account.py --set` 登记，run_score/run_scan 自动联动 | scoring.md |
 | 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>`，run_score 建议仓位因人而异 | scoring.md |
 | 每日信号跟踪 | `run_signal.py` 批量输出调仓动作，`--notify <webhook>` 推送 | live-signal.md |
-| 模拟盘演练 | `run_paper.py` 虚拟资金纸面交易（`--mode score` 按评分裁决）；`--summary` 组合级总览 | live-signal.md |
+| 模拟盘演练 | `run_paper.py` 虚拟资金纸面交易（`--mode score` 按买点三灯裁决）；`--summary` 组合级总览 | live-signal.md |
 | 事件研究 | `run_event.py` 事件窗 AAR/CAAR（可选基准超额） | backtesting.md |
 | 统一总览 | `run_dashboard.py` 聚合持仓+模拟盘+今日信号于一页 HTML | use-cases.md |
 | 能力发现 | `run_list.py --json` 列出全部策略/因子/模型/模式清单；`--doctor` 环境自检 | use-cases.md |

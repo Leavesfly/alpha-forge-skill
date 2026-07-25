@@ -1,7 +1,7 @@
 # CAN SLIM 检查清单（欧奈尔成长股法则）
 
 `run_canslim.py` 把威廉·欧奈尔《笑傲股市》的 CAN SLIM 七项法则落地为**可核查的纪律检查清单**。
-与 `run_score.py` 的四层评分同属纪律过滤层：回答「这只票是否符合 CAN SLIM 成长股画像」，
+与 `run_score.py` 的买点三灯同属纪律过滤层：回答「这只票是否符合 CAN SLIM 成长股画像」，
 **不是收益预测**。免费日 K 即可运行；A 股基本面走 akshare 自动获取（无需 API Key），
 港美股基本面自动用 yfinance 利润表兜底（财年口径，无需 Key）。
 
@@ -71,9 +71,9 @@ uv run python run_canslim.py --symbol 600519.SH --json > canslim.json
 
 ## 与其他命令的衔接
 
-- 结论「是」的标的 → `run_score.py --symbol <代码>` 做四层纪律评分复核（含交易计划价位与建议仓位）；
+- 结论「是」的标的 → `run_score.py --symbol <代码>` 做买点三灯复核（含交易计划价位与建议仓位）；
 - 价格趋势验证 → `run_backtest.py --strategy donchian/momentum`（CAN SLIM 的 N/L 与突破/动量族同源）；
-- 批量粗筛 → `run_scan.py`（流动性 + 四层评分）与本命令横截面模式互为补充。
+- 批量粗筛 → `run_scan.py`（流动性 + 买点三灯势/时维度）与本命令横截面模式互为补充。
 
 ## 局限性（转述时不可省略）
 

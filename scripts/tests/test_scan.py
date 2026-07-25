@@ -41,8 +41,8 @@ class TestScanFunnel:
         assert "DOWN.SH" in got_rejected
         assert got_candidates <= {"UP1.SH", "UP2.SH"}
         assert all(r["reason"] for r in result["rejected"])
-        # 候选按排名分降序
-        scores = [c["alpha_score"] for c in result["candidates"]]
+        # 候选按趋势分降序
+        scores = [c["trend_score"] for c in result["candidates"]]
         assert scores == sorted(scores, reverse=True)
 
     def test_failed_symbol_skipped_not_fatal(self):
@@ -79,7 +79,7 @@ class TestScanFunnel:
         assert set(result) == {"candidates", "rejected", "filtered", "skipped"}
         payload = json.loads(to_json(result))
         for item in payload["candidates"] + payload["rejected"]:
-            assert {"symbol", "verdict", "verdict_cn", "alpha_score", "asof"} <= set(item)
+            assert {"symbol", "verdict", "verdict_cn", "trend_score", "asof"} <= set(item)
 
     def test_progress_callback(self):
         data = {"UP1.SH": _trend_df(0.004, seed=1)}

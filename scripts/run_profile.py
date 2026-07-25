@@ -25,6 +25,13 @@
 from __future__ import annotations
 
 import argparse
+from profile import (
+    RISK_PRESETS,
+    load_profile,
+    profile_path,
+    reset_profile,
+    set_profile,
+)
 
 from cli_common import (
     add_json_arg,
@@ -36,13 +43,6 @@ from cli_common import (
     run_cli,
 )
 from cli_config import parse_args_with_config
-from profile import (
-    RISK_PRESETS,
-    load_profile,
-    profile_path,
-    reset_profile,
-    set_profile,
-)
 from report import attach_meta
 
 

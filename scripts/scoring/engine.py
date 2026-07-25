@@ -1,27 +1,27 @@
-"""四层纪律评分引擎（分层否决架构）。
+"""买点三灯引擎：价 / 势 / 时三个正交维度 + 决策矩阵。
 
-回答的不是「这个标的好不好」，而是：按当前价量结构、市场环境和风险约束，
-**现在是否适合参与**。四层各司其职、单向降级，利好不能救弱势标的：
+回答的不是「这家公司好不好」，而是把「现在能不能买」拆成三个**互相独立**的问题，
+各自亮灯（绿/黄/红/灰，灰=数据不可用，诚实标注不猜测）：
 
-0. **基本面否决层**（可选，只否决/降级）：
-   ST/*ST、连续 4 季亏损、资不抵债直接否决；由盈转亏封顶「观察」；
-1. **ALPHA 加权层**（只产生排名分 0~100）：
-   风险调整动量 55% + 相对基准强度 35% + Kaufman 趋势效率 10%；
-2. **风险否决层**（只封顶/否决，不加分）：
-   收盘 < MA200 直接「否」；MA60 / 周线结构 / 基准 risk-off 封顶「观察」；
-3. **技术确认层**（只拦截「是」，不加分）：
-   MACD 死叉、RSI 过热、KDJ 死叉、量能背离触发则「是」降「观察」；
-   ADX 强趋势时放宽 RSI 阈值并豁免 KDJ 死叉；
-4. **入场时机层**：偏离 MA20 过热追高降级，有序回调保持。
+- **价**（值不值得拥有）：基本面硬伤否决（ST/连续亏损/资不抵债）+
+  估值历史分位（PE/PB 相对自身近 N 年历史的位置）；
+- **势**（市场是否认同）：趋势分（风险调整动量 55% + 相对基准强度 35% +
+  Kaufman 趋势效率 10%）+ MA60/MA200/周线结构 + 大盘环境；
+- **时**（是不是好买点）：偏离 MA20 过热、距 60 日高点回撤、RSI 过热、
+  量价背离、近 30 天事件风险。
 
-动态自适应阈值：确认层/时机层的固定阈值受波动率缩放因子 vol_k 调整
-（高波动放宽、低波动收紧），避免牛市过早拦截、熊市过晚反应。
+三灯经**决策矩阵**输出行动结论（七态），而非单一分数阈值：
 
-另有两类独立约束（P1）：事件风险只降级不加分；持仓状态只改操作建议
-（「持仓需减风险」），不改排名分。
+- 势绿+时绿 → 「趋势买点」（价红非硬伤时降为「纯趋势仓」，强制估值警示）；
+- 势绿+时非绿 → 「等回踩」（给回踩参考位）；
+- 价绿+势弱 → 「左侧观察」（进观察名单，给触发条件，不抄底）；
+- 价硬伤红 → 「回避」（一票否决）；势弱且价无吸引力 → 「回避」；
+- 持仓且势红/价硬伤 → 「持仓需减风险」（不等待回本）。
 
-评分阈值为纪律预设值，未经过样本外验证；``scoring.replay`` 提供
-历史回放 + 前瞻收益事件研究用于自证，评分不应理解为已验证的选股 alpha。
+动态自适应阈值：时灯的固定阈值受波动率缩放因子 vol_k 调整
+（高波动放宽、低波动收紧）。三灯规则为纪律预设值，未经样本外验证；
+``scoring.replay`` 提供历史回放 + 前瞻收益事件研究自证（仅覆盖势/时维度），
+结论不应理解为已验证的选股 alpha。
 """
 
 from __future__ import annotations
@@ -32,42 +32,47 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .indicators import (
-    adx,
-    annualized_vol,
-    atr,
-    compute_kdj,
-    compute_rsi,
-    efficiency_ratio,
-    macd,
-)
-from .plan import build_trade_plan
 from utils import resolve_time_index, safe_round, series_last
 
-#: 结论五态（机器码 -> 中文展示）
+from .indicators import annualized_vol, atr, compute_rsi, efficiency_ratio
+from .plan import build_trade_plan
+
+#: 结论七态（机器码 -> 中文展示）
 VERDICT_CN = {
-    "yes": "是",
-    "watch": "观察",
-    "no": "否",
+    "trend_entry": "趋势买点",
+    "trend_only": "纯趋势仓",
+    "wait_pullback": "等回踩",
+    "left_watch": "左侧观察",
+    "avoid": "回避",
     "reduce_risk": "持仓需减风险",
     "unrated": "无法评分",
 }
 VERDICTS = tuple(VERDICT_CN)
 
+#: 可给交易计划的行动态（等回踩也给：回踩参考位就是计划的一部分）
+ACTIONABLE_VERDICTS = ("trend_entry", "trend_only", "wait_pullback")
+
+#: 三灯维度（机器名 -> 中文单字）
+LIGHT_CN = {"value": "价", "trend": "势", "timing": "时"}
+LIGHTS = tuple(LIGHT_CN)
+
+#: 灯色中文
+COLOR_CN = {"green": "绿", "yellow": "黄", "red": "红", "gray": "灰"}
+
 #: 有效评分所需最少 K 线数（MA200 + 动量窗口需要足够历史）
 MIN_BARS = 250
 
-#: ALPHA 排名分 -> 初始结论的阈值
-ALPHA_YES = 60.0
-ALPHA_WATCH = 45.0
+#: 趋势分 -> 势灯的阈值（≥60 绿灯候选，<45 红灯）
+TREND_GREEN = 60.0
+TREND_RED = 45.0
+
+#: 估值分位均值 -> 价灯的阈值（≤0.4 绿，>0.7 红）
+VAL_GREEN = 0.4
+VAL_RED = 0.7
 
 #: 波动率缩放因子边界（动态阈值）
 VOL_K_MIN = 0.8
 VOL_K_MAX = 1.4
-
-#: ADX 趋势强度阈值
-ADX_STRONG = 30.0
-ADX_MODERATE = 25.0
 
 #: 各市场后缀的默认基准（可被 --benchmark 覆盖）
 DEFAULT_BENCHMARKS = {
@@ -87,34 +92,45 @@ def default_benchmark(symbol: str) -> str | None:
 
 @dataclass
 class ScoreResult:
-    """单标的纪律评分结果。"""
+    """单标的买点三灯结果。"""
 
     symbol: str
-    verdict: str  # yes / watch / no / reduce_risk / unrated
-    alpha_score: float | None
-    components: dict  # 三项子分与权重
-    layers: list[dict]  # 各层 {name, status, reasons}
+    verdict: str  # trend_entry / trend_only / wait_pullback / left_watch / avoid / reduce_risk / unrated
+    lights: dict  # {value|trend|timing: {color, reasons, detail}}
+    trend_score: float | None
+    components: dict  # 趋势分三项子分与权重
     snapshot: dict  # 关键指标快照
-    plan: dict | None  # 交易计划（仅 是/观察）
+    plan: dict | None  # 交易计划（仅行动态）
     benchmark: str | None
     asof: str  # 最近一根 K 线日期
     n_bars: int
-    position: dict | None = None  # 持仓联动（P1）
-    risk_events: list[dict] = field(default_factory=list)  # 触发的风险事件（P1）
+    decision: dict = field(default_factory=dict)  # 矩阵裁决 {rule, triggers}
+    position: dict | None = None  # 持仓联动（只改操作建议）
+    risk_events: list[dict] = field(default_factory=list)  # 触发的风险事件
     evidence: list[dict] = field(default_factory=list)  # 结构化证据链（Agent 可引用）
 
     @property
     def verdict_cn(self) -> str:
         return VERDICT_CN[self.verdict]
 
+    @property
+    def lights_summary(self) -> str:
+        """三灯速览，如「价绿 · 势绿 · 时黄」。"""
+        return " · ".join(
+            f"{LIGHT_CN[name]}{COLOR_CN.get(self.lights.get(name, {}).get('color', 'gray'), '灰')}"
+            for name in LIGHTS
+        )
+
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
             "verdict": self.verdict,
             "verdict_cn": self.verdict_cn,
-            "alpha_score": self.alpha_score,
+            "lights": self.lights,
+            "lights_summary": self.lights_summary,
+            "trend_score": self.trend_score,
             "components": self.components,
-            "layers": self.layers,
+            "decision": self.decision,
             "evidence": self.evidence,
             "snapshot": self.snapshot,
             "plan": self.plan,
@@ -134,21 +150,24 @@ def score_symbol(
     risk_events: list[dict] | None = None,
     position: dict | None = None,
     fundamentals: dict | None = None,
+    valuation=None,
 ) -> ScoreResult:
-    """对单标的执行四层纪律评分。
+    """对单标的执行买点三灯评估。
 
     Args:
         df: 含 ``close``（可选 high/low/volume）的 OHLCV DataFrame（时间升序）。
         symbol: 标的代码（用于展示）。
         benchmark_close: 基准收盘价序列（None 时相对强度权重并入动量并标注降级）。
         benchmark_symbol: 基准代码（用于展示）。
-        risk_events: 事件风险列表 ``[{date, risk, note}]``，high 只降级不加分。
-        position: 持仓信息 ``{cost, shares, source}``，只改操作建议不改排名分。
+        risk_events: 事件风险列表 ``[{date, risk, note}]``，high 亮红时灯，利好不加分。
+        position: 持仓信息 ``{cost, shares, source}``，只改操作建议不改灯色。
         fundamentals: 基本面数据 ``{eps_recent, is_st, net_asset_per_share, source}``，
-            None 时跳过基本面否决层（向后兼容）。
+            None 时价灯的硬伤检查跳过。
+        valuation: 估值分位（``data.valuation.ValuationPercentile`` 或同构 dict），
+            None 时价灯降级为灰（诚实标注，不猜测）。
 
     Returns:
-        ScoreResult。评分仅使用截至最近一根已完成 K 线的数据，无前视。
+        ScoreResult。评估仅使用截至最近一根已完成 K 线的数据，无前视。
     """
     close = df["close"].astype(float).reset_index(drop=True)
     index = resolve_time_index(df)
@@ -157,26 +176,22 @@ def score_symbol(
     n = int(close.notna().sum())
 
     if n < MIN_BARS:
+        reason = (
+            f"有效 K 线仅 {n} 根，低于评估所需 {MIN_BARS} 根"
+            "（MA200/动量窗口无法形成），不用猜测补齐"
+        )
         return ScoreResult(
             symbol=symbol,
             verdict="unrated",
-            alpha_score=None,
+            lights={name: {"color": "gray", "reasons": [reason], "detail": {}} for name in LIGHTS},
+            trend_score=None,
             components={},
-            layers=[
-                {
-                    "name": "data",
-                    "status": "veto",
-                    "reasons": [
-                        f"有效 K 线仅 {n} 根，低于评分所需 {MIN_BARS} 根"
-                        "（MA200/动量窗口无法形成），不用猜测补齐"
-                    ],
-                }
-            ],
             snapshot={"close": series_last(close), "n_bars": n},
             plan=None,
             benchmark=benchmark_symbol,
             asof=asof,
             n_bars=n,
+            decision={"rule": "数据不足，无法评估", "triggers": [f"补足历史至 {MIN_BARS} 根以上"]},
         )
 
     volume = df["volume"].astype(float).reset_index(drop=True) if "volume" in df.columns else None
@@ -186,98 +201,253 @@ def score_symbol(
     # ---------- 动态阈值：波动率缩放因子 ----------
     vol_k = _vol_regime(close)
 
-    # ---------- 基本面否决层（可选，在 ALPHA 之前） ----------
-    layers: list[dict] = []
-    fundamental_veto = False
-    fundamental_cap = False
-    if fundamentals is not None:
-        f_verdict, f_layer = _fundamental_veto(fundamentals)
-        layers.append(f_layer)
-        if f_layer["status"] == "veto":
-            fundamental_veto = True
-        elif f_layer["status"] == "cap":
-            fundamental_cap = True
+    # ---------- 价灯：基本面硬伤 + 估值分位 ----------
+    value_light = _value_light(fundamentals, valuation)
 
-    # ---------- 第 1 层：ALPHA 加权（只产生排名分） ----------
-    alpha_score, components, alpha_reasons = _alpha_layer(close, benchmark_close)
-    if fundamental_veto:
-        verdict = "no"
-    elif alpha_score >= ALPHA_YES:
-        verdict = "yes"
-    elif alpha_score >= ALPHA_WATCH:
-        verdict = "watch"
-    else:
-        verdict = "no"
-        alpha_reasons.append(f"排名分 {alpha_score:.1f} 低于 {ALPHA_WATCH:.0f}，动能不足不值得参与")
-    # 基本面封顶：由盈转亏等情形将「是」降为「观察」
-    if fundamental_cap and verdict == "yes":
-        verdict = "watch"
-    layers.append({"name": "alpha", "status": "pass", "score": round(alpha_score, 1), "reasons": alpha_reasons})
+    # ---------- 势灯：趋势分 + 均线/周线/大盘结构 ----------
+    trend_light, trend_score, components, snapshot = _trend_light(close, benchmark_close)
 
-    # ---------- 第 2 层：风险否决（只封顶/否决） ----------
-    verdict, veto_layer, snapshot = _veto_layer(close, benchmark_close, verdict)
-    layers.append(veto_layer)
-
-    # ---------- 第 3 层：技术确认（只拦截「是」） ----------
-    adx_value = _compute_adx(df)
-    verdict, confirm_layer, snapshot2 = _confirm_layer(df, close, volume, verdict, vol_k, adx_value)
-    layers.append(confirm_layer)
+    # ---------- 时灯：过热/回调/RSI/量价/事件风险 ----------
+    timing_light, snapshot2, triggered_events = _timing_light(
+        df, close, volume, vol_k, risk_events, index
+    )
     snapshot.update(snapshot2)
 
-    # ---------- 第 4 层：入场时机 ----------
-    verdict, timing_layer, snapshot3 = _timing_layer(close, verdict, vol_k)
-    layers.append(timing_layer)
-    snapshot.update(snapshot3)
+    # ---------- 决策矩阵 ----------
+    verdict, decision = _decide(value_light, trend_light, timing_light, snapshot)
 
-    # ---------- 独立约束：事件风险（只降级不加分） ----------
-    triggered_events: list[dict] = []
-    if risk_events is not None:
-        verdict, event_layer, triggered_events = _event_risk_layer(risk_events, index, verdict)
-        layers.append(event_layer)
-
-    # ---------- 交易计划（仅 是/观察） ----------
+    # ---------- 交易计划（仅行动态） ----------
     atr14 = series_last(atr(df.reset_index(drop=True), 14))
     snapshot["atr14"] = atr14
     plan = None
-    if verdict in ("yes", "watch"):
+    if verdict in ACTIONABLE_VERDICTS:
         plan = build_trade_plan(series_last(close), snapshot.get("ma20"), atr14)
 
-    # ---------- 独立约束：持仓联动（只改操作建议） ----------
+    # ---------- 持仓联动（只改操作建议，不改灯色） ----------
     position_out = None
     if position is not None and position.get("cost"):
-        verdict, position_out = _position_overlay(position, close, atr14, verdict, layers)
+        verdict, position_out = _position_overlay(
+            position, close, atr14, verdict, value_light, trend_light
+        )
 
     snapshot["close"] = series_last(close)
     snapshot["vol_k"] = round(vol_k, 3)
-    snapshot["adx14"] = adx_value
+
+    lights = {"value": value_light, "trend": trend_light, "timing": timing_light}
 
     # ---------- 结构化证据链（Agent 可引用编号转述） ----------
-    evidence = _build_evidence(layers, components, snapshot)
+    evidence = _build_evidence(lights, trend_score, components, snapshot, vol_k)
 
     return ScoreResult(
         symbol=symbol,
         verdict=verdict,
-        alpha_score=round(alpha_score, 1),
+        lights=lights,
+        trend_score=round(trend_score, 1),
         components=components,
-        layers=layers,
-        evidence=evidence,
         snapshot={k: safe_round(v) for k, v in snapshot.items()},
         plan=plan,
         benchmark=benchmark_symbol,
         asof=asof,
         n_bars=n,
+        decision=decision,
         position=position_out,
         risk_events=triggered_events,
+        evidence=evidence,
     )
 
 
-# ---------------------------------------------------------------- 各层实现
+# ---------------------------------------------------------------- 价灯
 
 
-def _alpha_layer(
+def _value_light(fundamentals: dict | None, valuation) -> dict:
+    """价灯：基本面硬伤一票红灯 + 估值分位定绿/黄/红；无数据亮灰。
+
+    硬伤规则（红灯 + hard_flaw=True）：ST/*ST、每股净资产 < 0（资不抵债）、
+    最近 4 季 EPS 均 < 0（连续亏损）。由盈转亏不算硬伤，但价灯封顶黄。
+    估值分位：PE/PB 分位均值 ≤0.4 绿、0.4~0.7 黄、>0.7 红。
+    """
+    reasons: list[str] = []
+    red_reasons: list[str] = []
+    yellow_reasons: list[str] = []
+    hard_flaw = False
+    profit_to_loss = False
+
+    if fundamentals is not None:
+        source = fundamentals.get("source", "unknown")
+        if fundamentals.get("is_st"):
+            reasons.append("ST/*ST 标的，退市风险（硬伤）")
+            red_reasons.append(reasons[-1])
+            hard_flaw = True
+        naps = fundamentals.get("net_asset_per_share")
+        if naps is not None and isinstance(naps, (int, float)) and naps < 0:
+            reasons.append(f"每股净资产 {naps:.2f} < 0，资不抵债（硬伤）")
+            red_reasons.append(reasons[-1])
+            hard_flaw = True
+        eps_recent = fundamentals.get("eps_recent")
+        if eps_recent and len(eps_recent) >= 4 and not hard_flaw:
+            eps_vals = [float(e) for e in eps_recent[-4:] if e is not None]
+            if len(eps_vals) >= 4:
+                if all(e < 0 for e in eps_vals):
+                    reasons.append(
+                        f"最近 4 季 EPS 均为负（{', '.join(f'{e:.3f}' for e in eps_vals)}），连续亏损（硬伤）"
+                    )
+                    red_reasons.append(reasons[-1])
+                    hard_flaw = True
+                elif eps_vals[-1] < 0 and eps_vals[-2] < 0 and eps_vals[-3] > 0:
+                    profit_to_loss = True
+                    reasons.append(
+                        f"由盈转亏：第 3 季 EPS {eps_vals[-3]:.3f} > 0，"
+                        f"近 2 季 {eps_vals[-2]:.3f}/{eps_vals[-1]:.3f} < 0，价灯封顶黄"
+                    )
+                    yellow_reasons.append(reasons[-1])
+        if not hard_flaw and not profit_to_loss:
+            reasons.append(f"基本面未见硬伤（数据源：{source}）")
+
+    val_avg, pe_pct, pb_pct, val_note = _valuation_percentiles(valuation)
+
+    detail = {
+        "hard_flaw": hard_flaw,
+        "profit_to_loss": profit_to_loss,
+        "valuation_avg": safe_round(val_avg, 4) if val_avg is not None else None,
+        "pe_percentile": safe_round(pe_pct, 4) if pe_pct is not None else None,
+        "pb_percentile": safe_round(pb_pct, 4) if pb_pct is not None else None,
+    }
+
+    if hard_flaw:
+        color = "red"
+    elif val_avg is not None:
+        if val_avg > VAL_RED:
+            color = "red"
+            reasons.append(f"估值分位均值 {val_avg:.0%} > {VAL_RED:.0%}，相对自身历史高估")
+            red_reasons.append(reasons[-1])
+        elif val_avg > VAL_GREEN:
+            color = "yellow"
+            reasons.append(f"估值分位均值 {val_avg:.0%}，处于自身历史中枢区间")
+            yellow_reasons.append(reasons[-1])
+        else:
+            color = "yellow" if profit_to_loss else "green"
+            reasons.append(f"估值分位均值 {val_avg:.0%} ≤ {VAL_GREEN:.0%}，相对自身历史偏低")
+        if val_note:
+            reasons.append(val_note)
+    else:
+        color = "yellow" if profit_to_loss else "gray"
+        reasons.append("无估值分位数据：价维度无法判断，结论仅基于势/时（诚实降级，不猜测）")
+
+    detail["red_reasons"] = red_reasons
+    detail["yellow_reasons"] = yellow_reasons
+    if not reasons:
+        reasons.append("无基本面与估值数据，价灯灰")
+    return {"color": color, "reasons": reasons, "detail": detail}
+
+
+def _valuation_percentiles(valuation) -> tuple[float | None, float | None, float | None, str]:
+    """从 ValuationPercentile 对象或同构 dict 提取 PE/PB 分位与均值。"""
+    if valuation is None:
+        return None, None, None, ""
+    if isinstance(valuation, dict):
+        pe_pct = valuation.get("pe_percentile")
+        pb_pct = valuation.get("pb_percentile")
+        source = valuation.get("source", "")
+    else:
+        pe_pct = getattr(valuation, "pe_percentile", None)
+        pb_pct = getattr(valuation, "pb_percentile", None)
+        source = getattr(valuation, "source", "")
+    pcts = [float(p) for p in (pe_pct, pb_pct) if p is not None]
+    if not pcts:
+        return None, pe_pct, pb_pct, ""
+    note = "估值分位为近似口径（历史价格/当前 EPS）" if "approx" in str(source) else ""
+    return sum(pcts) / len(pcts), pe_pct, pb_pct, note
+
+
+# ---------------------------------------------------------------- 势灯
+
+
+def _trend_light(
+    close: pd.Series, benchmark_close: pd.Series | None
+) -> tuple[dict, float, dict, dict]:
+    """势灯：趋势分 + MA60/MA200/周线结构 + 大盘环境，去重后单一定色。
+
+    红：收盘 < MA200 或 趋势分 < 45；
+    绿：站上 MA200/MA60、周线完好、大盘非 risk-off 且趋势分 ≥ 60；
+    黄：其余（结构部分走弱或分数居中）。
+    """
+    trend_score, components, reasons = _trend_score(close, benchmark_close)
+
+    last = float(close.iloc[-1])
+    ma20 = series_last(close.rolling(20).mean())
+    ma60 = series_last(close.rolling(60).mean())
+    ma200 = series_last(close.rolling(200).mean())
+
+    red = False
+    yellow = False
+    red_reasons: list[str] = []
+    yellow_reasons: list[str] = []
+    detail: dict = {"trend_score": round(trend_score, 1)}
+
+    below_ma200 = not math.isnan(ma200) and last < ma200
+    detail["below_ma200"] = below_ma200
+    if below_ma200:
+        red = True
+        reasons.append(f"收盘 {last:.2f} 低于 MA200 {ma200:.2f}，长期趋势逆势（红灯）")
+        red_reasons.append(reasons[-1])
+
+    if trend_score < TREND_RED:
+        red = True
+        reasons.append(f"趋势分 {trend_score:.1f} 低于 {TREND_RED:.0f}，动能不足（红灯）")
+        red_reasons.append(reasons[-1])
+    elif trend_score < TREND_GREEN:
+        yellow = True
+        reasons.append(f"趋势分 {trend_score:.1f} 未达 {TREND_GREEN:.0f}，动能一般")
+        yellow_reasons.append(reasons[-1])
+
+    below_ma60 = not math.isnan(ma60) and last < ma60
+    detail["below_ma60"] = below_ma60
+    if below_ma60 and not below_ma200:
+        yellow = True
+        reasons.append(f"收盘 {last:.2f} 低于 MA60 {ma60:.2f}，中期趋势走弱")
+        yellow_reasons.append(reasons[-1])
+
+    weekly = _weekly_close(close)
+    weekly_broken = False
+    if len(weekly.dropna()) >= 30:
+        wma30 = float(weekly.rolling(30).mean().iloc[-1])
+        wlast = float(weekly.iloc[-1])
+        weekly_broken = wlast < wma30
+        if weekly_broken:
+            yellow = True
+            reasons.append(f"周线收盘 {wlast:.2f} 低于周线 MA30 {wma30:.2f}，周线结构走坏")
+            yellow_reasons.append(reasons[-1])
+    else:
+        reasons.append("周线样本不足 30 根，跳过周线结构检查")
+    detail["weekly_broken"] = weekly_broken
+
+    bench_risk_off = False
+    if benchmark_close is not None:
+        bench = benchmark_close.dropna().astype(float)
+        if len(bench) >= 200:
+            bench_risk_off = float(bench.iloc[-1]) < float(bench.rolling(200).mean().iloc[-1])
+            if bench_risk_off:
+                yellow = True
+                reasons.append("基准收盘低于其 MA200（大盘 risk-off），势灯封顶黄")
+                yellow_reasons.append(reasons[-1])
+        else:
+            reasons.append("基准样本不足 200 根，跳过大盘环境检查")
+    detail["bench_risk_off"] = bench_risk_off
+
+    color = "red" if red else ("yellow" if yellow else "green")
+    if color == "green":
+        reasons.append("价格站上 MA60/MA200、周线与大盘环境完好，趋势结构健康")
+    detail["red_reasons"] = red_reasons
+    detail["yellow_reasons"] = yellow_reasons
+
+    snapshot = {"ma20": ma20, "ma60": ma60, "ma200": ma200}
+    return {"color": color, "reasons": reasons, "detail": detail}, trend_score, components, snapshot
+
+
+def _trend_score(
     close: pd.Series, benchmark_close: pd.Series | None
 ) -> tuple[float, dict, list[str]]:
-    """ALPHA 加权层：动量 55 / 相对强度 35 / 趋势效率 10。
+    """趋势分：动量 55 / 相对强度 35 / 趋势效率 10（0~100，扫描排序用）。
 
     无横截面对手时，各子分经 tanh 压缩映射到 0~100 的分位标尺；
     无基准时相对强度权重并入动量并在理由中标注降级。
@@ -309,7 +479,7 @@ def _alpha_layer(
     else:
         weights = {"momentum": 0.90, "rel_strength": 0.0, "efficiency": 0.10}
         score = 0.90 * mom_score + 0.10 * er_score
-        reasons.append("无可用基准：相对强度权重并入动量（降级评分）")
+        reasons.append("无可用基准：相对强度权重并入动量（降级评估）")
 
     components = {
         "momentum": {"score": round(mom_score, 1), "ret60": ret60, "vol60": vol60},
@@ -323,162 +493,108 @@ def _alpha_layer(
     return float(score), components, reasons
 
 
-def _veto_layer(
-    close: pd.Series, benchmark_close: pd.Series | None, verdict: str
-) -> tuple[str, dict, dict]:
-    """风险否决层：MA200 否决、MA60/周线/基准 risk-off 封顶「观察」。"""
-    last = float(close.iloc[-1])
-    ma20 = series_last(close.rolling(20).mean())
-    ma60 = series_last(close.rolling(60).mean())
-    ma200 = series_last(close.rolling(200).mean())
-    reasons: list[str] = []
-    status = "pass"
-
-    if not math.isnan(ma200) and last < ma200:
-        verdict = "no"
-        status = "veto"
-        reasons.append(f"收盘 {last:.2f} 低于 MA200 {ma200:.2f}，长期趋势逆势，直接否决")
-    elif not math.isnan(ma60) and last < ma60:
-        if verdict == "yes":
-            verdict = "watch"
-            status = "cap"
-        reasons.append(f"收盘 {last:.2f} 低于 MA60 {ma60:.2f}，中期趋势走弱，结论封顶「观察」")
-
-    weekly = _weekly_close(close)
-    if len(weekly.dropna()) >= 30:
-        wma30 = float(weekly.rolling(30).mean().iloc[-1])
-        wlast = float(weekly.iloc[-1])
-        if wlast < wma30:
-            if verdict == "yes":
-                verdict = "watch"
-                status = "cap" if status == "pass" else status
-            reasons.append(f"周线收盘 {wlast:.2f} 低于周线 MA30 {wma30:.2f}，周线结构走坏，封顶「观察」")
-    else:
-        reasons.append("周线样本不足 30 根，跳过周线结构检查")
-
-    if benchmark_close is not None:
-        bench = benchmark_close.dropna().astype(float)
-        if len(bench) >= 200:
-            bma200 = float(bench.rolling(200).mean().iloc[-1])
-            blast = float(bench.iloc[-1])
-            if blast < bma200:
-                if verdict == "yes":
-                    verdict = "watch"
-                    status = "cap" if status == "pass" else status
-                reasons.append("基准收盘低于其 MA200（大盘 risk-off），封顶「观察」")
-        else:
-            reasons.append("基准样本不足 200 根，跳过大盘环境检查")
-
-    if not reasons:
-        reasons.append("价格站上 MA60/MA200，周线与大盘环境未触发否决")
-    layer = {"name": "veto", "status": status, "reasons": reasons}
-    snapshot = {"ma20": ma20, "ma60": ma60, "ma200": ma200}
-    return verdict, layer, snapshot
+# ---------------------------------------------------------------- 时灯
 
 
-def _confirm_layer(
+def _timing_light(
     df: pd.DataFrame,
     close: pd.Series,
     volume: pd.Series | None,
-    verdict: str,
-    vol_k: float = 1.0,
-    adx_value: float | None = None,
-) -> tuple[str, dict, dict]:
-    """技术确认层：只拦截「是」，任一触发则降级「观察」，不给排名加分。
+    vol_k: float,
+    risk_events: list[dict] | None,
+    index: pd.Index,
+) -> tuple[dict, dict, list[dict]]:
+    """时灯：过热追高/事件风险亮红；回调进行中/RSI 过热/量价背离亮黄。
 
-    动态阈值：RSI 过热阈值受 vol_k 缩放；ADX 强趋势时额外放宽 RSI 并豁免 KDJ。
-    """
-    reasons: list[str] = []
-    dif, dea = macd(close)
-    dif_v, dea_v = float(dif.iloc[-1]), float(dea.iloc[-1])
-    if dif_v < dea_v:
-        reasons.append(f"MACD DIF {dif_v:.3f} < DEA {dea_v:.3f}（死叉状态）")
-
-    # RSI 过热：基础 78 × vol_k，ADX 强趋势额外 +5，中等 +3
-    rsi_base = 78.0 * vol_k
-    adx_bonus = 0.0
-    if adx_value is not None and adx_value >= ADX_STRONG:
-        adx_bonus = 5.0
-    elif adx_value is not None and adx_value >= ADX_MODERATE:
-        adx_bonus = 3.0
-    rsi_threshold = rsi_base + adx_bonus
-    rsi14 = float(compute_rsi(close, 14).iloc[-1])
-    if rsi14 > rsi_threshold:
-        reasons.append(f"RSI14 = {rsi14:.1f} > {rsi_threshold:.0f}，短期过热")
-
-    high = df["high"].astype(float).reset_index(drop=True) if "high" in df.columns else close.reset_index(drop=True)
-    low = df["low"].astype(float).reset_index(drop=True) if "low" in df.columns else close.reset_index(drop=True)
-    k, d, _ = compute_kdj(high, low, close.reset_index(drop=True), 9, 3, 3)
-    k_v, d_v = float(k.iloc[-1]), float(d.iloc[-1])
-    # KDJ 死叉：ADX 强趋势时仅记录不拦截
-    kdj_dead = k_v < d_v
-    if kdj_dead:
-        if adx_value is not None and adx_value >= ADX_STRONG:
-            reasons.append(f"KDJ K {k_v:.1f} < D {d_v:.1f}（死叉，但 ADX={adx_value:.0f} 强趋势豁免拦截）")
-        else:
-            reasons.append(f"KDJ K {k_v:.1f} < D {d_v:.1f}（死叉状态）")
-
-    # 量价背离：量能阈值受 vol_k 缩放
-    vol_threshold = 0.7 * vol_k
-    if volume is not None and len(volume) >= 20:
-        high20 = float(close.rolling(20).max().iloc[-1])
-        vol_ma20 = float(volume.rolling(20).mean().iloc[-1])
-        if float(close.iloc[-1]) >= high20 - 1e-9 and float(volume.iloc[-1]) < vol_threshold * vol_ma20:
-            reasons.append(f"价创 20 日新高但量能低于 20 日均量 {vol_threshold:.0%}（量价背离）")
-
-    # ADX 状态标注（仅当有实际放宽行为时添加）
-    if adx_value is not None and adx_bonus > 0 and (rsi14 > rsi_base or kdj_dead):
-        strength = "强趋势" if adx_value >= ADX_STRONG else "中等趋势"
-        reasons.append(f"ADX={adx_value:.0f}（{strength}），RSI 拦截阈值放宽至 {rsi_threshold:.0f}")
-
-    # 判断是否降级：KDJ 死叉在强趋势时不参与降级决策，ADX 标注也不参与
-    blocking_reasons = [r for r in reasons if "豁免" not in r and "ADX=" not in r]
-    status = "pass"
-    if blocking_reasons and verdict == "yes":
-        verdict = "watch"
-        status = "downgrade"
-    if not reasons:
-        reasons.append("MACD/RSI/KDJ/量价确认均未触发拦截")
-    layer = {"name": "confirm", "status": status, "reasons": reasons}
-    snapshot = {"rsi14": rsi14, "macd_dif": dif_v, "macd_dea": dea_v, "kdj_k": k_v, "kdj_d": d_v}
-    return verdict, layer, snapshot
-
-
-def _timing_layer(close: pd.Series, verdict: str, vol_k: float = 1.0) -> tuple[str, dict, dict]:
-    """入场时机层：偏离 MA20 过热追高降级；有序回调保持并注明。
-
-    动态阈值：MA20 偏离阈值受 vol_k 缩放（高波动放宽，低波动收紧）。
+    动态阈值：MA20 偏离（15%×vol_k）、RSI 过热（78×vol_k）、
+    量能背离（0.7×vol_k）均受波动率缩放因子调整。
     """
     last = float(close.iloc[-1])
     ma20 = series_last(close.rolling(20).mean())
     dev20 = last / ma20 - 1.0 if not math.isnan(ma20) and ma20 > 0 else float("nan")
     high60 = float(close.rolling(60).max().iloc[-1])
     dd60 = last / high60 - 1.0 if high60 > 0 else float("nan")
+    rsi14 = float(compute_rsi(close, 14).iloc[-1])
 
-    # 动态偏离阈值：基础 15% × vol_k
-    dev_threshold = 0.15 * vol_k
     reasons: list[str] = []
-    status = "pass"
-    if not math.isnan(dev20) and dev20 > dev_threshold:
-        if verdict == "yes":
-            verdict = "watch"
-            status = "downgrade"
-        reasons.append(f"收盘偏离 MA20 达 {dev20 * 100:+.1f}%（>{dev_threshold * 100:.0f}%），过热追高，等回踩")
-    elif not math.isnan(dd60) and dd60 > -0.08 and not math.isnan(ma20) and last > ma20:
-        reasons.append(f"距 60 日高点回撤 {dd60 * 100:.1f}%（<8%）且收在 MA20 上方，趋势结构有序")
-    else:
-        reasons.append(f"偏离 MA20 {dev20 * 100:+.1f}%，距 60 日高点回撤 {dd60 * 100:.1f}%")
-    layer = {"name": "timing", "status": status, "reasons": reasons}
-    return verdict, layer, {"dev20": dev20, "dd60": dd60}
+    red = False
+    yellow = False
+    red_reasons: list[str] = []
+    yellow_reasons: list[str] = []
+    detail: dict = {}
+
+    # 过热追高（红）
+    dev_threshold = 0.15 * vol_k
+    overheated = not math.isnan(dev20) and dev20 > dev_threshold
+    detail["overheated"] = overheated
+    if overheated:
+        red = True
+        reasons.append(
+            f"收盘偏离 MA20 达 {dev20 * 100:+.1f}%（>{dev_threshold * 100:.0f}%），过热追高，等回踩（红灯）"
+        )
+        red_reasons.append(reasons[-1])
+
+    # 回调状态（黄）
+    below_ma20 = not math.isnan(ma20) and last < ma20
+    detail["below_ma20"] = below_ma20
+    if below_ma20:
+        yellow = True
+        reasons.append(f"收盘 {last:.2f} 低于 MA20 {ma20:.2f}，回调进行中，等企稳")
+        yellow_reasons.append(reasons[-1])
+    if not math.isnan(dd60) and dd60 <= -0.08:
+        yellow = True
+        reasons.append(f"距 60 日高点回撤 {dd60 * 100:.1f}%（超 8%），短期结构未修复")
+        yellow_reasons.append(reasons[-1])
+
+    # RSI 过热（黄）
+    rsi_threshold = 78.0 * vol_k
+    rsi_hot = rsi14 > rsi_threshold
+    detail["rsi_hot"] = rsi_hot
+    if rsi_hot:
+        yellow = True
+        reasons.append(f"RSI14 = {rsi14:.1f} > {rsi_threshold:.0f}，短期过热")
+        yellow_reasons.append(reasons[-1])
+
+    # 量价背离（黄）
+    vol_threshold = 0.7 * vol_k
+    if volume is not None and len(volume) >= 20:
+        high20 = float(close.rolling(20).max().iloc[-1])
+        vol_ma20 = float(volume.rolling(20).mean().iloc[-1])
+        if last >= high20 - 1e-9 and float(volume.iloc[-1]) < vol_threshold * vol_ma20:
+            yellow = True
+            reasons.append(f"价创 20 日新高但量能低于 20 日均量 {vol_threshold:.0%}（量价背离）")
+            yellow_reasons.append(reasons[-1])
+
+    # 事件风险：近 30 天 high 红灯，medium 黄灯（利好不加分）
+    triggered_events = _recent_events(risk_events, index)
+    for ev in triggered_events:
+        if ev["risk"] == "high":
+            red = True
+            reasons.append(f"高风险事件 {ev['date']}：{ev['note'] or '（未注明）'}（红灯，等事件落地）")
+            red_reasons.append(reasons[-1])
+        else:
+            yellow = True
+            reasons.append(f"中风险事件 {ev['date']}：{ev['note'] or '（未注明）'}（黄灯提示）")
+            yellow_reasons.append(reasons[-1])
+
+    color = "red" if red else ("yellow" if yellow else "green")
+    if color == "green":
+        reasons.append(
+            f"收在 MA20 上方、距 60 日高点回撤 {dd60 * 100:.1f}%（<8%）且无过热/事件风险，入场结构有序"
+        )
+    detail["red_reasons"] = red_reasons
+    detail["yellow_reasons"] = yellow_reasons
+
+    snapshot = {"rsi14": rsi14, "dev20": dev20, "dd60": dd60}
+    return {"color": color, "reasons": reasons, "detail": detail}, snapshot, triggered_events
 
 
-def _event_risk_layer(
-    risk_events: list[dict], index: pd.Index, verdict: str
-) -> tuple[str, dict, list[dict]]:
-    """事件风险层：近 30 天存在 high 风险事件时「是」降「观察」；利好不加分。"""
-    triggered: list[dict] = []
-    noted: list[dict] = []
+def _recent_events(risk_events: list[dict] | None, index: pd.Index) -> list[dict]:
+    """筛出近 30 天内的 high/medium 风险事件。"""
+    if not risk_events:
+        return []
     asof = index[-1] if isinstance(index, pd.DatetimeIndex) else None
+    out: list[dict] = []
     for ev in risk_events:
         risk = str(ev.get("risk", "")).strip().lower()
         if risk not in ("high", "medium"):
@@ -486,46 +602,117 @@ def _event_risk_layer(
         ts = pd.to_datetime(ev.get("date"), errors="coerce")
         if asof is not None and (pd.isna(ts) or ts < asof - pd.Timedelta(days=30) or ts > asof):
             continue
-        item = {"date": str(ev.get("date", ""))[:10], "risk": risk, "note": str(ev.get("note", ""))}
-        (triggered if risk == "high" else noted).append(item)
+        out.append({"date": str(ev.get("date", ""))[:10], "risk": risk, "note": str(ev.get("note", ""))})
+    return out
 
-    reasons: list[str] = []
-    status = "pass"
-    if triggered:
-        if verdict == "yes":
-            verdict = "watch"
-            status = "downgrade"
-        for ev in triggered:
-            reasons.append(f"高风险事件 {ev['date']}：{ev['note'] or '（未注明）'} → 结论降级")
-    for ev in noted:
-        reasons.append(f"中风险事件 {ev['date']}：{ev['note'] or '（未注明）'}（仅提示，不降级）")
-    if not reasons:
-        reasons.append("近 30 天无 high/medium 风险事件")
-    layer = {"name": "event_risk", "status": status, "reasons": reasons}
-    return verdict, layer, triggered + noted
+
+# ---------------------------------------------------------------- 决策矩阵
+
+
+def _decide(value: dict, trend: dict, timing: dict, snapshot: dict) -> tuple[str, dict]:
+    """三灯 -> 行动结论。矩阵是纪律预设，宁可错过、不可逆势/追高/踩雷。"""
+    v, t, m = value["color"], trend["color"], timing["color"]
+    label = f"价{COLOR_CN[v]}+势{COLOR_CN[t]}+时{COLOR_CN[m]}"
+
+    if value["detail"].get("hard_flaw"):
+        return "avoid", {
+            "rule": f"{label} → 回避：价灯硬伤（ST/连续亏损/资不抵债）一票否决，利好不能救",
+            "triggers": [],
+        }
+
+    if t == "green":
+        if m == "green":
+            if v == "red":
+                return "trend_only", {
+                    "rule": f"{label} → 纯趋势仓：趋势与时机俱佳但估值过高，"
+                    "只适合短线纪律仓，止损必须严格，不宜重仓长持",
+                    "triggers": [],
+                }
+            return "trend_entry", {
+                "rule": f"{label} → 趋势买点：趋势健康且入场结构有序"
+                + ("（价维度无数据，仅代表势/时判断）" if v == "gray" else ""),
+                "triggers": [],
+            }
+        return "wait_pullback", {
+            "rule": f"{label} → 等回踩：趋势健康但入场时机受限，不追高不抢跑",
+            "triggers": _pullback_triggers(timing, snapshot),
+        }
+
+    if v == "green":
+        return "left_watch", {
+            "rule": f"{label} → 左侧观察：估值有吸引力但趋势未认同，进观察名单，不抄底",
+            "triggers": _watch_triggers(trend),
+        }
+    return "avoid", {
+        "rule": f"{label} → 回避：趋势走弱且价维度无吸引力，没有参与理由",
+        "triggers": _watch_triggers(trend),
+    }
+
+
+def _pullback_triggers(timing: dict, snapshot: dict) -> list[str]:
+    """等回踩的再评估触发条件。"""
+    triggers: list[str] = []
+    ma20 = snapshot.get("ma20")
+    ma20_str = f"（{ma20:.2f}）" if isinstance(ma20, float) and not math.isnan(ma20) else ""
+    detail = timing.get("detail", {})
+    if detail.get("overheated"):
+        triggers.append(f"回踩 MA20{ma20_str} 附近企稳后再评估")
+    if detail.get("below_ma20"):
+        triggers.append(f"收复 MA20{ma20_str} 后再评估")
+    if detail.get("rsi_hot"):
+        triggers.append("RSI 回落至过热阈值以下")
+    if any("风险事件" in r for r in timing.get("reasons", [])):
+        triggers.append("风险事件落地后再评估")
+    return triggers or [f"回踩 MA20{ma20_str} 附近企稳后再评估"]
+
+
+def _watch_triggers(trend: dict) -> list[str]:
+    """左侧观察/回避的再评估触发条件（趋势修复信号）。"""
+    triggers: list[str] = []
+    detail = trend.get("detail", {})
+    if detail.get("below_ma200"):
+        triggers.append("收盘站回 MA200 之上")
+    elif detail.get("below_ma60"):
+        triggers.append("收盘站回 MA60 之上")
+    if detail.get("weekly_broken"):
+        triggers.append("周线收盘收复周线 MA30")
+    if detail.get("trend_score", 100.0) < TREND_GREEN:
+        triggers.append(f"趋势分回升至 {TREND_GREEN:.0f} 以上")
+    if detail.get("bench_risk_off"):
+        triggers.append("基准收复其 MA200（大盘转多）")
+    return triggers
+
+
+# ---------------------------------------------------------------- 持仓联动
 
 
 def _position_overlay(
-    position: dict, close: pd.Series, atr14: float, verdict: str, layers: list[dict]
+    position: dict,
+    close: pd.Series,
+    atr14: float,
+    verdict: str,
+    value_light: dict,
+    trend_light: dict,
 ) -> tuple[str, dict]:
-    """持仓联动：只改操作建议，不改排名分。
+    """持仓联动：只改操作建议，不改灯色。
 
-    结论为「否」（含否决层触发）且有持仓时输出「持仓需减风险」。
+    势红或价硬伤且有持仓时输出「持仓需减风险」（不等待回本）。
     """
     last = float(close.iloc[-1])
     cost = float(position["cost"])
     shares = position.get("shares")
     pnl_pct = last / cost - 1.0 if cost > 0 else float("nan")
     stop_ref = last - 2.0 * atr14 if not math.isnan(atr14) else None
-    veto_hit = any(l["name"] == "veto" and l["status"] == "veto" for l in layers)
 
-    if verdict == "no" or veto_hit:
+    if trend_light["color"] == "red" or value_light["detail"].get("hard_flaw"):
         verdict = "reduce_risk"
-        advice = "趋势结构已破坏，按纪律应减仓或离场，不等待回本"
-    elif verdict == "yes":
+        advice = "趋势结构已破坏（或基本面硬伤），按纪律应减仓或离场，不等待回本"
+    elif verdict in ("trend_entry", "trend_only"):
         advice = "继续持有；回踩 MA20 可按交易计划加仓"
+        if verdict == "trend_only":
+            advice += "（估值偏高，加仓宜谨慎）"
     else:
-        advice = "继续持有观察；跌破止损参考位应离场"
+        advice = "继续持有观察，不加仓；跌破止损参考位应离场"
 
     out = {
         "cost": round(cost, 4),
@@ -542,6 +729,9 @@ def _position_overlay(
     return verdict, out
 
 
+# ---------------------------------------------------------------- 辅助
+
+
 def _weekly_close(close: pd.Series) -> pd.Series:
     """周线收盘：时间索引按自然周重采样，否则按 5 根近似一周。"""
     if isinstance(close.index, pd.DatetimeIndex):
@@ -553,7 +743,7 @@ def _weekly_close(close: pd.Series) -> pd.Series:
 def _vol_regime(close: pd.Series, window: int = 20) -> float:
     """波动率缩放因子：当前 20 日年化波动率 / 历史中位波动率，clamp 到 [0.8, 1.4]。
 
-    用于动态缩放确认层/时机层的固定阈值：
+    用于动态缩放时灯的固定阈值：
     - 高波动（vol_k > 1）→ 放宽阈值，避免正常波动被误杀；
     - 低波动（vol_k < 1）→ 收紧阈值，小偏离更有意义。
     数据不足时返回 1.0（退化为固定阈值）。
@@ -573,263 +763,115 @@ def _vol_regime(close: pd.Series, window: int = 20) -> float:
     return max(VOL_K_MIN, min(VOL_K_MAX, ratio))
 
 
-def _compute_adx(df: pd.DataFrame) -> float | None:
-    """计算最新 ADX(14) 值；数据不足或异常时返回 None。"""
-    try:
-        adx_series = adx(df.reset_index(drop=True), 14)
-        val = float(adx_series.iloc[-1])
-        if math.isnan(val):
-            return None
-        return round(val, 1)
-    except Exception:
-        return None
-
-
-def _fundamental_veto(fundamentals: dict) -> tuple[str, dict]:
-    """基本面否决层：只否决/降级，不加分。
-
-    规则（优先级从高到低）：
-    - ST/*ST → 直接否决
-    - 每股净资产 < 0 → 直接否决（资不抵债）
-    - 最近 4 季 EPS 均 < 0 → 直接否决（连续亏损）
-    - 最近 2 季 EPS < 0 且第 3 季 > 0（由盈转亏）→ 封顶「观察」
-
-    Returns:
-        (verdict_hint, layer_dict)。verdict_hint 为 "no"/"watch"/"pass"，
-        调用方根据 layer status 决定是否采纳。
-    """
-    reasons: list[str] = []
-    status = "pass"
-    verdict_hint = "pass"
-    source = fundamentals.get("source", "unknown")
-
-    # ST 检查
-    if fundamentals.get("is_st"):
-        reasons.append("ST/*ST 标的，退市风险，直接否决")
-        status = "veto"
-        verdict_hint = "no"
-
-    # 每股净资产
-    naps = fundamentals.get("net_asset_per_share")
-    if naps is not None and isinstance(naps, (int, float)) and naps < 0:
-        reasons.append(f"每股净资产 {naps:.2f} < 0，资不抵债，直接否决")
-        status = "veto"
-        verdict_hint = "no"
-
-    # EPS 连续亏损
-    eps_recent = fundamentals.get("eps_recent")
-    if eps_recent and len(eps_recent) >= 4 and status != "veto":
-        eps_vals = [float(e) for e in eps_recent[-4:] if e is not None]
-        if len(eps_vals) >= 4:
-            if all(e < 0 for e in eps_vals):
-                reasons.append(
-                    f"最近 4 季 EPS 均为负（{', '.join(f'{e:.3f}' for e in eps_vals)}），连续亏损，直接否决"
-                )
-                status = "veto"
-                verdict_hint = "no"
-            elif len(eps_vals) >= 3 and eps_vals[-1] < 0 and eps_vals[-2] < 0 and eps_vals[-3] > 0:
-                reasons.append(
-                    f"由盈转亏：第 3 季 EPS {eps_vals[-3]:.3f} > 0，"
-                    f"近 2 季 {eps_vals[-2]:.3f}/{eps_vals[-1]:.3f} < 0，封顶「观察」"
-                )
-                if status == "pass":
-                    status = "cap"
-                verdict_hint = "watch"
-
-    if not reasons:
-        reasons.append(f"基本面未见硬伤（数据源：{source}）")
-
-    layer = {"name": "fundamental", "status": status, "reasons": reasons}
-    return verdict_hint, layer
-
-
 # ---------------------------------------------------------------- 证据链构建
 
-#: 层名 -> 中文显示名（证据链用）
-_LAYER_CN = {
-    "fundamental": "基本面否决",
-    "alpha": "ALPHA加权",
-    "veto": "风险否决",
-    "confirm": "技术确认",
-    "timing": "入场时机",
-    "event_risk": "事件风险",
-}
 
-#: 层状态 -> 影响类型
-_STATUS_IMPACT = {
-    "veto": "veto",
-    "cap": "cap_watch",
-    "downgrade": "downgrade",
-    "pass": "none",
-}
-
-
-def _build_evidence(layers: list[dict], components: dict, snapshot: dict) -> list[dict]:
-    """从各层结果与指标快照构建结构化证据链。
+def _build_evidence(
+    lights: dict, trend_score: float, components: dict, snapshot: dict, vol_k: float
+) -> list[dict]:
+    """从三灯结果与指标快照构建结构化证据链。
 
     每条证据含：
     - id: 编号（E01, E02, ...），Agent 转述时可引用
-    - layer: 产生层
+    - light: 产生维度（value/trend/timing）
     - indicator: 指标机器名
     - value: 实际值
     - threshold: 对比阈值（无则 None）
-    - triggered: 是否触发了状态变更
-    - impact: 影响类型（veto/cap_watch/downgrade/none）
+    - triggered: 是否触发红/黄
+    - impact: 影响（red/yellow/none）
     - claim: 一句话自然语言断言（Agent 可直接引用）
     """
     evidence: list[dict] = []
     seq = 0
 
-    for layer in layers:
-        name = layer.get("name", "")
-        status = layer.get("status", "pass")
-        impact = _STATUS_IMPACT.get(status, "none")
-        triggered = status in ("veto", "cap", "downgrade")
-        layer_cn = _LAYER_CN.get(name, name)
+    def add(light: str, indicator: str, value, threshold, triggered: bool, impact: str, claim: str):
+        nonlocal seq
+        seq += 1
+        evidence.append({
+            "id": f"E{seq:02d}",
+            "light": light,
+            "indicator": indicator,
+            "value": value,
+            "threshold": threshold,
+            "triggered": triggered,
+            "impact": impact,
+            "claim": claim,
+        })
 
-        if name == "alpha":
-            # ALPHA 层：动量/相对强度/趋势效率三项子分
-            mom = components.get("momentum", {})
-            rs = components.get("rel_strength", {})
-            eff = components.get("efficiency", {})
-            score = layer.get("score")
-            seq += 1
-            alpha_verdict = (
-                f"≥{int(ALPHA_YES)} 初始结论「是」" if score and score >= ALPHA_YES
-                else f"< {int(ALPHA_YES)} 动能不足"
+    # 价灯
+    v_detail = lights["value"]["detail"]
+    if v_detail.get("hard_flaw"):
+        add(
+            "value", "fundamental_hard_flaw", True, None, True, "red",
+            f"价灯硬伤：{lights['value']['reasons'][0]}",
+        )
+    val_avg = v_detail.get("valuation_avg")
+    if val_avg is not None:
+        expensive = val_avg > VAL_RED
+        cheap = val_avg <= VAL_GREEN
+        add(
+            "value", "valuation_percentile", val_avg, VAL_RED, expensive,
+            "red" if expensive else "none",
+            f"PE/PB 分位均值 {val_avg:.0%}，"
+            + ("相对自身历史高估" if expensive else "相对自身历史偏低" if cheap else "处于历史中枢"),
+        )
+
+    # 势灯
+    add(
+        "trend", "trend_score", round(trend_score, 1), TREND_GREEN,
+        trend_score < TREND_GREEN,
+        "red" if trend_score < TREND_RED else ("yellow" if trend_score < TREND_GREEN else "none"),
+        f"趋势分 {trend_score:.1f}（动量 {components.get('momentum', {}).get('score')}/"
+        f"相对强度 {components.get('rel_strength', {}).get('score')}/"
+        f"趋势效率 {components.get('efficiency', {}).get('score')}），"
+        + (f"≥{TREND_GREEN:.0f} 动能达标" if trend_score >= TREND_GREEN else f"< {TREND_GREEN:.0f} 动能不足"),
+    )
+    last = snapshot.get("close")
+    ma200 = snapshot.get("ma200")
+    ma60 = snapshot.get("ma60")
+    if isinstance(ma200, float) and not math.isnan(ma200) and last is not None:
+        below = bool(last < ma200)
+        add(
+            "trend", "close_vs_ma200", safe_round(last), safe_round(ma200), below,
+            "red" if below else "none",
+            f"收盘 {last:.2f} {'<' if below else '>'} MA200({ma200:.2f})，"
+            + ("长期趋势逆势，势灯红" if below else "长期趋势未破坏"),
+        )
+    if isinstance(ma60, float) and not math.isnan(ma60) and last is not None:
+        below = bool(last < ma60)
+        add(
+            "trend", "close_vs_ma60", safe_round(last), safe_round(ma60), below,
+            "yellow" if below else "none",
+            f"收盘 {last:.2f} {'<' if below else '>'} MA60({ma60:.2f})，"
+            + ("中期走弱" if below else "中期趋势健康"),
+        )
+
+    # 时灯
+    dev20 = snapshot.get("dev20")
+    if isinstance(dev20, float) and not math.isnan(dev20):
+        dev_th = 0.15 * vol_k
+        hot = dev20 > dev_th
+        add(
+            "timing", "ma20_deviation", safe_round(dev20), safe_round(dev_th), hot,
+            "red" if hot else "none",
+            f"偏离 MA20 达 {dev20 * 100:+.1f}%"
+            + (f" > {dev_th * 100:.0f}%，过热追高，等回踩" if hot else "，入场偏离度正常"),
+        )
+    rsi14 = snapshot.get("rsi14")
+    if isinstance(rsi14, float) and not math.isnan(rsi14):
+        rsi_th = 78.0 * vol_k
+        hot = rsi14 > rsi_th
+        add(
+            "timing", "rsi14", safe_round(rsi14), safe_round(rsi_th), hot,
+            "yellow" if hot else "none",
+            f"RSI14={rsi14:.1f}" + (f" > {rsi_th:.0f}，短期过热" if hot else "，未过热"),
+        )
+    for r in lights["timing"]["reasons"]:
+        if "风险事件" in r:
+            add(
+                "timing", "event_risk", "triggered", None, True,
+                "red" if "高风险" in r else "yellow", r,
             )
-            evidence.append({
-                "id": f"E{seq:02d}",
-                "layer": "alpha",
-                "indicator": "alpha_composite_score",
-                "value": score,
-                "threshold": ALPHA_YES,
-                "triggered": False,
-                "impact": "none",
-                "claim": (
-                    f"综合排名分 {score}（动量子分 {mom.get('score')}/"
-                    f"相对强度 {rs.get('score')}/趋势效率 {eff.get('score')}），"
-                    f"{alpha_verdict}"
-                ),
-            })
-        elif name == "veto":
-            # 风险否决层：MA200/MA60/周线/大盘
-            close_v = snapshot.get("close")
-            ma200 = snapshot.get("ma200")
-            ma60 = snapshot.get("ma60")
-            if close_v is not None and ma200 is not None and not math.isnan(ma200):
-                seq += 1
-                below_200 = close_v < ma200
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "veto",
-                    "indicator": "close_vs_ma200",
-                    "value": safe_round(close_v),
-                    "threshold": safe_round(ma200),
-                    "triggered": below_200,
-                    "impact": "veto" if below_200 else "none",
-                    "claim": (
-                        f"收盘 {close_v:.2f} {'<' if below_200 else '>'} MA200({ma200:.2f})，"
-                        f"{'长期趋势破坏，直接否决' if below_200 else '长期趋势未破坏'}"
-                    ),
-                })
-            if close_v is not None and ma60 is not None and not math.isnan(ma60):
-                seq += 1
-                below_60 = close_v < ma60
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "veto",
-                    "indicator": "close_vs_ma60",
-                    "value": safe_round(close_v),
-                    "threshold": safe_round(ma60),
-                    "triggered": below_60,
-                    "impact": "cap_watch" if below_60 else "none",
-                    "claim": (
-                        f"收盘 {close_v:.2f} {'<' if below_60 else '>'} MA60({ma60:.2f})，"
-                        f"{'中期走弱封顶观察' if below_60 else '中期趋势健康'}"
-                    ),
-                })
-        elif name == "confirm":
-            # 技术确认层：MACD/RSI/KDJ
-            rsi14 = snapshot.get("rsi14")
-            dif = snapshot.get("macd_dif")
-            dea = snapshot.get("macd_dea")
-            if dif is not None and dea is not None:
-                seq += 1
-                dead_cross = dif < dea
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "confirm",
-                    "indicator": "macd_cross",
-                    "value": {"dif": safe_round(dif), "dea": safe_round(dea)},
-                    "threshold": None,
-                    "triggered": dead_cross,
-                    "impact": "downgrade" if (dead_cross and triggered) else "none",
-                    "claim": f"MACD DIF({dif:.3f}) {'<' if dead_cross else '>'} DEA({dea:.3f})，{'死叉状态' if dead_cross else '金叉状态'}",
-                })
-            if rsi14 is not None:
-                seq += 1
-                vol_k = snapshot.get("vol_k", 1.0)
-                rsi_th = 78.0 * vol_k
-                overheated = rsi14 > rsi_th
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "confirm",
-                    "indicator": "rsi14",
-                    "value": safe_round(rsi14),
-                    "threshold": safe_round(rsi_th),
-                    "triggered": overheated,
-                    "impact": "downgrade" if (overheated and triggered) else "none",
-                    "claim": f"RSI14={rsi14:.1f}{' > ' + f'{rsi_th:.0f}' + ' 短期过热' if overheated else ' 未过热'}",
-                })
-        elif name == "timing":
-            # 入场时机层：MA20 偏离
-            dev20 = snapshot.get("dev20")
-            if dev20 is not None and not math.isnan(dev20):
-                seq += 1
-                vol_k = snapshot.get("vol_k", 1.0)
-                dev_th = 0.15 * vol_k
-                too_hot = dev20 > dev_th
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "timing",
-                    "indicator": "ma20_deviation",
-                    "value": safe_round(dev20),
-                    "threshold": safe_round(dev_th),
-                    "triggered": too_hot,
-                    "impact": "downgrade" if (too_hot and triggered) else "none",
-                    "claim": (
-                        f"偏离MA20达 {dev20 * 100:+.1f}%"
-                        f"{' > ' + f'{dev_th * 100:.0f}%' + ' 过热追高，等回踩' if too_hot else ' 入场时机正常'}"
-                    ),
-                })
-        elif name == "fundamental":
-            # 基本面否决层
-            if triggered:
-                seq += 1
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "fundamental",
-                    "indicator": "fundamental_veto",
-                    "value": status,
-                    "threshold": None,
-                    "triggered": True,
-                    "impact": impact,
-                    "claim": f"{layer_cn}层触发：{layer.get('reasons', [''])[0]}",
-                })
-        elif name == "event_risk":
-            if triggered:
-                seq += 1
-                evidence.append({
-                    "id": f"E{seq:02d}",
-                    "layer": "event_risk",
-                    "indicator": "event_risk_high",
-                    "value": status,
-                    "threshold": None,
-                    "triggered": True,
-                    "impact": impact,
-                    "claim": f"事件风险层触发：{layer.get('reasons', [''])[0]}",
-                })
+            break
 
     return evidence
-

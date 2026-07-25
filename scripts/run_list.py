@@ -202,33 +202,33 @@ def main() -> None:
         grid = ", ".join(f"{k}∈{v}" for k, v in ent["param_grid"].items())
         log(f"  {'':<12} {'':<14} 网格: {grid}")
 
-    log(f"\n===== 组合轮动/优化（run_portfolio --strategy）=====")
+    log("\n===== 组合轮动/优化（run_portfolio --strategy）=====")
     log("  " + ", ".join(ROTATIONS))
 
-    log(f"\n===== 选股因子（run_factor --factors）=====")
+    log("\n===== 选股因子（run_factor --factors）=====")
     for name, spec in FACTORS.items():
         log(f"  {name:<14} 类别: {spec.category}")
 
-    log(f"\n===== 机器学习模型（run_ml --model）=====")
+    log("\n===== 机器学习模型（run_ml --model）=====")
     log("  " + ", ".join(ML_MODELS))
 
-    log(f"\n===== 定投模式（run_dca --mode）=====")
+    log("\n===== 定投模式（run_dca --mode）=====")
     log("  " + ", ".join(DCA_MODES))
 
-    log(f"\n===== 纪律评分（run_score / run_scan）=====")
-    log("  结论五态: " + ", ".join(f"{k}({v})" for k, v in VERDICT_CN.items()))
-    log("  四层: alpha(ALPHA加权) -> veto(风险否决) -> confirm(技术确认) -> timing(入场时机)")
-    log("  另有: --replay 回放验证 / --risk-file 事件风险降级 / --cost 持仓联动")
+    log("\n===== 买点三灯（run_score / run_scan）=====")
+    log("  结论七态: " + ", ".join(f"{k}({v})" for k, v in VERDICT_CN.items()))
+    log("  三灯: value(价·基本面硬伤+估值分位) / trend(势·趋势分+均线周线结构) / timing(时·过热回调事件风险)，各自 绿/黄/红/灰")
+    log("  另有: --replay 回放验证 / --risk-file 事件风险降级 / --cost 持仓联动 / --no-valuation 跳过估值拉取")
 
     from canslim import LETTERS_CN as CANSLIM_LETTERS
 
-    log(f"\n===== CAN SLIM 检查清单（run_canslim）=====")
+    log("\n===== CAN SLIM 检查清单（run_canslim）=====")
     log("  七项: " + ", ".join(f"{k}({v})" for k, v in CANSLIM_LETTERS.items()))
     log("  纪律: M 大势不满足直接否；C/A 基本面缺失封顶「观察」；多标的横截面 RS 百分位排名")
 
     from strategies.custom import INDICATOR_SPEC, OPERATORS
 
-    log(f"\n===== 自定义规则策略 DSL（run_custom --rules <TOML>）=====")
+    log("\n===== 自定义规则策略 DSL（run_custom --rules <TOML>）=====")
     log("  指标白名单: " + ", ".join(sorted(INDICATOR_SPEC)))
     log("  运算符: " + ", ".join(OPERATORS))
     log("  逻辑组合: entry/exit 各自支持 and/or；示例见 examples/custom_rule.toml")
@@ -249,7 +249,7 @@ def main() -> None:
                 "dca_modes": list(DCA_MODES),
                 "scoring": {
                     "verdicts": dict(VERDICT_CN),
-                    "layers": ["alpha", "veto", "confirm", "timing", "event_risk"],
+                    "lights": ["value", "trend", "timing"],
                     "commands": ["run_score.py", "run_scan.py"],
                 },
                 "canslim": {

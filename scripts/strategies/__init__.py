@@ -17,8 +17,8 @@ from .dual_thrust import DualThrustStrategy
 from .grid_trading import GridStrategy
 from .kdj import KDJStrategy
 from .keltner import KeltnerStrategy
-from .macd import MACDStrategy
 from .ma_cross import MACrossStrategy
+from .macd import MACDStrategy
 from .momentum import MomentumStrategy
 from .rsi import RSIStrategy
 from .supertrend import SuperTrendStrategy

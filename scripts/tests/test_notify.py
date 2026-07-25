@@ -7,12 +7,10 @@ import sys
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import run_signal
 from notify import build_payload, send_webhook
 from tests.helpers import make_ohlcv
-
 
 # ------------------------------------------------------------ payload 适配
 

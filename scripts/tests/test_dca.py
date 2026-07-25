@@ -13,7 +13,6 @@ from dca.engine import MODES, run_dca_backtest
 from dca.metrics import xirr
 from tests.helpers import make_ohlcv
 
-
 # ---------------------------------------------------------------- XIRR
 
 

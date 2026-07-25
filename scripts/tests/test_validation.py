@@ -16,9 +16,7 @@ from research.validation import (
 )
 from research.walk_forward import walk_forward
 from strategies.ma_cross import MACrossStrategy
-
 from tests.helpers import make_ohlcv
-
 
 # ------------------------------------------------------------- 正态分布工具
 

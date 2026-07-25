@@ -157,7 +157,7 @@ def build_next_steps(*steps: dict) -> list[dict]:
     - ``action``：动作标识（如 optimize/validate/paper）；
     - ``reason``：为何建议（自然语言）；
     - ``command``：可执行命令；
-    - ``condition``（可选）：触发条件表达式，如 ``"dsr < 0.9"``、``"verdict == yes"``。
+    - ``condition``（可选）：触发条件表达式，如 ``"dsr < 0.9"``、``"verdict == trend_entry"``。
       含 condition 的 step 仅在条件成立时才应被 Agent 采纳；无 condition 表示无条件推荐。
       条件引用同一 JSON 输出中的字段（点路径），运算符支持 ==/!=/>/</>=/<=。
 
@@ -168,7 +168,7 @@ def build_next_steps(*steps: dict) -> list[dict]:
              "condition": "dsr < 0.9",
              "command": "run_validate.py --symbol 600000.SH --strategy ma_cross"},
             {"action": "paper", "reason": "结论为是，可纸面跟踪",
-             "condition": "verdict == yes",
+             "condition": "verdict == trend_entry",
              "command": "run_paper.py --symbol 600000.SH --mode score"},
         )
     """
@@ -179,7 +179,7 @@ def eval_condition(condition: str, data: dict) -> bool:
     """求值 next_steps 的 condition 表达式（受限语法，不 eval 代码）。
 
     表达式格式：``<点路径> <运算符> <字面量或点路径>``，如 ``dsr < 0.9``、
-    ``verdict == yes``。点路径从 ``data`` 取值（支持 ``a.b.c``）；字面量可为
+    ``verdict == trend_entry``。点路径从 ``data`` 取值（支持 ``a.b.c``）；字面量可为
     数值、true/false 或裸字符串。求值失败（路径不存在/语法错）返回 False。
     """
     import operator as _op
@@ -231,7 +231,7 @@ def _resolve_path(token: str, data: dict):
         return float(token)
     except ValueError:
         pass
-    # 裸字符串（如 verdict == yes 中的 yes）
+    # 裸字符串（如 verdict == trend_entry 中的 trend_entry）
     return token
 
 

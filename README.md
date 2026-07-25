@@ -30,7 +30,7 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 │                                                                         │
 │   📊 数据层          🔬 研究层           🎯 决策层          📈 跟踪层    │
 │   ─────────         ─────────          ─────────         ─────────     │
-│   • 多源行情         • 策略回测          • 纪律评分         • 每日信号    │
+│   • 多源行情         • 策略回测          • 买点三灯         • 每日信号    │
 │   • 财务数据         • 参数寻优          • CAN SLIM        • 模拟盘      │
 │   • 新闻情绪         • 机器学习          • 市场扫描         • 持仓账户    │
 │   • 分红历史         • 组合优化          • 交易计划         • Dashboard  │
@@ -84,9 +84,9 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 
 | 特性 | 说明 |
 |------|------|
-| **纪律评分** | 四层否决式（ALPHA → 风险 → 技术 → 时机），结论五态 + ATR 交易计划 + 建议仓位 |
+| **买点三灯** | 价（估值分位+基本面）/ 势（趋势分+均线结构）/ 时（入场时机）三灯 + 决策矩阵，结论七态 + ATR 交易计划 + 建议仓位 |
 | **CAN SLIM** | 欧奈尔七项法则纪律化，A 股 EPS/ROE 自动获取，横截面 RS 排名 |
-| **市场扫描** | 流动性初筛 → 批量评分 → 达标/降级候选分列 |
+| **市场扫描** | 流动性初筛 → 批量评分 → 达标/未达标候选分列 |
 | **持仓账户** | 统一登记持仓，评分/扫描自动联动（带入成本、标注已持有） |
 | **用户风险画像** | 保守/平衡/激进三档预设，评分建议仓位因人而异（显式参数优先） |
 | **风险指标** | VaR/CVaR/下行偏差/尾部比率/溃疡指数，暴露约束，回撤熔断 |
@@ -185,7 +185,7 @@ uv run python run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30 --p
 ### 决策类
 
 ```bash
-# 纪律评分（能不能买 / 买多少 / 何时卖）
+# 买点三灯（能不能买 / 买多少 / 何时卖）
 uv run python run_score.py --symbol 600000.SH --capital 200000 --risk-pct 0.02
 
 # 评分回放验证（自证有效性）
@@ -287,7 +287,7 @@ alpha-forge-skill/
 │   ├── ml-strategy.md       #    机器学习策略
 │   ├── sentiment.md         #    新闻情绪交易
 │   ├── dca.md               #    定投 DCA
-│   ├── scoring.md           #    纪律评分
+│   ├── scoring.md           #    买点三灯
 │   ├── canslim.md           #    CAN SLIM 清单
 │   ├── stress-testing.md    #    压力测试
 │   ├── live-signal.md       #    信号与模拟盘
@@ -309,7 +309,7 @@ alpha-forge-skill/
     ├── ml/                  #    机器学习
     ├── sentiment/           #    新闻情绪
     ├── dca/                 #    定投引擎
-    ├── scoring/             #    纪律评分
+    ├── scoring/             #    买点三灯
     ├── canslim/             #    CAN SLIM
     ├── data/                #    缓存与多数据源
     ├── research/            #    验证与事件研究
@@ -362,11 +362,11 @@ uv run python run_score.py --symbol 600000.SH --json
 
 | 用户大致会说…… | 执行 | 转述时必须包含 |
 |----------------|------|--------------|
-| "XX 现在能买吗 / 值不值得入手 / 帮我看看 XX" | `run_score.py --symbol <代码> --json` | 结论五态中文（verdict_cn）+ 哪一层给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
+| "XX 现在能买吗 / 值不值得入手 / 帮我看看 XX" | `run_score.py --symbol <代码> --json` | 三灯速览（如「价绿·势绿·时黄」）+ 结论七态中文（verdict_cn）+ 哪盏灯给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
 | "我持有 XX，成本 N，该不该卖/减仓" | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
 | "帮我记一下持仓 / 我的持仓怎么样了" | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
 | "我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万" | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
-| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；建议对入选者再跑 run_score 复核 |
+| "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/未达标分列；扫描仅覆盖势/时维度，建议对入选者再跑 run_score 补全价维度复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
@@ -417,7 +417,7 @@ uv run pytest tests/ -q
 | [ml-strategy.md](references/ml-strategy.md) | 机器学习策略（走步样本外） |
 | [sentiment.md](references/sentiment.md) | 新闻情绪交易 |
 | [dca.md](references/dca.md) | 定投 DCA（现金流 + XIRR） |
-| [scoring.md](references/scoring.md) | 纪律评分与市场扫描 |
+| [scoring.md](references/scoring.md) | 买点三灯与市场扫描 |
 | [canslim.md](references/canslim.md) | CAN SLIM 检查清单 |
 | [stress-testing.md](references/stress-testing.md) | 压力测试与 TOML 配置 |
 | [live-signal.md](references/live-signal.md) | 信号服务与模拟盘 |
@@ -449,7 +449,7 @@ uv run pytest tests/ -q
 
 - 回测结果基于历史数据，**不代表未来收益**
 - 参数寻优存在过拟合风险，建议使用样本外验证（`run_validate.py`）
-- 纪律评分是风控工具，**不是涨跌预测**
+- 买点三灯是风控工具，**不是涨跌预测**
 - 信号与模拟盘**不做自动下单**，输出仅供研究参考
 
 **据此进行的任何投资决策，风险自负。**

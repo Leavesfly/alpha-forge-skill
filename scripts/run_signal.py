@@ -197,7 +197,7 @@ def main() -> None:
                 "next_steps": build_next_steps(
                     {"action": "paper", "reason": "用模拟盘纸面跟踪信号表现",
                      "command": f"run_paper.py --symbol <代码> --strategy {args.strategy} --json"},
-                    {"action": "score", "reason": "用纪律评分复核某只标的",
+                    {"action": "score", "reason": "用买点三灯复核某只标的",
                      "command": "run_score.py --symbol <代码> --json"},
                 ),
             },

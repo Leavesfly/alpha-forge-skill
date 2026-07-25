@@ -10,7 +10,6 @@ from scoring.plan import attach_position_sizing, build_trade_plan, format_plan
 from strategies import get_strategy
 from tests.helpers import make_ohlcv
 
-
 # ---------------------------------------------------------------- 建议仓位
 
 

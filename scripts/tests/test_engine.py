@@ -12,7 +12,6 @@ import pytest
 
 from backtest.engine import run_backtest
 from strategies.base import Strategy
-
 from tests.helpers import make_ohlcv
 
 

@@ -6,8 +6,9 @@
 - 每次运行按最新收盘价执行当日信号（同一交易日重复运行幂等，不会重复成交）；
 - 同步用账本引擎重放同区间回测，输出「模拟盘 vs 回测预期」的净值偏差。
 
-除信号策略外，还支持按**纪律评分**纸面执行（--mode score，决策→跟踪闭环）：
-是=按计划建仓，观察=持有不加仓，否/持仓需减风险=离场，无法评分=不动；
+除信号策略外，还支持按**买点三灯**纸面执行（--mode score，决策→跟踪闭环）：
+趋势买点=满仓、纯趋势仓=半仓（估值偏高纪律预设）、回避/持仓需减风险=离场，
+等回踩/左侧观察/无法评分=维持现仓；
 状态文件记录每日裁决历史，run_score.py 会自动探测该持仓反向联动。
 
 示例：
@@ -17,7 +18,7 @@
     # 之后每个交易日收盘后运行一次即可
     uv run python run_paper.py --symbol 600000.SH --strategy ma_cross
 
-    # 纪律评分模式：按评分结论纸面执行（无需 --strategy）
+    # 买点三灯模式：按三灯结论纸面执行（无需 --strategy）
     uv run python run_paper.py --symbol 600000.SH --mode score
 
     # 组合级聚合：扫描全部模拟盘状态，输出账户级净值/权重/集中度提示
@@ -68,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         default="strategy",
         choices=["strategy", "score"],
-        help="执行模式：strategy=信号策略（需 --strategy），score=纪律评分裁决，默认 strategy",
+        help="执行模式：strategy=信号策略（需 --strategy），score=买点三灯裁决，默认 strategy",
     )
     parser.add_argument("--strategy", default=None, choices=list(STRATEGIES), help="策略名称（strategy 模式必填）")
     parser.add_argument("--benchmark", default=None, help="score 模式的评分基准；默认按市场自动选择")
@@ -85,11 +86,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _score_verdict(args, df, state, log):
-    """score 模式：跑四层纪律评分，把结论映射为目标仓位。
+    """score 模式：跑买点三灯，把结论映射为目标仓位。
 
-    映射约定：是=满仓（1.0），否/持仓需减风险=空仓（0.0），
-    观察/无法评分=维持现仓（返回 None，不交易）。持仓时把近似成本
-    传入评分引擎，使「持仓需减风险」裁决能被触发。
+    映射约定：趋势买点=满仓（1.0），纯趋势仓=半仓（0.5，估值偏高的
+    纪律预设，未经验证），回避/持仓需减风险=空仓（0.0），
+    等回踩/左侧观察/无法评分=维持现仓（返回 None，不交易）。持仓时把
+    近似成本传入引擎，使「持仓需减风险」裁决能被触发。
+    批量每日执行不拉估值数据（价灯灰），裁决仅基于势/时维度。
     """
     from scoring import default_benchmark, score_symbol
 
@@ -120,14 +123,16 @@ def _score_verdict(args, df, state, log):
         benchmark_symbol=bench_symbol,
         position=position,
     )
-    if res.verdict == "yes":
+    if res.verdict == "trend_entry":
         target = 1.0
-    elif res.verdict in ("no", "reduce_risk"):
+    elif res.verdict == "trend_only":
+        target = 0.5
+    elif res.verdict in ("avoid", "reduce_risk"):
         target = 0.0
-    else:  # watch / unrated：维持现仓，不加仓不减仓
+    else:  # wait_pullback / left_watch / unrated：维持现仓，不加仓不减仓
         target = None
-    log(f"纪律评分结论：{res.verdict_cn}（排名分 {res.alpha_score}）→ "
-        + {1.0: "目标满仓", 0.0: "目标空仓", None: "维持现仓"}[target])
+    log(f"买点三灯结论：{res.verdict_cn}（{res.lights_summary}，趋势分 {res.trend_score}）→ "
+        + {1.0: "目标满仓", 0.5: "目标半仓", 0.0: "目标空仓", None: "维持现仓"}[target])
     return target, res
 
 
@@ -142,7 +147,7 @@ def main() -> None:
     if args.mode == "strategy" and not args.strategy:
         raise SystemExit(
             "[error] strategy 模式需要 --strategy 指定策略名（run_list.py 可查）；"
-            "或改用 --mode score 按纪律评分执行。"
+            "或改用 --mode score 按买点三灯执行。"
         )
     json_stdout, log = init_log(args)
     params = parse_params(args.params)
@@ -184,11 +189,11 @@ def main() -> None:
         }
         log(f"初始化模拟盘：虚拟资金 {args.capital:,.0f}，lot_size={lot}")
 
-    # 目标仓位：信号策略或纪律评分裁决
+    # 目标仓位：信号策略或买点三灯裁决
     score_result = None
     if args.mode == "score":
         target_frac, score_result = _score_verdict(args, df, state, log)
-        display_name = "纪律评分"
+        display_name = "买点三灯"
     else:
         strategy = get_strategy(args.strategy, **params)
         target_frac = float(strategy.generate_signals(df).astype(float).iloc[-1])
@@ -225,7 +230,7 @@ def main() -> None:
         if score_result is not None:
             state.setdefault("verdicts", []).append(
                 {"date": last_date, "verdict": score_result.verdict,
-                 "alpha_score": score_result.alpha_score}
+                 "trend_score": score_result.trend_score}
             )
         state["last_date"] = last_date
         state.setdefault("equity_history", []).append(
@@ -296,7 +301,7 @@ def main() -> None:
     if args.json is not None:
         # Agent 友好：自然语言结论 + 结构化下一步
         nav_pct = (paper_nav - 1) * 100
-        verdict_str = f"，评分结论「{score_result.verdict_cn}」" if score_result is not None else ""
+        verdict_str = f"，三灯结论「{score_result.verdict_cn}」" if score_result is not None else ""
         summary = (
             f"{args.symbol} 模拟盘（{tag}）：净值 {paper_nav:.4f}（{nav_pct:+.2f}%）"
             f"{verdict_str}，持股 {state['shares']} 股，现金 {state['cash']:,.0f}。"
@@ -306,7 +311,7 @@ def main() -> None:
             ns = build_next_steps(
                 {"action": "daily", "reason": "每日收盘后重跑本命令持续追踪",
                  "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
-                {"action": "replay", "reason": "回放验证评分有效性",
+                {"action": "replay", "reason": "回放验证三灯规则有效性",
                  "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
             )
         else:
@@ -325,7 +330,7 @@ def main() -> None:
                 "date": last_date,
                 "already_executed": bool(executed_today),
                 "verdict": score_result.verdict if score_result is not None else None,
-                "alpha_score": score_result.alpha_score if score_result is not None else None,
+                "trend_score": score_result.trend_score if score_result is not None else None,
                 "cash": float(state["cash"]),
                 "shares": int(state["shares"]),
                 "market_value": float(state["shares"] * price),

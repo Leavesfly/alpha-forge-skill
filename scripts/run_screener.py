@@ -290,13 +290,13 @@ def main() -> None:
     elif args.preset == "monster":
         log_next_steps(
             log,
-            "对候选做纪律评分并生成含止损位的交易计划 run_score.py --symbol <代码>（买强势股必须带止损）",
+            "对候选做买点三灯并生成含止损位的交易计划 run_score.py --symbol <代码>（买强势股必须带止损）",
             "趋势策略回测验证 run_backtest.py --symbol <代码> --strategy supertrend（让利润奔跑，跌破趋势退出）",
         )
     else:
         log_next_steps(
             log,
-            "对候选标的做纪律评分复核 run_score.py --symbol <代码>（含技术面确认与交易计划）",
+            "对候选标的做买点三灯复核 run_score.py --symbol <代码>（含技术面确认与交易计划）",
             "回测验证候选标的 run_backtest.py --symbol <代码> --strategy ma_cross",
         )
 
@@ -322,14 +322,14 @@ def main() -> None:
             )
         elif args.preset == "monster":
             next_steps = build_next_steps(
-                {"action": "score", "reason": "对候选做纪律评分并生成含止损位的交易计划（买强势股必须带止损）",
+                {"action": "score", "reason": "对候选做买点三灯并生成含止损位的交易计划（买强势股必须带止损）",
                  "command": "run_score.py --symbol <代码> --json"},
                 {"action": "backtest", "reason": "趋势策略回测验证，让利润奔跑跌破趋势退出",
                  "command": "run_backtest.py --symbol <代码> --strategy supertrend --json"},
             )
         else:
             next_steps = build_next_steps(
-                {"action": "score", "reason": "对达标候选做技术面纪律评分复核",
+                {"action": "score", "reason": "对达标候选做技术面买点三灯复核",
                  "command": "run_score.py --symbol <代码> --json"},
                 {"action": "backtest", "reason": "回测验证候选标的策略表现",
                  "command": "run_backtest.py --symbol <代码> --strategy ma_cross --json"},

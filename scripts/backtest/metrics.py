@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 # re-export 共享内核的全部公开符号（向后兼容）
-from metrics import (  # noqa: F401
+from metrics import (  # noqa: F401  # noqa: F401 - 内部使用
+    _PF_CAP,
     ANNUALIZATION,
+    _trade_returns,
     compute_metrics,
     format_report,
     max_drawdown,
@@ -18,4 +20,3 @@ from metrics import (  # noqa: F401
     periods_per_year,
     relative_metrics,
 )
-from metrics import _PF_CAP, _trade_returns  # noqa: F401 - 内部使用

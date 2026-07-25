@@ -85,7 +85,6 @@ def test_grid_adds_position_when_price_falls():
 
 def test_turtle_atr_stop_exits_earlier_than_donchian():
     """海龟：深度回撤时 ATR 止损应不晚于唐奇安通道离场。"""
-    n = 120
     close = np.concatenate(
         [np.full(40, 100.0), np.linspace(100, 140, 40), np.linspace(140, 96, 40)]
     )

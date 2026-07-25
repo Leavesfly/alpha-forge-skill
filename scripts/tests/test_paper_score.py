@@ -1,7 +1,7 @@
 """模拟盘 score 模式（run_paper --mode score）回归测试。
 
-用 monkeypatch 替换数据拉取与状态路径，验证「评分裁决 → 纸面执行」闭环：
-是=建仓、否=空仓、观察=维持现仓、同日幂等、strategy 模式参数校验。
+用 monkeypatch 替换数据拉取与状态路径，验证「三灯裁决 → 纸面执行」闭环：
+趋势买点=建仓、回避=空仓、持仓需减风险=离场、同日幂等、strategy 模式参数校验。
 """
 
 from __future__ import annotations
@@ -49,25 +49,25 @@ BASE_ARGS = [
 
 
 class TestScoreMode:
-    def test_yes_builds_position(self, tmp_path, monkeypatch, capsys):
-        """上行趋势 →「是」→ 满仓建仓，裁决写入状态文件。"""
+    def test_trend_entry_builds_position(self, tmp_path, monkeypatch, capsys):
+        """上行趋势 →「趋势买点」→ 满仓建仓，裁决写入状态文件。"""
         _run(monkeypatch, tmp_path, _uptrend_df(), BASE_ARGS)
         state = json.loads((tmp_path / "paper_TEST.SH_score.json").read_text())
         assert state["mode"] == "score"
         assert state["shares"] > 0
-        assert state["verdicts"][-1]["verdict"] == "yes"
-        assert state["trades"][-1]["verdict"] == "yes"
+        assert state["verdicts"][-1]["verdict"] == "trend_entry"
+        assert state["trades"][-1]["verdict"] == "trend_entry"
 
-    def test_no_stays_flat(self, tmp_path, monkeypatch, capsys):
-        """下行趋势 →「否」→ 保持空仓，不产生成交。"""
+    def test_avoid_stays_flat(self, tmp_path, monkeypatch, capsys):
+        """下行趋势 →「回避」→ 保持空仓，不产生成交。"""
         _run(monkeypatch, tmp_path, _downtrend_df(), BASE_ARGS)
         state = json.loads((tmp_path / "paper_TEST.SH_score.json").read_text())
         assert state["shares"] == 0
         assert state["trades"] == []
-        assert state["verdicts"][-1]["verdict"] == "no"
+        assert state["verdicts"][-1]["verdict"] == "avoid"
 
     def test_reduce_risk_exits_position(self, tmp_path, monkeypatch, capsys):
-        """先建仓（是），再遇下行（持仓需减风险）→ 清仓离场。"""
+        """先建仓（趋势买点），再遇下行（持仓需减风险）→ 清仓离场。"""
         up = _uptrend_df()
         _run(monkeypatch, tmp_path, up, BASE_ARGS)
         # 换成下行行情（末日期后移一天，绕过同日幂等）

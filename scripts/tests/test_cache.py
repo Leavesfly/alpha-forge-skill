@@ -16,7 +16,6 @@ from data.cache import (
     load_klines,
     normalize_adjust,
 )
-
 from tests.helpers import make_ohlcv
 
 

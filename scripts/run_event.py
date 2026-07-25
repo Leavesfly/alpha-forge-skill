@@ -156,7 +156,7 @@ def main() -> None:
                     f"小样本事件研究噪声很大，事件数<10 时结论仅供参考。"
                 ),
                 "next_steps": build_next_steps(
-                    {"action": "score", "reason": "用纪律评分判断当前是否适合参与",
+                    {"action": "score", "reason": "用买点三灯判断当前是否适合参与",
                      "command": f"run_score.py --symbol {args.symbol} --json"},
                     {"action": "backtest", "reason": "回测策略在事件前后的表现",
                      "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},

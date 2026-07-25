@@ -14,9 +14,7 @@ from backtest.rules import (
     tradable_masks,
 )
 from strategies.base import Strategy
-
 from tests.helpers import make_ohlcv
-
 
 # ---------------------------------------------------------------- 辅助策略
 

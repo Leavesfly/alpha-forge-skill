@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from profile import (
     RISK_PRESETS,
     effective_risk_params,
@@ -11,6 +9,8 @@ from profile import (
     reset_profile,
     set_profile,
 )
+
+import pytest
 
 
 @pytest.fixture(autouse=True)

@@ -10,7 +10,6 @@ from backtest.engine import run_backtest
 from report.html import render_backtest_report
 from report.serialize import result_to_dict, to_json
 from strategies.base import Strategy
-
 from tests.helpers import make_ohlcv
 
 

@@ -1,9 +1,12 @@
-"""全市场扫描漏斗：流动性初筛 → 批量四层评分 → 达标/降级分列。
+"""全市场扫描漏斗：流动性初筛 → 批量买点三灯 → 达标/降级分列。
 
 扫描是**纪律过滤**，不是收益预测或选股 alpha 排名：
-- 达标候选 = 结论「是」且排名分 ≥ min_score，按排名分排序；
+- 达标候选 = 结论「趋势买点」且趋势分 ≥ min_score，按趋势分排序；
 - 被否决/降级候选单独列出主要原因，信息不丢失；
 - 拉取失败或 K 线不足的标的跳过并汇总，不中断整体扫描。
+
+批量扫描不逐只拉估值数据（成本过高），价灯恒为灰：扫描结论仅代表
+势/时维度，入选者建议再跑 run_score.py 补全价维度复核。
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ def scan_symbols(
         fetch_benchmark: 按基准代码返回收盘价序列的函数（内部应缓存，
             同市场标的复用同一基准）；None 时全部降级为无基准评分。
         pool: 流动性初筛保留的标的数（按近 20 日均成交额排序）；None 不过滤。
-        min_score: 达标候选的最低排名分。
+        min_score: 达标候选的最低趋势分。
         on_progress: 进度回调 ``(已完成数, 当前标的)``。
 
     Returns:
@@ -70,20 +73,21 @@ def scan_symbols(
             "symbol": sym,
             "verdict": res.verdict,
             "verdict_cn": res.verdict_cn,
-            "alpha_score": res.alpha_score,
+            "lights_summary": res.lights_summary,
+            "trend_score": res.trend_score,
             "asof": res.asof,
             "avg_turnover_20d": turnover,
             "close": res.snapshot.get("close"),
         }
-        if res.verdict == "yes" and (res.alpha_score or 0.0) >= min_score:
+        if res.verdict == "trend_entry" and (res.trend_score or 0.0) >= min_score:
             summary["plan"] = res.plan
             candidates.append(summary)
         else:
             summary["reason"] = _primary_reason(res)
             rejected.append(summary)
 
-    candidates.sort(key=lambda item: item["alpha_score"] or 0.0, reverse=True)
-    rejected.sort(key=lambda item: item["alpha_score"] or 0.0, reverse=True)
+    candidates.sort(key=lambda item: item["trend_score"] or 0.0, reverse=True)
+    rejected.sort(key=lambda item: item["trend_score"] or 0.0, reverse=True)
     return {
         "candidates": candidates,
         "rejected": rejected,
@@ -102,12 +106,12 @@ def _avg_turnover(df: pd.DataFrame) -> float:
 
 
 def _primary_reason(res) -> str:
-    """从各层记录中提取主要否决/降级原因（首个非 pass 层的首条理由）。"""
-    for layer in res.layers:
-        if layer.get("status") not in ("pass", None) and layer.get("reasons"):
-            return layer["reasons"][0]
-    if res.verdict == "watch":
-        return f"排名分 {res.alpha_score}，未达「是」阈值"
-    if res.verdict == "yes":
-        return "排名分低于 --min-score 阈值"
-    return "；".join(res.layers[0].get("reasons", [])[:1]) if res.layers else ""
+    """提取主要否决/降级原因：优先红灯触发理由，其次黄灯，再退回矩阵裁决。"""
+    for key in ("red_reasons", "yellow_reasons"):
+        for name in ("trend", "timing", "value"):
+            triggered = res.lights.get(name, {}).get("detail", {}).get(key) or []
+            if triggered:
+                return triggered[0]
+    if res.verdict == "trend_entry":
+        return "趋势分低于 --min-score 阈值"
+    return res.decision.get("rule", "")

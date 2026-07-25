@@ -1,14 +1,14 @@
-"""评分历史回放验证：逐日重算结论 + 前瞻收益事件研究。
+"""买点三灯历史回放验证：逐日重算结论 + 前瞻收益事件研究。
 
-回答「这套纪律评分在历史上有没有用」：
+回答「这套三灯规则在历史上有没有用」：
 
 - **回放**：对最近 N 个交易日，逐日只用截至当日（含）的数据重算结论
-  （final-only，无前视）；
-- **事件研究**：把结论首次转为「是」的日期作为事件日，复用
+  （final-only，无前视；回放不含估值数据，价灯恒灰，仅覆盖势/时维度）；
+- **事件研究**：把结论首次转为「趋势买点/纯趋势仓」的日期作为事件日，复用
   ``research.event_study`` 计算 21/63 日的前瞻绝对与相对基准收益
   （事件日取入场信号的**次一交易日**，度量信号之后的收益，不含信号当日）；
 - **诚实约定**：非重叠样本 < 10 时明确标注 inconclusive，
-  不据此确认或否定评分有效性。
+  不据此确认或否定三灯规则有效性。
 """
 
 from __future__ import annotations
@@ -27,6 +27,9 @@ HORIZONS = (21, 63)
 
 #: 非重叠样本低于该值时标注 inconclusive
 MIN_SAMPLES = 10
+
+#: 事件研究视为「入场信号」的结论（势绿+时绿）
+ENTRY_VERDICTS = ("trend_entry", "trend_only")
 
 
 def replay_verdicts(
@@ -71,8 +74,8 @@ def replay_study(
 ) -> dict:
     """对回放结论做 21/63 日前瞻收益事件研究。
 
-    事件 = 结论从非「是」转为「是」的次一交易日；每个窗口分别统计
-    绝对收益与相对基准超额收益的 CAAR，并给出非重叠样本数。
+    事件 = 结论从非入场态转为「趋势买点/纯趋势仓」的次一交易日；每个窗口
+    分别统计绝对收益与相对基准超额收益的 CAAR，并给出非重叠样本数。
     """
     close = df["close"].astype(float).reset_index(drop=True)
     index = _datetime_index(df)
@@ -82,18 +85,21 @@ def replay_study(
 
     codes = verdicts.to_numpy()
     prev = np.concatenate([["_"], codes[:-1]])
-    entry_dates = [t for t, cur, pre in zip(verdicts.index, codes, prev) if cur == "yes" and pre != "yes"]
+    entry_dates = [
+        t for t, cur, pre in zip(verdicts.index, codes, prev)
+        if cur in ENTRY_VERDICTS and pre not in ENTRY_VERDICTS
+    ]
 
     distribution = verdicts.value_counts().to_dict()
     out: dict = {
         "days": int(len(verdicts)),
         "verdict_distribution": {k: int(v) for k, v in distribution.items()},
-        "n_yes_entries": len(entry_dates),
+        "n_entry_signals": len(entry_dates),
         "horizons": {},
     }
     if not entry_dates:
         out["inconclusive"] = True
-        out["note"] = "回放期内没有任何「是」信号，无法做前瞻收益研究"
+        out["note"] = "回放期内没有任何「买点」信号，无法做前瞻收益研究"
         return out
 
     # 事件日 = 入场信号次一交易日（度量信号之后的收益）
@@ -146,7 +152,7 @@ def format_replay_report(study: dict) -> list[str]:
         "结论分布      : "
         + "，".join(f"{VERDICT_CN.get(k, k)} {v}" for k, v in sorted(dist.items(), key=lambda kv: -kv[1]))
     )
-    lines.append(f"「是」信号次数: {study.get('n_yes_entries', 0)}（非「是」转「是」）")
+    lines.append(f"「买点」信号次数: {study.get('n_entry_signals', 0)}（非买点转趋势买点/纯趋势仓）")
     for h, entry in study.get("horizons", {}).items():
         if entry is None:
             continue
@@ -173,10 +179,10 @@ def calibrate_threshold(
     symbol: str = "",
     min_samples: int = 10,
 ) -> dict:
-    """回放驱动的评分阈值自校准：找最优 alpha_score 入场阈值。
+    """回放驱动的阈值自校准：找最优 trend_score 入场阈值。
 
-    对最近 ``days`` 个交易日逐日重算 alpha_score，并计算每个 bar 的
-    前瞻 ``horizon`` 日收益；然后在阈值网格上统计「alpha_score >= 阈值」
+    对最近 ``days`` 个交易日逐日重算 trend_score，并计算每个 bar 的
+    前瞻 ``horizon`` 日收益；然后在阈值网格上统计「trend_score >= 阈值」
     的子集的胜率与平均前瞻收益，返回最优阈值与全网格统计。
 
     最优标准：在样本数 >= min_samples 的阈值中，选胜率最高者；
@@ -198,7 +204,7 @@ def calibrate_threshold(
     close = df["close"].astype(float).reset_index(drop=True)
     idx = _datetime_index(df)
 
-    # 逐日回放收集 (alpha_score, forward_return)
+    # 逐日回放收集 (trend_score, forward_return)
     records: list[tuple[float, float]] = []
     for i in range(start, n - horizon):
         sub = df.iloc[: i + 1]
@@ -211,10 +217,10 @@ def calibrate_threshold(
                 else benchmark_close.iloc[: i + 1]
             )
         res = score_symbol(sub, symbol=symbol, benchmark_close=bench_sub)
-        if res.alpha_score is None:
+        if res.trend_score is None:
             continue
         fwd_ret = float(close.iloc[i + horizon] / close.iloc[i] - 1.0)
-        records.append((res.alpha_score, fwd_ret))
+        records.append((res.trend_score, fwd_ret))
 
     if len(records) < min_samples:
         return {

@@ -19,7 +19,6 @@ from cli_common import (
     add_cost_args,
     add_json_arg,
     add_market_args,
-    add_risk_args,
     build_cost_and_rules,
     build_next_steps,
     check_symbol,

@@ -180,7 +180,7 @@ def main() -> None:
 
     log_next_steps(
         log,
-        f"参数寻优（调整规则中的 period 等参数）：修改规则文件后重跑",
+        "参数寻优（调整规则中的 period 等参数）：修改规则文件后重跑",
         f"样本外验证 run_validate.py --symbol {args.symbol} --strategy ma_cross",
         f"对比内置策略 run_compare.py --symbol {args.symbol}",
     )

@@ -5,9 +5,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import pandas as pd
+import pytest
 
 from backtest.engine import run_backtest
 from report.html import drawdown_episodes, render_backtest_report, render_compare_report

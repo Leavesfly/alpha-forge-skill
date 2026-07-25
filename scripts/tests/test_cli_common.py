@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from cli_common import (
+    _suggest_for_choice_error,
     check_symbol,
     emit_json,
     eval_condition,
@@ -18,10 +19,8 @@ from cli_common import (
     run_cli,
     split_symbols,
 )
-from cli_common import _suggest_for_choice_error
 from naming import default_output
 from report.serialize import SCHEMA_VERSION, attach_meta, frame_records
-
 
 # ---------- 参数解析 ----------
 

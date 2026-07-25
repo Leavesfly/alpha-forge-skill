@@ -173,7 +173,7 @@ def stage_backtest(args, log) -> None:
                     f"新闻仅约 100 条且仅 A 股，回测为短窗口演示，结论谨慎对待。"
                 ),
                 "next_steps": build_next_steps(
-                    {"action": "score", "reason": "用纪律评分综合判断当前是否适合参与",
+                    {"action": "score", "reason": "用买点三灯综合判断当前是否适合参与",
                      "command": f"run_score.py --symbol {args.symbol} --json"},
                     {"action": "backtest", "reason": "用经典策略回测对比",
                      "command": f"run_backtest.py --symbol {args.symbol} --strategy ma_cross --json"},

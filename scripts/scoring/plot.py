@@ -1,7 +1,7 @@
-"""纪律评分可视化。
+"""买点三灯可视化。
 
 - ``plot_score``：收盘价 + MA20/60/200 + 交易计划价位水平线；
-  提供回放结论时，背景按结论着色（是=绿、观察=黄、否=红）。
+  提供回放结论时，背景按结论着色（趋势买点=绿、等回踩=黄、回避=红）。
 """
 
 from __future__ import annotations
@@ -27,9 +27,11 @@ plt.rcParams["axes.unicode_minus"] = False
 
 #: 结论 -> 背景色（回放着色）
 _VERDICT_COLORS = {
-    "yes": "#27ae60",
-    "watch": "#f1c40f",
-    "no": "#c0392b",
+    "trend_entry": "#27ae60",
+    "trend_only": "#16a085",
+    "wait_pullback": "#f1c40f",
+    "left_watch": "#2980b9",
+    "avoid": "#c0392b",
     "reduce_risk": "#e67e22",
     "unrated": "#95a5a6",
 }
@@ -54,7 +56,7 @@ def plot_score(
     full = close
     close = close.iloc[-tail:]
     fig, ax = plt.subplots(figsize=(12, 6))
-    fig.suptitle(title or "纪律评分", fontsize=14, fontweight="bold")
+    fig.suptitle(title or "买点三灯", fontsize=14, fontweight="bold")
 
     ax.plot(close.index, close.values, label="收盘价", color="#34495e", linewidth=1.2)
     for window, color in ((20, "#e67e22"), (60, "#2980b9"), (200, "#8e44ad")):

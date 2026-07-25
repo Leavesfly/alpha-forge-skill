@@ -69,25 +69,26 @@ Level 6  端到端闭环     →  用例 8（研究闭环）+ 决策闭环（扫
 
 ### A. Hello Score：「这只股票现在能买吗？」
 
-想要一个直接的结论而不是一堆指标，从纪律评分开始：
+想要一个直接的结论而不是一堆指标，从买点三灯开始：
 
 ```bash
 cd scripts
 uv run python run_score.py --symbol 600000.SH
 ```
 
-输出**结论先行**：第一行就是「是 / 观察 / 否」五态裁决，后面附分层理由（哪层扣分、
-为什么否决）与入场/止损/止盈交易计划价位。只要结论一行可加 `--brief`。
+输出**结论先行**：第一行就是三灯速览（如「价绿 · 势绿 · 时黄」）与结论
+（趋势买点/等回踩/左侧观察/回避…），后面附每盏灯的理由（哪盏灯亮红/黄、
+为什么）与入场/止损/止盈交易计划价位。只要结论一行可加 `--brief`。
 
-> 新手只需记住一条规则：**评分是纪律工具而非收益预测**——「否」多数时候只是因为
-> 跌破年线（逆势不开仓），不是预言它会跌。原理与五态含义见 [scoring.md](scoring.md)。
+> 新手只需记住一条规则：**三灯是纪律工具而非收益预测**——「回避」多数时候只是因为
+> 跌破年线（逆势不开仓），不是预言它会跌。原理与结论七态含义见 [scoring.md](scoring.md)。
 
-**进阶**：加 `--valuation-pct` 看估值历史分位（当前 PE/PB 在近 5 年历史中的位置），
-加 `--macro` 看宏观环境（国债利率/CPI/PMI 组合判断）：
+**进阶**：估值分位（价灯输入）默认自动拉取；加 `--macro` 可附带宏观环境
+（国债利率/CPI/PMI 组合判断）：
 
 ```bash
-# 评分 + 估值分位 + 宏观环境
-uv run python run_score.py --symbol 600519.SH --valuation-pct --macro
+# 评分 + 宏观环境
+uv run python run_score.py --symbol 600519.SH --macro
 ```
 
 ### B. Hello Backtest：「这个策略历史上表现如何？」
@@ -324,7 +325,7 @@ print(format_report(result.metrics))
 | 新闻情绪 | `run_sentiment.py --symbol 600000.SH --stage fetch` | 让 agent 读新闻打分转成信号回测 | [sentiment.md](sentiment.md) |
 | 定投（定期定额） | `run_dca.py --symbol 600000.SH --plot` | 按周期定额投入，看资金加权 IRR 与一次性投入对比 | [dca.md](dca.md) |
 | 事件研究 | `run_event.py --symbol 600000.SH --events 2025-04-30,2025-08-30 --plot` | 看财报日/政策日前后的平均超额反应（AAR/CAAR） | [backtesting.md](backtesting.md) |
-| 市场扫描 | `run_scan.py --symbols 600000.SH,600519.SH,000001.SZ,601398.SH --top 5` | 对一篮子/股票池跑纪律评分漏斗，筛出「是/观察」候选 | [scoring.md](scoring.md) |
+| 市场扫描 | `run_scan.py --symbols 600000.SH,600519.SH,000001.SZ,601398.SH --top 5` | 对一篮子/股票池跑买点三灯漏斗（势/时维度），筛出「趋势买点」候选 | [scoring.md](scoring.md) |
 | 价值筛选 | `run_screener.py --max-pe 15 --min-div 3` | 低估值/高分红/高质量全市场筛选（十维硬阈值漏斗，A 股免费，`--valuation-pct` 估值分位增强） | [scoring.md](scoring.md) |
 | 十倍股特征筛选 | `run_screener.py --preset multibagger` | 十倍股统计共性初筛（小市值+便宜+现金流+聪明增长+低位，非收益预测），建议接 canslim 交叉确认 + portfolio 组合持有 | [scoring.md](scoring.md) |
 | 百倍股质量成长筛选 | `run_screener.py --preset hundredbagger` | 迈耶《如何找到100倍回报的股票》标准（高ROE+营收/利润双高增+小市值+低杠杆，非收益预测），百倍靠 20+ 年买对拿住，建议接 canslim 验证盈利持续性 | [scoring.md](scoring.md) |
@@ -347,7 +348,7 @@ print(format_report(result.metrics))
 
 目标：从候选池出发，先单标的选优，再组合成轮动策略，最后接到每日信号——把前面各级能力串成一条研究闭环。
 
-1. **筛池**：三条路径任选或叠加——用 `run_screener.py` 基本面价值筛选（低估值/高质量/高分红，`--valuation-pct` 可加估值分位增强），或用财务指标筛优质股（见 [data-fetching.md](data-fetching.md) 的「筛选优质股票」），或用 `run_scan.py` 对股票池跑纪律评分漏斗，取「是/观察」档候选。
+1. **筛池**：三条路径任选或叠加——用 `run_screener.py` 基本面价值筛选（低估值/高质量/高分红，`--valuation-pct` 可加估值分位增强），或用财务指标筛优质股（见 [data-fetching.md](data-fetching.md) 的「筛选优质股票」），或用 `run_scan.py` 对股票池跑买点三灯漏斗，取「趋势买点」档候选。
 2. **选策略**：对候选逐个 `run_compare.py` 一键对比全部策略（用例 1）。
 3. **调参 + 防过拟合**：对胜出策略 `run_optimize.py` 寻优，看 DSR；再用 `run_validate.py` 做走步样本外验证（用例 2）。
 4. **组合**：把入选标的放入 `run_portfolio.py` 做动量轮动，与等权基准对比（用例 5）。
@@ -360,7 +361,7 @@ print(format_report(result.metrics))
 ```bash
 # 扫描筛候选 → 单标的评分复核（含交易计划、估值分位、宏观环境与回放验证）→ 按评分裁决纸面跟踪
 uv run python run_scan.py --symbols 600000.SH,600519.SH,601398.SH --top 3
-uv run python run_score.py --symbol 600519.SH --valuation-pct --macro --replay 120
+uv run python run_score.py --symbol 600519.SH --macro --replay 120
 uv run python run_paper.py --symbol 600519.SH --mode score
 ```
 
@@ -398,26 +399,26 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 用户：“帮我看看茅台现在能不能买？”
 
 ```bash
-# 1. 推断标的代码（茅台 → 600519.SH），跑纪律评分（可加估值分位与宏观环境）
-uv run python run_score.py --symbol 600519.SH --valuation-pct --macro --json > score.json
+# 1. 推断标的代码（茅台 → 600519.SH），跑买点三灯（估值分位默认拉取，可加宏观环境）
+uv run python run_score.py --symbol 600519.SH --macro --json > score.json
 # 2. 取关键字段组织回答：
 #    .summary           自然语言结论（可直接引用或改写）
-#    .verdict_cn        结论（是/观察/否/持仓需减风险/无法评分）
+#    .verdict_cn        结论（趋势买点/纯趋势仓/等回踩/左侧观察/回避/持仓需减风险/无法评分）
+#    .lights            三灯明细（value/trend/timing 各含 color/reasons）
 #    .valuation         估值历史分位（含 pe_percentile/pb_percentile/valuation_label）
 #    .macro_regime_cn   宏观环境（经济扩张/宽松有利/滞胀压力/收缩衰退）
-#    .layers[]          各层理由（哪一层拦截、为什么）
-#    .evidence[]        结构化证据链（id/indicator/value/threshold/claim，深度解读时引用编号）
-#    .alpha_score       排名分（相对强弱，非涨跌概率）
-#    .plan              入场/止损/2R/3R 交易计划价位（结论为「是」时）
+#    .evidence[]        结构化证据链（id/light/indicator/value/threshold/claim，深度解读时引用编号）
+#    .trend_score       趋势分（势灯排序用，非涨跌概率）
+#    .plan              入场/止损/2R/3R 交易计划价位（趋势买点/纯趋势仓/等回踩时）
 #    .profile           用户风险画像上下文（如已登记）
 #    .next_steps[]      结构化后续动作（action/reason/command，部分含 condition）
 ```
 
 转述模板（结论 + 理由 + 计划 + 局限性，四段缺一不可）：
 
-> 「按纪律评分，茅台当前结论是**观察**：动量分达标（排名分 62），但收盘价在 MA60 之下触发风险封顶。
-> 若后续站回 MA60，参考计划：入场 1520、止损 1455（-2×ATR）。
-> 注意：这是趋势纪律过滤而非涨跌预测，不构成投资建议。」
+> 「按买点三灯，茅台当前是**等回踩**（价黄 · 势绿 · 时黄）：趋势健康（趋势分 62），但股价回调跌破 MA20，不追不抢。
+> 若后续站回 MA20，参考计划：入场 1520、止损 1455（-2×ATR）。
+> 注意：这是纪律过滤而非涨跌预测，不构成投资建议。」
 
 后续对话接口：用户说“那帮我盯着它”→ `run_paper.py --symbol 600519.SH --mode score`（每日重跑，
 幂等）；用户追问“这套评分靠谱吗”→ `run_score.py --symbol 600519.SH --replay 120 --json` 用历史回放自证。

@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from tests.helpers import make_ohlcv
 
@@ -122,12 +121,13 @@ def test_json_output_has_required_fields(capsys, monkeypatch):
 
 
 def test_json_output_score_has_verdict(capsys, monkeypatch):
-    """run_score.py --json 输出应包含评分结论字段。"""
+    """run_score.py --json 输出应包含买点三灯结论字段。"""
     mock_df = _make_mock_df(300)
     monkeypatch.setattr("datafeed.fetch_ohlcv", lambda *a, **kw: mock_df)
     monkeypatch.setattr(
         "sys.argv",
-        ["run_score.py", "--symbol", "600000.SH", "--json"],
+        ["run_score.py", "--symbol", "600000.SH", "--json",
+         "--no-valuation", "--no-fundamental"],
     )
 
     from run_score import main as score_main
@@ -139,8 +139,13 @@ def test_json_output_score_has_verdict(capsys, monkeypatch):
 
     assert payload["command"] == "score"
     assert "verdict" in payload
-    assert payload["verdict"] in ("yes", "watch", "no", "reduce_risk", "unrated")
+    assert payload["verdict"] in (
+        "trend_entry", "trend_only", "wait_pullback", "left_watch",
+        "avoid", "reduce_risk", "unrated",
+    )
     assert "verdict_cn" in payload
+    assert "lights" in payload
+    assert set(payload["lights"]) == {"value", "trend", "timing"}
     assert "summary" in payload
 
 
