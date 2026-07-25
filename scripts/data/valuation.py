@@ -7,7 +7,8 @@
 - PB 分位 80% → 当前 PB 处于近 N 年最高 20% 区间，相对高估。
 
 数据源：
-- A 股：``ak.stock_a_lg_indicator(symbol)``（乐咕乐股，免费，日频 PE/PB/PS）；
+- A 股：``ak.stock_a_indicator_lg``（乐咕乐股，旧版名 ``stock_a_lg_indicator``），
+  接口不存在时降级 ``ak.stock_value_em``（东财估值分析，日频 PE/PB）；
 - 港美股：yfinance 历史价格 + 当前 TTM EPS / BVPS 近似推算（精度有限，标注近似）。
 
 分位计算采用中位秩（并列值各计一半），避免估值恒定时分位恒为 0 或 1。
@@ -97,11 +98,41 @@ def _percentile_rank(series: pd.Series, value: float) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_astock_indicator(code: str) -> pd.DataFrame | None:
+    """拉取 A 股日频估值指标，兼容 akshare 接口更名/移除。
+
+    优先乐咕乐股（``stock_a_indicator_lg`` / 旧名 ``stock_a_lg_indicator``），
+    接口不存在或失败时降级东财 ``stock_value_em``（列：数据日期/PE(TTM)/市净率）。
+    """
+    import akshare as ak
+
+    for fn_name, kwargs in (
+        ("stock_a_indicator_lg", {"symbol": code}),
+        ("stock_a_lg_indicator", {"symbol": code}),
+        ("stock_value_em", {"symbol": code}),
+    ):
+        fn = getattr(ak, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                df = fn(**kwargs)
+        except Exception as exc:
+            print(
+                f"[warn] 估值接口 {fn_name} 失败（{type(exc).__name__}），尝试下一接口。",
+                file=sys.stderr,
+            )
+            continue
+        if df is not None and len(df) > 0:
+            return df
+    return None
+
+
 def fetch_valuation_astock(
     symbol: str,
     lookback_years: int = 5,
 ) -> ValuationPercentile | None:
-    """A 股估值历史分位（akshare stock_a_lg_indicator，免费日频）。
+    """A 股估值历史分位（乐咕乐股，接口不可用时降级东财估值分析）。
 
     Args:
         symbol: 带市场后缀的标的代码（如 600000.SH）。
@@ -112,20 +143,17 @@ def fetch_valuation_astock(
     """
     code = symbol.split(".")[0]
     try:
-        import akshare as ak
-
-        with contextlib.redirect_stdout(sys.stderr):
-            df = ak.stock_a_lg_indicator(symbol=code)
+        df = _fetch_astock_indicator(code)
     except Exception:
         return None
 
     if df is None or len(df) == 0:
         return None
 
-    # 列名归一化（akshare 版本间可能微调）
+    # 列名归一化（乐咕乐股 pe_ttm/pb；东财 stock_value_em 为中文列）
     col_map = {
-        "date": ["trade_date", "日期"],
-        "pe": ["pe", "pe_ttm", "市盈率"],
+        "date": ["trade_date", "日期", "数据日期"],
+        "pe": ["pe_ttm", "pe", "PE(TTM)", "市盈率"],
         "pb": ["pb", "市净率"],
     }
     normalized: dict[str, str | None] = {}

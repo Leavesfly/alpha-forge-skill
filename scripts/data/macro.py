@@ -131,11 +131,15 @@ def _trend_label(series: pd.Series, lookback: int = 3) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_bond_yield() -> tuple[float | None, pd.Series | None, str]:
-    """拉取中国 10 年期国债收益率。
+def _parse_month_dates(series: pd.Series) -> pd.Series:
+    """解析宏观月度日期列（兼容「2024年05月份」中文格式与标准日期）。"""
+    s = series.astype(str).str.replace("年", "-", regex=False)
+    s = s.str.replace("月份", "", regex=False).str.replace("月", "", regex=False)
+    return pd.to_datetime(s, errors="coerce")
 
-    优先 ``ak.bond_zh_us_rate()``（含中美国债收益率），
-    失败时尝试 ``ak.macro_china_bond_yield()``。
+
+def _fetch_bond_yield() -> tuple[float | None, pd.Series | None, str]:
+    """拉取中国 10 年期国债收益率（``ak.bond_zh_us_rate()``，含中美国债收益率）。
 
     Returns:
         (最新值, 历史序列, 错误信息)
@@ -146,14 +150,15 @@ def _fetch_bond_yield() -> tuple[float | None, pd.Series | None, str]:
         with contextlib.redirect_stdout(sys.stderr):
             df = ak.bond_zh_us_rate()
         if df is not None and len(df) > 0:
-            # 列名：日期, 中国国债收益率10年, ...
+            # 列名：日期, 中国国债收益率10年, 中国国债收益率10年-2年, ...
+            # 注意排除利差列（10年-2年）：只取「中国…10年」且不含利差连字符的列
             date_col = None
             yield_col = None
             for c in df.columns:
-                cl = str(c).lower()
-                if "日期" in cl or "date" in cl:
+                cl = str(c)
+                if date_col is None and ("日期" in cl or "date" in cl.lower()):
                     date_col = c
-                if "中国" in cl and "10" in cl:
+                if yield_col is None and "中国" in cl and "10年" in cl and "-" not in cl:
                     yield_col = c
             if date_col and yield_col:
                 df = df.copy()
@@ -179,22 +184,27 @@ def _fetch_cpi() -> tuple[float | None, pd.Series | None, str]:
         with contextlib.redirect_stdout(sys.stderr):
             df = ak.macro_china_cpi()
         if df is not None and len(df) > 0:
-            # 列名可能是：月份, 全国-当月, ... 或 date, value
+            # 列名：月份, 全国-当月, 全国-同比增长, ...（城市/农村列靠后，
+            # 需优先精确匹配「全国-同比增长」，避免误选靠后的农村列）
             date_col = None
             val_col = None
             for c in df.columns:
-                cl = str(c).lower()
-                if "月份" in cl or "日期" in cl or "date" in cl or "统计时间" in cl:
+                cl = str(c)
+                if date_col is None and (
+                    "月份" in cl or "日期" in cl or "date" in cl.lower() or "统计时间" in cl
+                ):
                     date_col = c
-                if "当月" in cl or "同比" in cl or "全国" in cl:
+                if val_col is None and "全国" in cl and "同比" in cl:
                     val_col = c
+            if val_col is None:
+                val_col = next((c for c in df.columns if "同比" in str(c)), None)
             if date_col is None and len(df.columns) >= 2:
                 date_col = df.columns[0]
             if val_col is None and len(df.columns) >= 2:
                 val_col = df.columns[1]
             if date_col and val_col:
                 df = df.copy()
-                df["_date"] = pd.to_datetime(df[date_col], errors="coerce")
+                df["_date"] = _parse_month_dates(df[date_col])
                 df["_val"] = pd.to_numeric(df[val_col], errors="coerce")
                 df = df.dropna(subset=["_date", "_val"]).sort_values("_date")
                 if len(df) > 0:
@@ -216,13 +226,22 @@ def _fetch_pmi() -> tuple[float | None, pd.Series | None, str]:
         with contextlib.redirect_stdout(sys.stderr):
             df = ak.macro_china_pmi()
         if df is not None and len(df) > 0:
+            # 列名：月份, 制造业-指数, 制造业-同比增长, 非制造业-指数, ...
+            # 需精确取「制造业-指数」，排除同比增长列与非制造业列
             date_col = None
             val_col = None
             for c in df.columns:
-                cl = str(c).lower()
-                if "月份" in cl or "日期" in cl or "date" in cl or "统计时间" in cl:
+                cl = str(c)
+                if date_col is None and (
+                    "月份" in cl or "日期" in cl or "date" in cl.lower() or "统计时间" in cl
+                ):
                     date_col = c
-                if "制造业" in cl or "pmi" in cl.lower():
+                if (
+                    val_col is None
+                    and ("制造业" in cl or "pmi" in cl.lower())
+                    and not cl.startswith("非")
+                    and "同比" not in cl
+                ):
                     val_col = c
             if date_col is None and len(df.columns) >= 2:
                 date_col = df.columns[0]
@@ -231,7 +250,7 @@ def _fetch_pmi() -> tuple[float | None, pd.Series | None, str]:
                 val_col = df.columns[1]
             if date_col and val_col:
                 df = df.copy()
-                df["_date"] = pd.to_datetime(df[date_col], errors="coerce")
+                df["_date"] = _parse_month_dates(df[date_col])
                 df["_val"] = pd.to_numeric(df[val_col], errors="coerce")
                 df = df.dropna(subset=["_date", "_val"]).sort_values("_date")
                 if len(df) > 0:
