@@ -124,6 +124,52 @@ def test_stop_loss_forces_exit():
     assert result.positions.iloc[-1] == 0.0
 
 
+class _PyramidStrategy(Strategy):
+    """分数仓位逐批加仓（模拟金字塔），用于验证同向调仓与止损基准。"""
+
+    def __init__(self, targets: list[float], **params):
+        super().__init__(**params)
+        self.targets = targets
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(self.targets, index=df.index, dtype=float)
+
+
+def test_risk_management_follows_pyramid_add_on():
+    """同向加仓（0.25→0.5→1.0）不应被止损逻辑吞掉，持仓应跟随目标。"""
+    close = np.array([100, 103, 107, 111, 115, 119], dtype=float)
+    df = make_ohlcv(close)
+    targets = [0.25, 0.5, 1.0, 1.0, 1.0, 1.0]
+    result = run_backtest(
+        df,
+        _PyramidStrategy(targets),
+        stop_loss=0.10,
+        commission=0.0,
+        slippage=0.0,
+    )
+    # 持仓 = 信号 shift(1)：未触发止损时应逐批跟随到满仓
+    assert result.positions.iloc[1] == 0.25
+    assert result.positions.iloc[2] == 0.5
+    assert result.positions.iloc[3] == 1.0
+
+
+def test_stop_loss_based_on_first_entry_price():
+    """金字塔加仓后止损仍以首次入场价为基准。"""
+    # 首次入场 100，加仓后跌至 89（较首次入场价 -11% < -10%）应止损
+    close = np.array([100, 104, 108, 89, 88, 87], dtype=float)
+    df = make_ohlcv(close)
+    targets = [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]
+    result = run_backtest(
+        df,
+        _PyramidStrategy(targets),
+        stop_loss=0.10,
+        commission=0.0,
+        slippage=0.0,
+    )
+    # 第 3 根触发止损（信号层），次日起持仓归零且保持空仓
+    assert (result.positions.iloc[4:] == 0.0).all()
+
+
 def test_vol_target_produces_continuous_positions(random_walk_df):
     """波动率目标模式下持仓应为连续值，而非仅 {-1,0,1}。"""
     result = run_backtest(

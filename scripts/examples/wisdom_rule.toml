@@ -1,0 +1,61 @@
+# 《炒股的智慧》核心原则的可回测落地（陈江挺）
+# 用法：uv run python run_custom.py --symbol 600000.SH --rules examples/wisdom_rule.toml --stop-loss 0.05
+#
+# 原则 -> 规则映射：
+#   顺势而为       -> 入场要求 close > 60 日均线（中期趋势向上才做多）
+#   等待关键点     -> close 上穿布林上轨（突破阻力）+ 放量确认（量能配合）
+#   让利润奔跑     -> 不设固定止盈，仅在 close 下破 20 日均线（趋势破坏）时离场
+#   金字塔加仓     -> [pyramid] 试探性买入：首批 1/4 仓，每浮盈 3% 再加一批
+#   截断亏损       -> 用 CLI 的 --stop-loss 控制单笔最大浮亏（书中约 2% 本金原则，
+#                     满仓时 --stop-loss 0.02 即等价；仓位越轻价格止损可越宽）
+
+[meta]
+name = "wisdom"
+description = "炒股的智慧：顺势+关键点突破入场，趋势破坏离场，让利润奔跑"
+
+# ---------- 指标定义 ----------
+
+[indicators.ma60]
+type = "sma"
+period = 60
+source = "close"
+
+[indicators.ma20]
+type = "sma"
+period = 20
+source = "close"
+
+[indicators.boll_upper]
+type = "bollinger_upper"
+period = 20
+std = 2.0
+source = "close"
+
+[indicators.vol_ma20]
+type = "sma"
+period = 20
+source = "volume"
+
+# ---------- 入场：顺势 + 关键点突破 + 放量（AND） ----------
+
+[entry]
+logic = "and"
+conditions = [
+    "close crosses_above boll_upper",   # 关键点：突破布林上轨（阻力位）
+    "close > ma60",                     # 顺势：中期趋势向上
+    "volume > vol_ma20",                # 量能确认：放量突破更可信
+]
+
+# ---------- 离场：只认趋势破坏，不设固定止盈（让利润奔跑） ----------
+
+[exit]
+logic = "or"
+conditions = [
+    "close crosses_below ma20",         # 趋势破坏：跌破 20 日均线离场
+]
+
+# ---------- 金字塔分批加仓：试探性买入，对了再加码 ----------
+
+[pyramid]
+units = 4     # 分 4 批建满仓（首批 25%）
+step = 0.03   # 每浮盈 3%（相对上次加仓价）再加一批

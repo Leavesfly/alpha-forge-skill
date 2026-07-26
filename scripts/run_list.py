@@ -257,6 +257,7 @@ def main() -> None:
                 "custom_dsl": {
                     "indicators": sorted(INDICATOR_SPEC),
                     "operators": list(OPERATORS),
+                    "pyramid": {"units": "分批数 2~10", "step": "加仓步长（如 0.03）"},
                     "example": "examples/custom_rule.toml",
                     "commands": ["run_custom.py"],
                 },

@@ -278,3 +278,88 @@ conditions = ["close crosses_below ma"]
         result = run_backtest(sample_df, strategy, symbol="TEST.SH")
         assert "total_return" in result.metrics
         assert "sharpe" in result.metrics
+
+
+# ---------------------------------------------------------------------------
+# 金字塔分批加仓
+# ---------------------------------------------------------------------------
+
+
+def _pyramid_rules(units: int = 4, step: float = 0.03) -> dict:
+    """构造带 [pyramid] 的最小规则。"""
+    return {
+        "meta": {"name": "pyramid_test"},
+        "indicators": {"ma": {"type": "sma", "period": 5}},
+        "entry": {"conditions": ["close crosses_above ma"]},
+        "exit": {"conditions": ["close crosses_below ma"]},
+        "pyramid": {"units": units, "step": step},
+    }
+
+
+class TestPyramid:
+    def test_validation_bad_units(self):
+        from strategies.custom import _validate_rules
+
+        with pytest.raises(DSLValidationError, match="units"):
+            _validate_rules(_pyramid_rules(units=1))
+        with pytest.raises(DSLValidationError, match="units"):
+            _validate_rules(_pyramid_rules(units=11))
+
+    def test_validation_bad_step(self):
+        from strategies.custom import _validate_rules
+
+        with pytest.raises(DSLValidationError, match="step"):
+            _validate_rules(_pyramid_rules(step=-0.01))
+
+    def test_fractional_signals(self):
+        """入场后逐批加仓：0.25 → 0.5 → 0.75 → 1.0，离场一次性清仓。"""
+        # 构造确定性行情：盘整后突破上行，每根 +4%（超过 step=3%），末段崩盘
+        flat = [10.0] * 10
+        up = [10.0 * 1.04**k for k in range(1, 7)]
+        crash = [8.0, 7.5, 7.0]
+        close = np.array(flat + up + crash)
+        df = pd.DataFrame(
+            {
+                "close": close,
+                "high": close,
+                "low": close,
+                "open": close,
+                "volume": np.full(len(close), 1000.0),
+            }
+        )
+        strategy = CustomStrategy(_pyramid_rules(units=4, step=0.03))
+        signals = strategy.generate_signals(df)
+
+        held = signals[signals > 0]
+        # 首批为试探仓 1/4，逐批加至满仓
+        assert held.iloc[0] == pytest.approx(0.25)
+        assert held.max() == pytest.approx(1.0)
+        # 仓位单调递增（持仓期内只加不减），且每次只加一批
+        diffs = held.diff().dropna()
+        assert (diffs >= 0).all()
+        assert diffs.max() == pytest.approx(0.25)
+        # 崩盘后离场：尾部归零
+        assert signals.iloc[-1] == 0.0
+
+    def test_rules_summary_contains_pyramid(self):
+        strategy = CustomStrategy(_pyramid_rules())
+        summary = strategy.rules_summary()
+        assert summary["pyramid"] == {"units": 4, "step": 0.03}
+
+    def test_no_pyramid_signals_stay_integer(self, sample_df, sample_rules):
+        """未定义 [pyramid] 时信号仍为 {-1, 0, 1}（向后兼容）。"""
+        strategy = CustomStrategy(sample_rules)
+        signals = strategy.generate_signals(sample_df)
+        assert set(signals.unique()).issubset({-1, 0, 1})
+
+    def test_backtest_integration_with_stop_loss(self, sample_df):
+        """金字塔信号 + 止损与引擎集成：持仓应出现分数仓位。"""
+        from backtest.engine import run_backtest
+
+        strategy = CustomStrategy(_pyramid_rules())
+        result = run_backtest(
+            sample_df, strategy, symbol="TEST.SH", stop_loss=0.05
+        )
+        nonzero = result.positions[result.positions != 0.0]
+        assert (nonzero <= 1.0 + 1e-9).all()
+        assert (nonzero.round(2).isin([0.25, 0.5, 0.75, 1.0])).all()

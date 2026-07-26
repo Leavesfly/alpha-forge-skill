@@ -111,6 +111,12 @@ def main() -> None:
     log(f"离场条件（{rules.get('exit', {}).get('logic', 'or').upper()}）：")
     for c in rules.get("exit", {}).get("conditions", []):
         log(f"  • {c}")
+    pyramid = rules.get("pyramid")
+    if pyramid:
+        log(
+            f"金字塔加仓：分 {pyramid['units']} 批建仓（首批 {1 / pyramid['units']:.0%}），"
+            f"每浮盈 {pyramid['step']:.1%} 加一批"
+        )
 
     log(f"\n拉取 {args.symbol} {args.period} K 线（{args.count} 根，复权：{args.adjust}）...")
     df = fetch_ohlcv(

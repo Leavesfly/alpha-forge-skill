@@ -41,6 +41,10 @@
         "fast_ma crosses_below slow_ma",
         "rsi14 > 80",
     ]
+
+    [pyramid]           # 可选：金字塔分批加仓（试探性买入，对了再加码）
+    units = 4           # 分几批建满仓（首批 1/units）
+    step = 0.03         # 每顺方向浮盈 3%（相对上次加仓价）再加一批
 """
 
 from __future__ import annotations
@@ -164,6 +168,20 @@ def _validate_rules(rules: dict) -> None:
     all_conds = entry["conditions"] + exit_["conditions"]
     for cond in all_conds:
         _validate_condition(cond, indicators)
+
+    # [pyramid]（可选：金字塔分批加仓）
+    pyramid = rules.get("pyramid")
+    if pyramid is not None:
+        units = pyramid.get("units")
+        step = pyramid.get("step")
+        if not isinstance(units, int) or isinstance(units, bool) or not (2 <= units <= 10):
+            raise DSLValidationError(
+                "[pyramid] units 应为 2~10 的整数（分批数，首批仓位 = 1/units）"
+            )
+        if not isinstance(step, (int, float)) or step <= 0:
+            raise DSLValidationError(
+                "[pyramid] step 应为正数（如 0.03 表示每顺方向浮盈 3% 加一批）"
+            )
 
 
 #: 内置 OHLCV 列引用（无需在 [indicators] 中定义）
@@ -417,6 +435,10 @@ class CustomStrategy(Strategy):
     - 入场条件满足 → 1（做多）
     - 离场条件满足 → 0（空仓）
     - 其余保持前一状态
+
+    定义 ``[pyramid]`` 后启用金字塔分批加仓：入场先建 1/units 试探仓，
+    每顺方向浮盈 step（相对上次加仓价）再加一批，直到满仓；离场仍一次性清仓。
+    此时信号为分数仓位（如 0.25/0.5/0.75/1.0），引擎按连续仓位处理。
     """
 
     name = "custom"
@@ -435,6 +457,9 @@ class CustomStrategy(Strategy):
         self._exit_conds = rules.get("exit", {}).get("conditions", [])
         self._exit_logic = rules.get("exit", {}).get("logic", "or")
         self._allow_short = rules.get("exit", {}).get("allow_short", False)
+        pyramid = rules.get("pyramid") or {}
+        self._pyramid_units = int(pyramid.get("units", 0))
+        self._pyramid_step = float(pyramid.get("step", 0.0))
         # 不调用 super().__init__ 以避免 default_params 冲突
         self.params = params
 
@@ -466,20 +491,23 @@ class CustomStrategy(Strategy):
         # 3. 生成状态机信号：入场→持有→离场→空仓
         entry_arr = entry_mask.to_numpy(dtype=bool)
         exit_arr = exit_mask.to_numpy(dtype=bool)
-        sig_arr = np.zeros(len(df), dtype=int)
-        position = 0
 
-        for i in range(len(df)):
-            if position == 0:
-                if entry_arr[i]:
-                    position = 1
-            elif position == 1:
-                if exit_arr[i]:
-                    position = -1 if self._allow_short else 0
-            elif position == -1:
-                if entry_arr[i]:
-                    position = 1
-            sig_arr[i] = position
+        if self._pyramid_units >= 2:
+            sig_arr = self._pyramid_signals(df, entry_arr, exit_arr)
+        else:
+            sig_arr = np.zeros(len(df), dtype=int)
+            position = 0
+            for i in range(len(df)):
+                if position == 0:
+                    if entry_arr[i]:
+                        position = 1
+                elif position == 1:
+                    if exit_arr[i]:
+                        position = -1 if self._allow_short else 0
+                elif position == -1:
+                    if entry_arr[i]:
+                        position = 1
+                sig_arr[i] = position
 
         # 指标未形成前不入场（NaN 区域）
         warmup = self._estimate_warmup()
@@ -487,6 +515,48 @@ class CustomStrategy(Strategy):
             sig_arr[:warmup] = 0
 
         return pd.Series(sig_arr, index=df.index)
+
+    def _pyramid_signals(
+        self, df: pd.DataFrame, entry_arr: np.ndarray, exit_arr: np.ndarray
+    ) -> np.ndarray:
+        """金字塔分批建仓状态机（分数仓位）。
+
+        - 入场条件满足：先建 1/units 试探仓，记录加仓基准价；
+        - 持仓中：每当收盘价较上次加仓价顺方向变动 step，再加一批直至满仓；
+        - 离场条件满足：一次性清仓（allow_short 时反手建 1/units 空头试探仓，
+          空头按价格下跌 step 逐批加仓）。
+
+        Returns:
+            取值为 direction × 已建批次/units 的浮点数组。
+        """
+        close = df["close"].astype(float).to_numpy()
+        units, step = self._pyramid_units, self._pyramid_step
+        unit = 1.0 / units
+        sig = np.zeros(len(df))
+        direction = 0  # 0 空仓 / 1 多 / -1 空
+        held = 0  # 已建批次数
+        last_add = np.nan  # 上次加仓价（加仓步长的基准）
+
+        for i in range(len(df)):
+            if direction == 0:
+                if entry_arr[i]:
+                    direction, held, last_add = 1, 1, close[i]
+            elif direction == 1:
+                if exit_arr[i]:
+                    if self._allow_short:
+                        direction, held, last_add = -1, 1, close[i]
+                    else:
+                        direction, held, last_add = 0, 0, np.nan
+                elif held < units and close[i] >= last_add * (1.0 + step):
+                    held, last_add = held + 1, close[i]
+            else:  # direction == -1
+                if entry_arr[i]:
+                    direction, held, last_add = 1, 1, close[i]
+                elif held < units and close[i] <= last_add * (1.0 - step):
+                    held, last_add = held + 1, close[i]
+            sig[i] = direction * held * unit
+
+        return sig
 
     def _estimate_warmup(self) -> int:
         """估算指标预热期（取所有指标 period 最大值）。"""
@@ -502,7 +572,7 @@ class CustomStrategy(Strategy):
 
     def rules_summary(self) -> dict:
         """返回规则摘要（用于 JSON 输出与展示）。"""
-        return {
+        summary = {
             "name": self._rules.get("meta", {}).get("name", "custom"),
             "description": self._rules.get("meta", {}).get("description", ""),
             "indicators": {
@@ -512,6 +582,12 @@ class CustomStrategy(Strategy):
             "entry": {"logic": self._entry_logic, "conditions": self._entry_conds},
             "exit": {"logic": self._exit_logic, "conditions": self._exit_conds},
         }
+        if self._pyramid_units >= 2:
+            summary["pyramid"] = {
+                "units": self._pyramid_units,
+                "step": self._pyramid_step,
+            }
+        return summary
 
     def __repr__(self) -> str:
         name = self._rules.get("meta", {}).get("name", "custom")

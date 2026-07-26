@@ -307,9 +307,11 @@ def _apply_risk_management(
     以持仓建仓价为基准计算浮动盈亏，触发阈值即离场并保持空仓，
     直到策略信号归零（一轮信号结束）后才允许重新入场，避免同一段
     信号内被反复止损又立刻重进。多头、空头分别按方向计算浮盈浮亏。
+    同向调仓（如金字塔分批加仓的分数仓位）跟随目标仓位，建仓价
+    保持首次入场价不变，止损/止盈始终以首次入场价为基准。
 
     Args:
-        signals: 策略输出的目标持仓（{-1, 0, 1}）。
+        signals: 策略输出的目标持仓（{-1, 0, 1} 或分数仓位）。
         close: 收盘价序列（与 signals 对齐）。
         stop_loss: 止损比例（正数），None 关闭。
         take_profit: 止盈比例（正数），None 关闭。
@@ -336,6 +338,9 @@ def _apply_risk_management(
             # 首次入场或方向反转：以当前 bar 收盘价为建仓价
             if pos == 0.0 or np.sign(tgt) != np.sign(pos):
                 pos, entry = tgt, price[i]
+            else:
+                # 同向调仓（金字塔加仓/减仓）：跟随目标仓位，保留首次入场价
+                pos = tgt
             # 基于建仓价计算浮动盈亏（区分多空方向）：
             # 多头浮盈 = price/entry - 1；空头浮盈 = entry/price - 1
             ret = price[i] / entry - 1.0 if pos > 0 else entry / price[i] - 1.0
