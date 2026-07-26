@@ -6,8 +6,11 @@ from .cache import (
     CacheConfig,
     default_config,
     find_date_column,
+    load_json_obj,
     load_klines,
+    load_table,
     normalize_adjust,
+    resolve_cache_dir,
 )
 from .dividends import fetch_dividends
 from .fundamentals import fetch_fundamentals
@@ -18,6 +21,7 @@ from .macro import (
     fetch_macro_snapshot,
     format_macro_regime,
 )
+from .panel import load_panel
 from .sources import (
     AkshareSource,
     BaostockSource,
@@ -26,6 +30,7 @@ from .sources import (
     get_sources,
     source_label,
 )
+from .sync import SyncReport, sync_symbols
 from .valuation import (
     ValuationPercentile,
     fetch_valuation_percentile,
@@ -41,8 +46,11 @@ __all__ = [
     "CacheConfig",
     "default_config",
     "find_date_column",
+    "load_json_obj",
     "load_klines",
+    "load_table",
     "normalize_adjust",
+    "resolve_cache_dir",
     "fetch_dividends",
     "fetch_fundamentals",
     "DataSource",
@@ -54,6 +62,10 @@ __all__ = [
     "ColumnDiff",
     "VerifyResult",
     "verify_symbol",
+    # 批量预同步与本地面板
+    "SyncReport",
+    "sync_symbols",
+    "load_panel",
     # 估值分位
     "ValuationPercentile",
     "fetch_valuation_percentile",

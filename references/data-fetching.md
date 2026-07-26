@@ -61,6 +61,38 @@ uv run python your_script.py  # 运行你的脚本
 
 各源均输出列名归一的升序 DataFrame（`trade_date/open/high/low/close/volume`），回测链路无需感知差异。
 
+### 本地优先工作流（先同步、后研究）
+
+全市场扫描/批量回测前，可用 `run_sync.py` 一次性把股票池 K 线预热到本地缓存，
+把数据工程从策略研究中剥离：
+
+```bash
+# 指定标的批量同步（默认日 K 1250 根，约 5 年）
+uv run python run_sync.py --symbols 600000.SH,000001.SZ
+
+# 全市场 A 股预同步（无 TICKFLOW_API_KEY 时自动经 akshare 快照取代码）
+uv run python run_sync.py --universe CN_Equity_A --limit 500 --workers 2
+
+# 美股池预同步（无 Key 时经东财美股快照取代码、按市值降序截断，
+# 顺带预热筛选器 Phase 1 快照缓存；快照不可用时降级 S&P 500 名单）
+uv run python run_sync.py --universe US_Equity --limit 500
+```
+
+- **离线模式**：同步完成后设 `ALPHA_FORGE_OFFLINE=1`，之后回测/扫描只读本地缓存
+  （跳过 TTL 新鲜度检查，完全不联网）；无缓存的标的会报错并提示先同步。
+- **快照/名单/基本面指标也本地优先**：筛选器的 A 股全市场快照、美股全市场
+  快照、S&P 500 名单（TTL 7 天）与逐只财务指标均经同一缓存根的 `tables/`
+  子目录落盘（TTL 默认 1 天，`ALPHA_FORGE_CACHE_TTL` 可调）：重复筛选（换
+  预设/调阈值）命中缓存后秒级完成；远端限流/断连时自动回退陈旧缓存
+  （stderr 告警标注抓取时间），离线模式同样只读本地。
+- **批量面板读取**：`from data import load_panel` 直接从本地缓存装载多标的宽表
+  （索引=日期，列=标的，返回 `(panel, missing)`），不查 TTL 不走网络，适合横截面研究。
+- **缓存目录三级优先**（数据独立于 skill 生命周期，重装不丢）：
+  `ALPHA_FORGE_CACHE_DIR` > 项目内旧 `.cache/klines`（存在且非空，老用户零迁移）
+  > `~/.alpha-forge/klines`（新默认）；实际生效目录可用 `run_list.py --doctor` 查看。
+- 同步走现有多源降级链，重复执行为增量更新（缓存新鲜直接跳过）；分钟级周期
+  不建议全市场同步（需 API Key 且量大）；`--workers` 调高自担免费源限频风险。
+
 ## 常用 K 线周期
 
 | 类型 | 周期代码 | 说明 |

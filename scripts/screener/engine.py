@@ -13,10 +13,14 @@ from typing import Callable
 
 from .data import (
     fetch_astock_detail,
+    fetch_astock_gross_margin,
     fetch_astock_snapshot,
     fetch_benchmark_close,
+    fetch_drawdown_52w,
     fetch_price_position,
+    fetch_sp500_symbols,
     fetch_technical_profile,
+    fetch_us_snapshot,
     fetch_yfinance_metrics,
     is_a_share,
 )
@@ -33,11 +37,13 @@ class ScreenCriteria:
     min_div: float = 0.0        # 股息率下限(%)，0=不筛
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
     min_rev_growth: float = 0.0  # 营收增速下限(%)，0=不筛（百倍股：增长须由营收驱动）
+    min_gross_margin: float = 0.0  # 毛利率下限(%)，0=不筛（DHQ：定价权与规模效应信号）
     min_cap: float = 30.0       # 总市值下限(亿)
     max_cap: float = 0.0        # 总市值上限(亿)，0=不筛（十倍股：小市值起步）
     min_cash_yield: float = 0.0  # 现金流收益率下限(%)，0=不筛（FCF Yield 近似）
     smart_growth: bool = False  # 聪明增长：要求资产增速 < 净利润增速（仅 A 股有数据）
     max_price_pos: float = 0.0  # 52 周价格位置上限(0~1)，0=不筛（低位左侧启动）
+    min_drawdown: float = 0.0   # 自 52 周高点回撤下限(%)，0=不筛（DHQ：回撤进入折扣区才买）
     min_price_pos: float = 0.0  # 52 周价格位置下限(0~1)，0=不筛（猛兽股：买强不买弱）
     trend_filter: bool = False  # 多头趋势结构：收盘 > MA50 且 MA50 > MA200
     rs_filter: bool = False     # RS 线：加权相对强度（3/6/9/12 月）跑赢基准
@@ -58,6 +64,10 @@ class ScreenCriteria:
         }
         if self.min_rev_growth > 0:
             d["min_rev_growth"] = self.min_rev_growth
+        if self.min_gross_margin > 0:
+            d["min_gross_margin"] = self.min_gross_margin
+        if self.min_drawdown > 0:
+            d["min_drawdown"] = self.min_drawdown
         if self.max_cap > 0:
             d["max_cap"] = self.max_cap
         if self.min_cash_yield > 0:
@@ -92,6 +102,18 @@ class ScreenCriteria:
 #: 与共同特征——大势确认上行（必要条件）+ 盈利高增的领导股 + 接近 52 周新高
 #: （买强不买弱）+ RS 线跑赢基准 + 上涨放量下跌缩量 + 沿 MA50 上行；
 #: 与两个左侧/质量预设互补：monster 是右侧趋势追踪（突破后买强），非底部潜伏。
+#: dhq 取自马哈尼《高增长科技股投资法》（Nothing But Net, 2021）核心策略：
+#: 用折扣价买高质量公司（Dislocated High-Quality）——高质量=营收高增（20%+）
+#: + 高毛利（定价权）+ 已具规模（非小盘故事股）；折扣=自 52 周高点回撤
+#: 进入 20%~30% 加仓区；不看 PE/PB/ROE（高增长期利润被创新投入压低，奈飞式）。
+#: 与 multibagger（便宜左侧）差异：dhq 只买高质量回调，不捡低质量便宜货。
+#: superstock 取自斯泰恩《100倍超级强势股》（Insider Buy Superstocks, 2013）：
+#: 低估值与爆发成长的罕见合流——PE<10 锁死下行 + 盈利爆发（增速>40%）且
+#: 营收驱动 + 低杠杆（书中"无负债"）+ 小市值（对应书中低流通盘/股价 $4~15）
+#: + 已突破启动（52 周上半部 + 沿 10 周线≈MA50 的多头结构）+ 突破放量回调
+#: 缩量。书名核心信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查
+#: 大股东/高管增持与回购公告补位。与 monster 差异：monster 追接近新高的
+#: 强势不看估值，superstock 要求便宜的爆发成长，条件更严候选更少。
 PRESETS: dict[str, dict] = {
     "multibagger": {
         "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
@@ -123,6 +145,28 @@ PRESETS: dict[str, dict] = {
         "rs_filter": True,      # RS 线跑赢基准：猛兽股突破时 RS 线同步/领先创新高
         "min_updown_vol": 1.2,  # 上涨日均量/下跌日均量 ≥ 1.2：放量上涨缩量回调（吸筹）
         "market_filter": True,  # 大势确认：书中必要条件——猛兽股几乎只在新一轮升势中产生
+    },
+    "dhq": {
+        "max_pe": 0.0,             # 不看 PE：高增长科技股用收入增速定价，PE 失真（书中经验 9）
+        "max_pb": 0.0,             # 不看 PB：轻资产科技公司 PB 无意义
+        "min_roe": 0.0,            # 不卡 ROE：高增长期利润被创新投入压低（奈飞式）
+        "min_cap": 100.0,          # 高质量门槛：已具规模的行业领导者（防小盘故事股）
+        "min_rev_growth": 20.0,    # 书中高增长门槛：营收增速 20%+（增长须由收入驱动）
+        "min_gross_margin": 40.0,  # 书中优秀标准毛利 60%+，按 A 股科技口径放宽到 40%
+        "min_drawdown": 20.0,      # DHQ 折扣触发：自 52 周高点回撤 ≥20%（书中 20%~30% 加仓区）
+    },
+    "superstock": {
+        "max_pe": 10.0,          # 书中标准：PE<10 用低估值锁死成长股的下行风险
+        "max_pb": 0.0,           # 不看 PB：书中不用 PB，小盘成长股 PB 参考性弱
+        "min_roe": 0.0,          # 不卡 ROE：爆发前盈利基数低，用增速+营收驱动代替
+        "max_debt": 50.0,        # 书中"无负债"标准：A 股口径放宽为负债率<50%
+        "min_growth": 40.0,      # 爆发性盈利（blockbuster earnings）：利润大增
+        "min_rev_growth": 20.0,  # 可持续性：增长须由营收驱动，防一次性收益冲利润
+        "min_cap": 15.0,         # 流动性/壳风险底线（同 multibagger）
+        "max_cap": 100.0,        # 低流通盘/小市值：书中市值<1 亿美元，A 股口径≈100 亿
+        "min_price_pos": 0.5,    # 已突破启动：52 周区间上半部（突破后回踩买，不追新高）
+        "trend_filter": True,    # 神奇支撑线：沿 10 周线（≈MA50）上行的多头结构
+        "min_updown_vol": 1.2,   # 突破放量回调缩量：上涨/下跌日均量比 ≥1.2（机构吸筹）
     },
 }
 
@@ -179,8 +223,10 @@ _WEIGHTS = {
     "div": 0.10,
     "growth": 0.10,
     "rev_growth": 0.10,
+    "gross": 0.15,
     "cash": 0.15,
     "pos": 0.10,
+    "dd": 0.10,
     "rs": 0.15,
     "vol": 0.10,
 }
@@ -240,6 +286,12 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         scores["rev_growth"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["rev_growth"] = _WEIGHTS["rev_growth"]
 
+    gross = metrics.get("gross_margin")
+    if criteria.min_gross_margin > 0 and gross is not None:
+        ratio = gross / criteria.min_gross_margin
+        scores["gross"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["gross"] = _WEIGHTS["gross"]
+
     cash = metrics.get("cash_yield")
     if criteria.min_cash_yield > 0 and cash is not None:
         ratio = cash / criteria.min_cash_yield
@@ -255,6 +307,13 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         # 猛兽股口径相反：位置越高（越接近 52 周新高）得分越高，买强不买弱
         scores["pos"] = min(max(pos, 0.0), 1.0) * 100.0
         weights["pos"] = _WEIGHTS["pos"]
+
+    dd = metrics.get("drawdown")
+    if criteria.min_drawdown > 0 and dd is not None:
+        # DHQ 口径：回撤越深折扣越大得分越高（阈值处 50 分，2 倍阈值封顶）
+        ratio = dd / criteria.min_drawdown
+        scores["dd"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["dd"] = _WEIGHTS["dd"]
 
     rs = metrics.get("rs_excess")
     if criteria.rs_filter and rs is not None:
@@ -324,6 +383,52 @@ def screen_astock_phase1(
 
 
 # ---------------------------------------------------------------------------
+# 美股 universe: Phase 1 批量快照过滤（降级 S&P 500 名单）
+# ---------------------------------------------------------------------------
+
+
+def screen_us_phase1(
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+) -> tuple[list[dict], int]:
+    """美股 universe Phase 1：全市场快照批量过滤（PE/PB/市值，单位亿美元）。
+
+    东财快照不可用时降级 S&P 500 成分股名单（无快照指标，全部交给
+    Phase 2 逐只核查）；两级都失败返回 ([], 0)。
+
+    Returns:
+        (存活标的列表[{code(如 AAPL.US), name, pe, pb, total_mv, close}], 总扫描数)
+    """
+    snapshot = fetch_us_snapshot(log)
+    if snapshot is not None and len(snapshot):
+        total = len(snapshot)
+        df = snapshot.copy()
+        # PE 过滤（正值且 < max_pe，同 A 股口径）
+        if criteria.max_pe > 0 and df["pe"].notna().any():
+            df = df[(df["pe"] > 0) & (df["pe"] <= criteria.max_pe)]
+        # PB 过滤（快照可能无 PB 列：全 NaN 时跳过，交给 Phase 2）
+        if criteria.max_pb > 0 and df["pb"].notna().any():
+            df = df[(df["pb"] > 0) & (df["pb"] <= criteria.max_pb)]
+        # 市值过滤（注意：universe=us 时阈值单位为亿美元）
+        if criteria.min_cap > 0:
+            df = df[df["total_mv"] >= criteria.min_cap]
+        if criteria.max_cap > 0:
+            df = df[df["total_mv"] <= criteria.max_cap]
+        survivors = df.to_dict("records")
+        if log:
+            log(f"Phase 1 美股快照过滤：{total} 只 → {len(survivors)} 只存活")
+        return survivors, total
+
+    # 降级：S&P 500 名单（无快照指标，不做批量过滤）
+    symbols = fetch_sp500_symbols(log)
+    if not symbols:
+        return [], 0
+    if log:
+        log(f"东财美股快照不可用，降级 S&P 500 成分股名单（{len(symbols)} 只，全部逐只核查）")
+    return [{"code": s} for s in symbols], len(symbols)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2: A 股逐只深度过滤
 # ---------------------------------------------------------------------------
 
@@ -348,7 +453,7 @@ def screen_astock_phase2(
     # 判断是否需要 Phase 2（有深度指标阈值启用时才逐只拉取）
     need_detail = (
         criteria.min_roe > 0 or criteria.max_debt > 0 or criteria.min_growth > 0
-        or criteria.min_rev_growth > 0
+        or criteria.min_rev_growth > 0 or criteria.min_gross_margin > 0
         or criteria.min_cash_yield > 0 or criteria.smart_growth
     )
 
@@ -372,6 +477,7 @@ def screen_astock_phase2(
             "revenue_growth": None,
             "asset_growth": None,
             "cash_yield": None,
+            "gross_margin": None,
         }
 
         # 股息率 Phase 1 过滤（如果快照有该字段且阈值启用）
@@ -395,6 +501,10 @@ def screen_astock_phase2(
             metrics["profit_growth"] = detail.get("profit_growth")
             metrics["revenue_growth"] = detail.get("revenue_growth")
             metrics["asset_growth"] = detail.get("asset_growth")
+            metrics["gross_margin"] = detail.get("gross_margin")
+            # 毛利率兜底：新浪口径近年普遍 NaN，启用该维度时用同花顺摘要补齐
+            if criteria.min_gross_margin > 0 and metrics["gross_margin"] is None:
+                metrics["gross_margin"] = fetch_astock_gross_margin(code)
             # 现金流收益率 = 每股经营现金流 / 股价（FCF Yield 的 A 股免费近似）
             ocf = detail.get("ocf_per_share")
             close = metrics.get("close")
@@ -459,6 +569,13 @@ def _check_detail_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]
         elif rev < criteria.min_rev_growth:
             reasons.append(f"营收增速 {rev:.1f}% < {criteria.min_rev_growth:.0f}%")
 
+    if criteria.min_gross_margin > 0:
+        gross = metrics.get("gross_margin")
+        if gross is None:
+            reasons.append("毛利率数据缺失")
+        elif gross < criteria.min_gross_margin:
+            reasons.append(f"毛利率 {gross:.1f}% < {criteria.min_gross_margin:.0f}%（定价权不足）")
+
     if criteria.min_cash_yield > 0:
         cash = metrics.get("cash_yield")
         if cash is None:
@@ -512,6 +629,11 @@ def screen_yfinance(
             "debt_ratio": info.get("debt_ratio"),
             "profit_growth": info.get("profit_growth"),
             "revenue_growth": info.get("revenue_growth"),
+            "gross_margin": info.get("gross_margin"),
+            "asset_growth": info.get("asset_growth"),
+            "cash_yield": info.get("cash_yield"),
+            "price_pos": info.get("price_pos"),
+            "drawdown": info.get("drawdown"),
             "total_mv": info.get("total_mv"),
             "close": info.get("close"),
         }
@@ -576,6 +698,13 @@ def _check_all_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]:
         elif pos > criteria.max_price_pos:
             reasons.append(f"52 周位置 {pos:.0%} > {criteria.max_price_pos:.0%}（位置偏高）")
 
+    if criteria.min_drawdown > 0:
+        dd = metrics.get("drawdown")
+        if dd is None:
+            reasons.append("52 周回撤数据缺失")
+        elif dd < criteria.min_drawdown:
+            reasons.append(f"回撤 {dd:.0f}% < {criteria.min_drawdown:.0f}%（尚未进入折扣区）")
+
     if criteria.min_div > 0:
         div = metrics.get("div_yield")
         if div is None or div < criteria.min_div:
@@ -593,16 +722,19 @@ def _check_all_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]:
 def run_screen(
     criteria: ScreenCriteria,
     symbols: list[str] | None = None,
+    universe: str | None = None,
     top: int = 30,
     sort_by: str = "score",
     log: Callable[..., None] | None = None,
     on_progress: Callable[[int, str], None] | None = None,
 ) -> dict:
-    """统一筛选入口：自动分流 A 股批量 / 港美股逐只。
+    """统一筛选入口：自动分流 A 股批量 / 美股 universe / 港美股逐只。
 
     Args:
         criteria: 筛选阈值。
-        symbols: 手动标的列表（含港美股时必须）；None 时走 A 股全市场。
+        symbols: 手动标的列表（含港美股时必须）；与 universe 互斥。
+        universe: 全市场扫描范围：None=A 股全市场，"us"=美股全市场
+            （东财快照，市值阈值单位变为亿美元；快照不可用时降级 S&P 500 名单）。
         top: 最多返回达标数。
         sort_by: 排序字段（score/pe/pb/roe/div/growth）。
         log: 日志函数。
@@ -610,7 +742,7 @@ def run_screen(
 
     Returns:
         {"candidates": [...], "n_scanned": int, "n_phase1": int, "n_final": int}；
-        启用 market_filter 且走 A 股全市场时附加 "market_regime"。
+        启用 market_filter 且走全市场扫描时附加 "market_regime"。
     """
     market_info: dict | None = None
     if symbols:
@@ -633,6 +765,27 @@ def run_screen(
 
         n_scanned = len(symbols)
         n_phase1 = n_scanned  # 手动模式无分阶段
+    elif universe == "us":
+        # 大势前置检查（美股基准 SPY）：大势不对不筛，避免白跑逐只漏斗
+        if criteria.market_filter:
+            market_info = market_regime(fetch_benchmark_close("SPY.US"))
+            if market_info is not None and not market_info["uptrend"]:
+                if log:
+                    log(
+                        "大势过滤：基准（SPY）未站上 MA50/MA200，"
+                        "猛兽股纪律为大势不对不买，本次不筛选"
+                    )
+                return {
+                    "candidates": [], "n_scanned": 0, "n_phase1": 0,
+                    "n_final": 0, "market_regime": market_info,
+                }
+        # 美股全市场：快照批量过滤 → yfinance 逐只深度核查（同手动港美股路径）
+        survivors, n_scanned = screen_us_phase1(criteria, log)
+        n_phase1 = len(survivors)
+        us_symbols = [str(r["code"]) for r in survivors]
+        if us_symbols and log:
+            log(f"Phase 2 逐只核查 {len(us_symbols)} 只（yfinance，较慢）...")
+        all_results = screen_yfinance(us_symbols, criteria, log, on_progress)
     else:
         # 大势前置检查（猛兽股必要条件）：大势不对不筛，避免白跑全市场漏斗
         if criteria.market_filter:
@@ -656,6 +809,10 @@ def run_screen(
         if criteria.max_price_pos > 0 and all_results:
             all_results = _filter_price_position(all_results, criteria, log, on_progress)
 
+        # DHQ 折扣过滤：自 52 周高点回撤达阈才保留（同样逐只拉日 K，较慢）
+        if criteria.min_drawdown > 0 and all_results:
+            all_results = _filter_drawdown(all_results, criteria, log, on_progress)
+
     # 猛兽股技术面过滤（52 周高位/均线多头/RS 线/量价，逐只拉日 K 较慢）
     tech_needed = (
         criteria.min_price_pos > 0 or criteria.trend_filter or criteria.rs_filter
@@ -677,7 +834,7 @@ def run_screen(
     out = {
         "candidates": [r.to_dict() for r in candidates],
         "n_scanned": n_scanned,
-        "n_phase1": n_phase1 if not symbols else None,
+        "n_phase1": None if symbols else n_phase1,
         "n_final": len(all_results),
     }
     if market_info is not None:
@@ -853,6 +1010,44 @@ def _filter_price_position(
     return kept
 
 
+def _filter_drawdown(
+    results: list[ScreenResult],
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> list[ScreenResult]:
+    """DHQ 折扣过滤：逐只拉日 K 计算自 52 周高点回撤，保留回撤达阈的标的。
+
+    回撤计入综合评分（越深折扣越大得分越高）；日 K 拉取失败视为数据缺失剔除。
+    """
+    if log:
+        log(f"DHQ 折扣过滤：拉取 {len(results)} 只候选的近 52 周日 K 计算回撤...")
+
+    kept: list[ScreenResult] = []
+    n_shallow, n_missing = 0, 0
+    for i, r in enumerate(results):
+        dd = r.metrics.get("drawdown")
+        if dd is None:
+            dd = fetch_drawdown_52w(r.symbol)
+        if dd is None:
+            n_missing += 1
+        elif dd < criteria.min_drawdown:
+            n_shallow += 1
+        else:
+            r.metrics["drawdown"] = dd
+            r.score = composite_score(r.metrics, criteria)
+            kept.append(r)
+        if on_progress:
+            on_progress(i + 1, r.symbol)
+
+    if log:
+        log(
+            f"DHQ 折扣过滤：{len(results)} 只 → {len(kept)} 只存活"
+            f"（回撤未达阈 {n_shallow} 只，数据缺失 {n_missing} 只）"
+        )
+    return kept
+
+
 def _screen_astock_manual(
     symbols: list[str],
     criteria: ScreenCriteria,
@@ -885,10 +1080,13 @@ def _screen_astock_manual(
             "revenue_growth": (detail or {}).get("revenue_growth")
             if detail else (info or {}).get("revenue_growth"),
             "asset_growth": (detail or {}).get("asset_growth"),
+            "gross_margin": (detail or {}).get("gross_margin")
+            if detail else (info or {}).get("gross_margin"),
             "total_mv": (info or {}).get("total_mv"),
             "close": (info or {}).get("close"),
             "cash_yield": (info or {}).get("cash_yield"),
             "price_pos": (info or {}).get("price_pos"),
+            "drawdown": (info or {}).get("drawdown"),
         }
 
         # A 股优先用财报口径：每股经营现金流 / 股价（与全市场批量路径一致）
@@ -896,6 +1094,16 @@ def _screen_astock_manual(
         close = metrics.get("close")
         if ocf is not None and close:
             metrics["cash_yield"] = ocf / close * 100.0
+
+        # 回撤/位置维度：yfinance 缺失时用免费日 K 兜底（与全市场路径同口径）
+        if criteria.min_drawdown > 0 and metrics.get("drawdown") is None:
+            metrics["drawdown"] = fetch_drawdown_52w(symbol)
+        if criteria.max_price_pos > 0 and metrics.get("price_pos") is None:
+            metrics["price_pos"] = fetch_price_position(symbol)
+
+        # 毛利率兜底：新浪/yfinance 都缺失时用同花顺摘要补齐
+        if criteria.min_gross_margin > 0 and metrics.get("gross_margin") is None:
+            metrics["gross_margin"] = fetch_astock_gross_margin(code)
 
         fail_reasons = _check_all_criteria(metrics, criteria)
         passed = len(fail_reasons) == 0
@@ -977,12 +1185,7 @@ def _sort_results(results: list[ScreenResult], sort_by: str) -> list[ScreenResul
 
 
 def _code_to_symbol(code: str) -> str:
-    """A 股纯数字代码 → 带市场后缀（6→SH，0/3→SZ，4/8→BJ）。"""
-    code = code.strip()
-    if code.startswith("6"):
-        return f"{code}.SH"
-    if code.startswith(("0", "3")):
-        return f"{code}.SZ"
-    if code.startswith(("4", "8")):
-        return f"{code}.BJ"
-    return f"{code}.SZ"  # 默认深交所
+    """A 股纯数字代码 → 带市场后缀（已上移至 market.code_to_symbol，委托保兼容）。"""
+    from market import code_to_symbol
+
+    return code_to_symbol(code)

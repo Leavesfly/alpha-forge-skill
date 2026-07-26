@@ -40,6 +40,18 @@ def is_astock(symbol: str) -> bool:
     return symbol.upper().endswith(ASTOCK_SUFFIXES)
 
 
+def code_to_symbol(code: str) -> str:
+    """A 股纯数字代码 → 带市场后缀（6→SH，0/3→SZ，4/8→BJ）。"""
+    code = code.strip()
+    if code.startswith("6"):
+        return f"{code}.SH"
+    if code.startswith(("0", "3")):
+        return f"{code}.SZ"
+    if code.startswith(("4", "8")):
+        return f"{code}.BJ"
+    return f"{code}.SZ"  # 默认深交所
+
+
 def default_lot_size(market: str = "generic", symbol: str = "") -> int:
     """根据市场预设或标的后缀返回默认最小交易单位。
 

@@ -5,10 +5,13 @@
 - run_factor.py：多因子截面排名（相对好坏）
 - run_screener.py（本模块）：基本面价值发现（哪些被低估）
 
-两阶段漏斗：批量快照过滤（PE/PB/市值）→ 逐只深度过滤（ROE/负债/分红/增速/现金流）；
-启用 52 周位置维度时追加 Phase 3 位置过滤；启用猛兽股技术维度（高位/均线多头/
-RS 线/量价/大势）时追加技术面过滤。内置预设：multibagger（十倍股统计特征）、
-hundredbagger（百倍股质量成长）、monster（猛兽股右侧强势，取自波伊克《猛兽股》）。
+两阶段漏斗：批量快照过滤（PE/PB/市值）→ 逐只深度过滤（ROE/负债/分红/增速/现金流/毛利）；
+启用 52 周位置/回撤维度时追加位置或折扣过滤；启用猛兽股技术维度（高位/均线多头/
+RS 线/量价/大势）时追加技术面过滤。扫描范围：A 股全市场（默认）、美股全市场
+（universe="us"，东财快照，降级 S&P 500 名单）、手动标的列表。内置预设：
+multibagger（十倍股统计特征）、hundredbagger（百倍股质量成长）、monster（猛兽股
+右侧强势，取自波伊克《猛兽股》）、dhq（打折的高质量股，取自马哈尼《高增长
+科技股投资法》）、superstock（超级强势股，取自斯泰恩《100倍超级强势股》）。
 """
 
 from .engine import (
@@ -20,6 +23,7 @@ from .engine import (
     run_screen,
     screen_astock_phase1,
     screen_astock_phase2,
+    screen_us_phase1,
     screen_yfinance,
 )
 
@@ -32,5 +36,6 @@ __all__ = [
     "run_screen",
     "screen_astock_phase1",
     "screen_astock_phase2",
+    "screen_us_phase1",
     "screen_yfinance",
 ]

@@ -95,12 +95,10 @@ def _doctor_checks() -> list[dict]:
         add("TICKFLOW_API_KEY", "warn", "未配置：历史日 K 回测/寻优/评分等主流程不受影响",
             "仅实时/分钟 K、--universe 股票池、财务因子需要；tickflow.org 申请后 export TICKFLOW_API_KEY=...")
 
-    # 5) 缓存目录可写
-    from pathlib import Path
+    # 5) 缓存目录可写（三级优先：env > 项目旧目录非空 > ~/.alpha-forge/klines）
+    from data.cache import resolve_cache_dir
 
-    from data.cache import _project_cache_dir
-
-    cache_dir = Path(os.environ.get("ALPHA_FORGE_CACHE_DIR") or _project_cache_dir())
+    cache_dir = resolve_cache_dir()
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         probe = cache_dir / ".doctor_probe"

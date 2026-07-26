@@ -8,7 +8,13 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   Phase 1 全市场快照过滤 PE/PB/市值 → Phase 2 逐只深度过滤 ROE/负债/增速/现金流
   → Phase 3 位置过滤（仅启用 --max-price-pos 时，逐只拉日 K）
   → 技术面过滤（仅启用猛兽股维度时：高位/均线多头/RS 线/量价/大势）。
-港美股走 yfinance 逐只拉取（需 --symbols 手动指定）。
+美股全市场走 --universe us（东财免费快照 ~13000 只，无需 API Key）：
+  Phase 1 快照过滤 PE/PB/市值 → Phase 2 yfinance 逐只深度核查（较慢，建议用
+  市值/PE 阈值把 Phase 1 存活数压到百只量级）；东财快照不可用时自动降级
+  S&P 500 成分股名单。注意：--universe us 时市值阈值单位为亿美元（预设的
+  市值阈值按人民币亿标定，美股使用时建议显式覆盖，如 superstock 书中口径
+  --max-cap 1）；聪明增长（--smart-growth）仅 A 股有数据。
+港股/自选美股走 yfinance 逐只拉取（需 --symbols 手动指定）。
 
 内置预设（--preset，显式参数可覆盖预设项）：
 - multibagger：十倍股统计特征筛选，取自 Yartseva(2025) 464 只美股十倍股实证
@@ -26,6 +32,21 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   上行的多头结构。与两个左侧/质量预设互补：monster 是右侧趋势追踪，
   大势不对时纪律性空仓不筛（书中纪律：猛兽股几乎只在新一轮升势中产生）。
   注意：这些是历史翻倍股的统计共性，不是收益预测；命中靠组合持有而非单点押注。
+- dhq：打折的高质量股筛选（Dislocated High-Quality），取自马哈尼
+  《高增长科技股投资法》(Nothing But Net, 2021) 核心策略：高质量=营收
+  高增(>20%) + 高毛利(>40%，定价权) + 已具规模(市值>100亿)；折扣=自 52 周
+  高点回撤 ≥20%（书中 20%~30% 加仓区）。不看 PE/PB/ROE（高增长期利润被
+  创新投入压低，收入增速才是领先指标）。与 multibagger（便宜左侧）的差异：
+  dhq 只买高质量公司的回调，不捡低质量便宜货（书中：不把精力浪费在
+  质量不佳的企业）。
+- superstock：超级强势股筛选，取自斯泰恩《100倍超级强势股》(Insider Buy
+  Superstocks, 2013) 的合流标准：低估值与爆发成长同时满足——PE<10（锁死
+  下行）+ 盈利爆发(增速>40%)且营收驱动(>20%) + 低杠杆(负债<50%，书中
+  "无负债") + 小市值(15~100亿，对应书中低流通盘) + 已突破启动(52 周上半部
+  + 沿 10 周线≈MA50 的多头结构) + 突破放量回调缩量(量比>1.2)。书名核心
+  信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查大股东/高管增持
+  与回购公告补位。与 monster 的差异：monster 追接近新高的强势不看估值，
+  superstock 要求便宜的爆发成长（罕见合流），条件更严候选更少。
 
 筛选基于公开财务快照，不构成投资建议；数据为最近报告期，存在滞后。
 
@@ -50,6 +71,12 @@ A 股走 akshare 免费批量接口（无需 API Key）：
     # 猛兽股右侧强势筛选（大势确认+盈利高增+接近新高+RS 强势+量价吸筹）
     uv run python run_screener.py --preset monster
 
+    # 打折的高质量股筛选（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）
+    uv run python run_screener.py --preset dhq
+
+    # 超级强势股筛选（低 PE+盈利爆发+小市值+突破形态，斯泰恩书中标准）
+    uv run python run_screener.py --preset superstock
+
     # 十倍股预设 + 局部调整（显式参数覆盖预设：放宽市值上限到 300 亿）
     uv run python run_screener.py --preset multibagger --max-cap 300
 
@@ -61,6 +88,12 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 
     # 纳入银行/保险等高杠杆金融股（放开负债率维度）
     uv run python run_screener.py --max-debt 0
+
+    # 美股全市场筛选（东财快照，市值单位亿美元；低 PE 小盘口径）
+    uv run python run_screener.py --universe us --max-pe 10 --min-cap 5 --max-cap 100
+
+    # 美股全市场超级强势股（书中原味口径：市值<1 亿美元需显式覆盖市值阈值）
+    uv run python run_screener.py --universe us --preset superstock --min-cap 0.5 --max-cap 20
 
     # 港美股手动列表筛选
     uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
@@ -96,13 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
     src = parser.add_mutually_exclusive_group()
     src.add_argument(
         "--symbols", default=None,
-        help="手动标的列表（逗号分隔）；港美股必须用此模式",
+        help="手动标的列表（逗号分隔）；港股/自选美股必须用此模式",
+    )
+    src.add_argument(
+        "--universe", default=None, choices=["us"],
+        help="全市场扫描范围：us=美股全市场（东财免费快照 ~13000 只，快照不可用时降级 S&P 500 名单；市值阈值单位变为亿美元）；缺省为 A 股全市场",
     )
 
     # 预设方案
     parser.add_argument(
         "--preset", default=None, choices=sorted(PRESETS),
-        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；显式参数可覆盖预设项",
+        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；显式参数可覆盖预设项",
     )
 
     # 阈值参数
@@ -113,11 +150,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-div", type=float, default=0.0, help="股息率下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-growth", type=float, default=0.0, help="净利润增速下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-rev-growth", type=float, default=0.0, help="营收增速下限(%%)，默认 0（0=不限；百倍股标准：增长须由营收驱动）")
+    parser.add_argument("--min-gross-margin", type=float, default=0.0, help="毛利率下限(%%)，默认 0=不限（DHQ 标准：高毛利=定价权与规模效应信号）")
     parser.add_argument("--min-cap", type=float, default=30.0, help="总市值下限(亿)，默认 30")
     parser.add_argument("--max-cap", type=float, default=0.0, help="总市值上限(亿)，默认 0=不限（十倍股研究：小市值起步）")
     parser.add_argument("--min-cash-yield", type=float, default=0.0, help="现金流收益率下限(%%)，默认 0=不限（A 股=每股经营现金流/股价，港美股=FCF/市值）")
     parser.add_argument("--smart-growth", action="store_true", help="启用聪明增长过滤：要求资产增速 < 净利润增速（扩张有效率，仅 A 股有数据）")
     parser.add_argument("--max-price-pos", type=float, default=0.0, help="52 周价格位置上限(0~1)，默认 0=不限；如 0.5=只要区间下半部（左侧低位，逐只拉日 K 较慢）")
+    parser.add_argument("--min-drawdown", type=float, default=0.0, help="自 52 周高点回撤下限(%%)，默认 0=不限；如 20=回撤 ≥20%% 才保留（DHQ 折扣触发，逐只拉日 K 较慢）")
 
     # 猛兽股技术面维度（逐只拉日 K 较慢，与 --max-price-pos 的左侧口径互斥）
     parser.add_argument("--min-price-pos", type=float, default=0.0, help="52 周价格位置下限(0~1)，默认 0=不限；如 0.75=只要区间上四分之一（猛兽股：买强不买弱）")
@@ -176,11 +215,13 @@ def main() -> None:
         min_div=args.min_div,
         min_growth=args.min_growth,
         min_rev_growth=args.min_rev_growth,
+        min_gross_margin=args.min_gross_margin,
         min_cap=args.min_cap,
         max_cap=args.max_cap,
         min_cash_yield=args.min_cash_yield,
         smart_growth=args.smart_growth,
         max_price_pos=args.max_price_pos,
+        min_drawdown=args.min_drawdown,
         min_price_pos=args.min_price_pos,
         trend_filter=args.trend_filter,
         rs_filter=args.rs_filter,
@@ -201,6 +242,9 @@ def main() -> None:
     log(f"筛选条件：{active_dims}")
     if symbols:
         log(f"标的范围：手动列表 {len(symbols)} 只")
+    elif args.universe == "us":
+        log("标的范围：美股全市场（东财免费快照，不可用时降级 S&P 500 名单）")
+        log("注意：--universe us 模式下市值阈值单位为亿美元（预设阈值按人民币亿标定，建议显式覆盖）")
     else:
         log("标的范围：A 股全市场（akshare 免费快照）")
     log()
@@ -210,6 +254,7 @@ def main() -> None:
         result = run_screen(
             criteria,
             symbols=symbols,
+            universe=args.universe,
             top=args.top,
             sort_by=args.sort,
             log=log,
@@ -221,7 +266,7 @@ def main() -> None:
     n_scanned = result["n_scanned"]
     market_info = result.get("market_regime")
 
-    # 大势状态（仅启用 --market-filter 且走 A 股全市场时返回）
+    # 大势状态（仅启用 --market-filter 且走全市场扫描时返回）
     if market_info is not None:
         state = "确认上行" if market_info["uptrend"] else "未确认上行（大势不对不筛）"
         log(
@@ -240,8 +285,10 @@ def main() -> None:
             div_str = f"股息 {item['div_yield']:.1f}%" if item.get("div_yield") else ""
             growth_str = f"增速 {item['profit_growth']:+.0f}%" if item.get("profit_growth") else ""
             rev_str = f"营收 {item['revenue_growth']:+.0f}%" if item.get("revenue_growth") else ""
+            gross_str = f"毛利 {item['gross_margin']:.0f}%" if item.get("gross_margin") else ""
             cash_str = f"现金流 {item['cash_yield']:.1f}%" if item.get("cash_yield") else ""
             pos_str = f"52周位置 {item['price_pos']:.0%}" if item.get("price_pos") is not None else ""
+            dd_str = f"回撤 {item['drawdown']:.0f}%" if item.get("drawdown") is not None else ""
             rs_str = f"RS超额 {item['rs_excess']:+.1f}pp" if item.get("rs_excess") is not None else ""
             vol_str = f"量比 {item['updown_vol_ratio']:.2f}" if item.get("updown_vol_ratio") is not None else ""
             # 估值分位（可选）
@@ -258,7 +305,7 @@ def main() -> None:
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {rev_str}  {cash_str}  {pos_str}  {rs_str}  {vol_str}  {val_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {rev_str}  {gross_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
             )
     elif market_info is not None and not market_info["uptrend"]:
         log("（本次未筛选：大势未确认上行。《猛兽股》纪律为大势不对不买，等基准重新站上 MA50/MA200 后再筛。）")
@@ -277,11 +324,20 @@ def main() -> None:
         log("提示：monster 是《猛兽股》共同特征的右侧强势筛选，不是收益预测；"
             "买强势股需严格止损纪律（书中：跌破 MA50 放量即退出），"
             "建议接 run_score.py 生成含止损位的交易计划，并用趋势策略回测验证。")
+    if args.preset == "dhq":
+        log("提示：dhq 是马哈尼《高增长科技股投资法》的打折高质量筛选，不是收益预测；"
+            "回撤本身不是买入理由，须确认回撤来自市场情绪而非基本面恶化"
+            "（营收增速失速即双杀）；单期财报口径有滞后，建议接 run_canslim.py 验证盈利质量。")
+    if args.preset == "superstock":
+        log("提示：superstock 是斯泰恩《100倍超级强势股》的合流筛选，不是收益预测；"
+            "书名核心信号‘内部人士买入’无 A 股等价数据，须人工核查候选的大股东/高管"
+            "增持与回购公告补位；低 PE + 高增速合流极罕见，空结果属正常（书中纪律："
+            "条件不全部满足就等待）；买强势股须带止损（书中：跌破 10 周线即退出）。")
     if criteria.max_debt > 0:
         log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
     if not criteria.use_valuation_pct:
         log("提示：低 PE 可能是周期股盈利顶部假象，可加 --valuation-pct 用估值历史分位交叉验证。")
-    if args.preset in ("multibagger", "hundredbagger"):
+    if args.preset in ("multibagger", "hundredbagger", "dhq"):
         log_next_steps(
             log,
             "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（盈利加速+RS 强度）",
@@ -292,6 +348,12 @@ def main() -> None:
             log,
             "对候选做买点三灯并生成含止损位的交易计划 run_score.py --symbol <代码>（买强势股必须带止损）",
             "趋势策略回测验证 run_backtest.py --symbol <代码> --strategy supertrend（让利润奔跑，跌破趋势退出）",
+        )
+    elif args.preset == "superstock":
+        log_next_steps(
+            log,
+            "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（验证盈利爆发的可持续性）",
+            "对候选做买点三灯并生成含止损位的交易计划 run_score.py --symbol <代码>（书中：缩量收紧至 10 周线附近再买）",
         )
     else:
         log_next_steps(
@@ -313,7 +375,7 @@ def main() -> None:
                 f"扫描 {n_scanned} 只标的：{n_final} 只达标。"
                 f"最优候选：{top_sym}。筛选基于基本面快照，非收益预测。"
             )
-        if args.preset in ("multibagger", "hundredbagger"):
+        if args.preset in ("multibagger", "hundredbagger", "dhq"):
             next_steps = build_next_steps(
                 {"action": "canslim", "reason": "对候选做 CAN SLIM 成长面交叉确认（盈利加速+RS 强度）",
                  "command": "run_canslim.py --symbols <候选列表> --json"},
@@ -327,6 +389,13 @@ def main() -> None:
                 {"action": "backtest", "reason": "趋势策略回测验证，让利润奔跑跌破趋势退出",
                  "command": "run_backtest.py --symbol <代码> --strategy supertrend --json"},
             )
+        elif args.preset == "superstock":
+            next_steps = build_next_steps(
+                {"action": "canslim", "reason": "对候选做 CAN SLIM 成长面交叉确认，验证盈利爆发的可持续性（防一次性收益）",
+                 "command": "run_canslim.py --symbols <候选列表> --json"},
+                {"action": "score", "reason": "对候选做买点三灯并生成含止损位的交易计划（书中：跌破 10 周线即退出）",
+                 "command": "run_score.py --symbol <代码> --json"},
+            )
         else:
             next_steps = build_next_steps(
                 {"action": "score", "reason": "对达标候选做技术面买点三灯复核",
@@ -338,6 +407,7 @@ def main() -> None:
             {
                 "criteria": criteria.to_dict(),
                 "preset": args.preset,
+                "universe": args.universe,
                 "n_scanned": n_scanned,
                 "n_phase1": result.get("n_phase1"),
                 "n_final": n_final,
@@ -368,6 +438,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"增速>{criteria.min_growth:.0f}%")
     if criteria.min_rev_growth > 0:
         parts.append(f"营收增速>{criteria.min_rev_growth:.0f}%")
+    if criteria.min_gross_margin > 0:
+        parts.append(f"毛利率>{criteria.min_gross_margin:.0f}%")
     if criteria.min_cap > 0:
         parts.append(f"市值>{criteria.min_cap:.0f}亿")
     if criteria.max_cap > 0:
@@ -378,6 +450,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append("聪明增长(资产增速<利润增速)")
     if criteria.max_price_pos > 0:
         parts.append(f"52周位置<{criteria.max_price_pos:.0%}")
+    if criteria.min_drawdown > 0:
+        parts.append(f"52周回撤≥{criteria.min_drawdown:.0f}%(折扣区)")
     if criteria.min_price_pos > 0:
         parts.append(f"52周位置>{criteria.min_price_pos:.0%}(买强不买弱)")
     if criteria.trend_filter:

@@ -14,12 +14,14 @@ from screener import (
     composite_score,
     market_regime,
     run_screen,
+    screen_us_phase1,
 )
 from screener.engine import (
     _check_all_criteria,
     _check_detail_criteria,
     _check_tech_criteria,
     _code_to_symbol,
+    _filter_drawdown,
     _filter_monster_tech,
     _filter_price_position,
     _sort_results,
@@ -54,6 +56,9 @@ class TestScreenCriteria:
         assert c.rs_filter is False
         assert c.min_updown_vol == 0.0
         assert c.market_filter is False
+        # DHQ 维度默认全部不启用（不改变存量行为）
+        assert c.min_gross_margin == 0.0
+        assert c.min_drawdown == 0.0
 
     def test_to_dict(self):
         c = ScreenCriteria(max_pe=15, min_div=3)
@@ -89,6 +94,16 @@ class TestScreenCriteria:
         for key in ("min_price_pos", "trend_filter", "rs_filter", "min_updown_vol", "market_filter"):
             assert key not in d2
 
+    def test_to_dict_dhq_dims(self):
+        c = ScreenCriteria(min_gross_margin=40, min_drawdown=20)
+        d = c.to_dict()
+        assert d["min_gross_margin"] == 40
+        assert d["min_drawdown"] == 20
+        # 未启用时不出现在契约中
+        d2 = ScreenCriteria().to_dict()
+        assert "min_gross_margin" not in d2
+        assert "min_drawdown" not in d2
+
 
 class TestPresets:
     def test_multibagger_preset_exists(self):
@@ -99,6 +114,12 @@ class TestPresets:
 
     def test_monster_preset_exists(self):
         assert "monster" in PRESETS
+
+    def test_dhq_preset_exists(self):
+        assert "dhq" in PRESETS
+
+    def test_superstock_preset_exists(self):
+        assert "superstock" in PRESETS
 
     def test_preset_keys_are_criteria_fields(self):
         """预设键必须是 ScreenCriteria 字段（同时也是 CLI dest）。"""
@@ -142,6 +163,35 @@ class TestPresets:
         assert p["min_updown_vol"] > 1.0     # 上涨放量下跌缩量
         assert p["market_filter"] is True    # 大势确认（必要条件）
         assert "max_price_pos" not in p      # 与左侧低位口径互斥
+
+    def test_dhq_preset_semantics(self):
+        """预设语义（马哈尼《高增长科技股投资法》）：高质量回调——营收高增+高毛利+规模+折扣，不看 PE/PB/ROE。"""
+        p = PRESETS["dhq"]
+        assert p["max_pe"] == 0.0            # 不看 PE：收入增速才是领先指标
+        assert p["max_pb"] == 0.0            # 不看 PB：轻资产科技公司 PB 无意义
+        assert p["min_roe"] == 0.0           # 不卡 ROE：高增长期利润被创新投入压低
+        assert p["min_rev_growth"] >= 20.0   # 书中高增长门槛：营收增速 20%+
+        assert p["min_gross_margin"] > 0     # 高毛利：定价权信号
+        assert p["min_cap"] >= 100.0         # 已具规模：防小盘故事股
+        assert 20.0 <= p["min_drawdown"] <= 30.0  # 折扣触发：书中 20%~30% 加仓区
+        assert "max_price_pos" not in p      # 用回撤口径而非位置口径
+        assert "market_filter" not in p      # 不择大势：回调多发生在弱市
+
+    def test_superstock_preset_semantics(self):
+        """预设语义（斯泰恩《100倍超级强势股》）：低 PE+盈利爆发+小市值+右侧突破结构的合流。"""
+        p = PRESETS["superstock"]
+        assert 0 < p["max_pe"] <= 10.0       # 书中标准：PE<10 锁死下行风险
+        assert p["max_pb"] == 0.0            # 不看 PB
+        assert p["min_roe"] == 0.0           # 不卡 ROE：爆发前盈利基数低
+        assert 0 < p["max_debt"] <= 60.0     # 书中"无负债"的 A 股宽松口径
+        assert p["min_growth"] >= 30.0       # 爆发性盈利
+        assert p["min_rev_growth"] > 0       # 营收驱动，防一次性收益
+        assert p["max_cap"] > p["min_cap"]   # 小市值区间合法（低流通盘代理）
+        assert 0 < p["min_price_pos"] <= 0.75  # 已突破启动但不要求新高（回踩买）
+        assert p["trend_filter"] is True     # 神奇支撑线：沿 10 周线≈MA50 多头结构
+        assert p["min_updown_vol"] > 1.0     # 突破放量回调缩量（吸筹）
+        assert "max_price_pos" not in p      # 与左侧低位口径互斥
+        assert "market_filter" not in p      # 不强制择大势：合流已够严，留给用户叠加
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +272,19 @@ class TestCompositeScore:
         assert composite_score({"updown_vol_ratio": 1.2}, c) == 50.0
         assert composite_score({"updown_vol_ratio": 2.4}, c) == 100.0
 
+    def test_gross_margin_score(self):
+        """毛利率达标程度评分：阈值处 50 分，2 倍阈值封顶 100 分。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_gross_margin=40)
+        assert composite_score({"gross_margin": 40.0}, c) == 50.0
+        assert composite_score({"gross_margin": 80.0}, c) == 100.0
+
+    def test_drawdown_score_deeper_is_better(self):
+        """DHQ 口径：回撤越深折扣越大得分越高（阈值处 50 分，2 倍阈值封顶）。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_drawdown=20)
+        assert composite_score({"drawdown": 20.0}, c) == 50.0
+        assert composite_score({"drawdown": 40.0}, c) == 100.0
+        assert composite_score({"drawdown": 30.0}, c) > composite_score({"drawdown": 22.0}, c)
+
 
 # ---------------------------------------------------------------------------
 # _check_detail_criteria
@@ -283,6 +346,15 @@ class TestCheckDetailCriteria:
         reasons = _check_detail_criteria({"revenue_growth": None}, c)
         assert any("缺失" in r for r in reasons)
 
+    def test_gross_margin_pass_fail(self):
+        """毛利率维度（DHQ：高毛利=定价权信号）。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, min_gross_margin=40)
+        assert _check_detail_criteria({"gross_margin": 55.0}, c) == []
+        reasons = _check_detail_criteria({"gross_margin": 25.0}, c)
+        assert any("定价权不足" in r for r in reasons)
+        reasons = _check_detail_criteria({"gross_margin": None}, c)
+        assert any("缺失" in r for r in reasons)
+
     def test_smart_growth_pass_fail(self):
         c = ScreenCriteria(min_roe=0, max_debt=0, smart_growth=True)
         # 资产增速 < 利润增速 → 通过
@@ -340,6 +412,15 @@ class TestCheckAllCriteria:
         reasons = _check_all_criteria({"price_pos": 0.9}, c)
         assert any("位置偏高" in r for r in reasons)
         reasons = _check_all_criteria({"price_pos": None}, c)
+        assert any("缺失" in r for r in reasons)
+
+    def test_drawdown_fail(self):
+        """52 周回撤（DHQ 折扣触发）：回撤未达阈或数据缺失都剔除。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_cap=0, min_drawdown=20)
+        assert _check_all_criteria({"drawdown": 30.0}, c) == []
+        reasons = _check_all_criteria({"drawdown": 8.0}, c)
+        assert any("尚未进入折扣区" in r for r in reasons)
+        reasons = _check_all_criteria({"drawdown": None}, c)
         assert any("缺失" in r for r in reasons)
 
     def test_all_pass(self):
@@ -629,6 +710,90 @@ class TestRunScreen:
 
 
 # ---------------------------------------------------------------------------
+# 美股 universe：代码归一化 / Phase 1 过滤与降级 / run_screen 路由
+# ---------------------------------------------------------------------------
+
+
+class TestUsTickerNormalize:
+    def test_normalize_variants(self):
+        from screener.data import _us_ticker_to_symbol
+
+        assert _us_ticker_to_symbol("AAPL") == "AAPL.US"
+        assert _us_ticker_to_symbol("brk_b") == "BRK-B.US"   # 东财下划线口径
+        assert _us_ticker_to_symbol("BRK.B") == "BRK-B.US"   # 维基点号口径
+        assert _us_ticker_to_symbol("") is None
+        assert _us_ticker_to_symbol("$$$") is None
+
+
+def _fake_us_snapshot() -> pd.DataFrame:
+    return pd.DataFrame({
+        "code": ["CHEAP.US", "PRICY.US", "BIG.US", "NOPE.US"],
+        "name": ["Cheap", "Pricy", "Big", "NoPe"],
+        "close": [10.0, 50.0, 100.0, 5.0],
+        "pe": [8.0, 40.0, 9.0, None],
+        "pb": [None, None, None, None],  # 快照无 PB：全 NaN 时该维度交给 Phase 2
+        "total_mv": [50.0, 60.0, 5000.0, 20.0],
+        "div_yield": [None, None, None, None],
+    })
+
+
+class TestUsPhase1:
+    @patch("screener.engine.fetch_us_snapshot")
+    def test_snapshot_filter(self, mock_snap):
+        """快照模式：PE/市值批量过滤；PB 全 NaN 时跳过不误杀；PE 缺失行被剔。"""
+        mock_snap.return_value = _fake_us_snapshot()
+        criteria = ScreenCriteria(max_pe=10, max_pb=3.0, min_cap=10.0, max_cap=1000.0)
+        survivors, total = screen_us_phase1(criteria)
+        assert total == 4
+        codes = [r["code"] for r in survivors]
+        assert codes == ["CHEAP.US"]  # PRICY 超 PE，BIG 超市值，NOPE 无 PE
+
+    @patch("screener.engine.fetch_sp500_symbols")
+    @patch("screener.engine.fetch_us_snapshot")
+    def test_fallback_sp500(self, mock_snap, mock_sp500):
+        """快照不可用：降级 S&P 500 名单，不做批量过滤全部交给 Phase 2。"""
+        mock_snap.return_value = None
+        mock_sp500.return_value = ["AAPL.US", "MSFT.US"]
+        survivors, total = screen_us_phase1(ScreenCriteria(max_pe=10))
+        assert total == 2
+        assert [r["code"] for r in survivors] == ["AAPL.US", "MSFT.US"]
+
+    @patch("screener.engine.fetch_sp500_symbols")
+    @patch("screener.engine.fetch_us_snapshot")
+    def test_both_sources_fail(self, mock_snap, mock_sp500):
+        mock_snap.return_value = None
+        mock_sp500.return_value = None
+        assert screen_us_phase1(ScreenCriteria()) == ([], 0)
+
+
+class TestRunScreenUsUniverse:
+    @patch("screener.engine.screen_yfinance")
+    @patch("screener.engine.screen_us_phase1")
+    def test_universe_routing(self, mock_p1, mock_yf):
+        """universe=us：Phase 1 存活代码逐只交给 yfinance 深度核查。"""
+        mock_p1.return_value = ([{"code": "CHEAP.US"}], 13000)
+        mock_yf.return_value = [
+            ScreenResult("CHEAP.US", "Cheap", {"pe": 8, "total_mv": 50}, 80, True)
+        ]
+        result = run_screen(ScreenCriteria(max_pe=10), universe="us")
+        assert result["n_scanned"] == 13000
+        assert result["n_phase1"] == 1
+        assert result["n_final"] == 1
+        mock_yf.assert_called_once()
+        assert mock_yf.call_args[0][0] == ["CHEAP.US"]
+
+    @patch("screener.engine.fetch_benchmark_close")
+    def test_universe_halts_when_spy_down(self, mock_bench):
+        """大势前置检查：SPY 未确认上行时纪律性不筛，不跑逐只漏斗。"""
+        mock_bench.return_value = pd.Series(range(400, 100, -1))  # 下行基准
+        result = run_screen(ScreenCriteria(market_filter=True), universe="us")
+        assert result["candidates"] == []
+        assert result["n_scanned"] == 0
+        assert result["market_regime"]["uptrend"] is False
+        mock_bench.assert_called_once_with("SPY.US")
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: _filter_price_position (mock)
 # ---------------------------------------------------------------------------
 
@@ -657,6 +822,39 @@ class TestFilterPricePosition:
         kept = _filter_price_position([r], criteria)
         assert len(kept) == 1
         mock_pos.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# DHQ：_filter_drawdown (mock)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterDrawdown:
+    def _make_results(self):
+        return [
+            ScreenResult("600001.SH", "深回撤", {"gross_margin": 55.0, "drawdown": None}, 50, True),
+            ScreenResult("600002.SH", "浅回撤", {"gross_margin": 55.0, "drawdown": None}, 50, True),
+            ScreenResult("600003.SH", "无数据", {"gross_margin": 55.0, "drawdown": None}, 50, True),
+        ]
+
+    @patch("screener.engine.fetch_drawdown_52w")
+    def test_filter_keeps_dislocated(self, mock_dd):
+        """只保留回撤达阈的标的；回撤写入 metrics 并重算评分。"""
+        mock_dd.side_effect = [35.0, 8.0, None]
+        criteria = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_drawdown=20)
+        kept = _filter_drawdown(self._make_results(), criteria)
+        assert [r.symbol for r in kept] == ["600001.SH"]
+        assert kept[0].metrics["drawdown"] == 35.0
+        assert kept[0].score > 0
+
+    @patch("screener.engine.fetch_drawdown_52w")
+    def test_precomputed_drawdown_not_refetched(self, mock_dd):
+        """已有 drawdown（如 yfinance 路径）不重复拉日 K。"""
+        r = ScreenResult("AAPL.US", "Apple", {"gross_margin": 45.0, "drawdown": 25.0}, 50, True)
+        criteria = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_drawdown=20)
+        kept = _filter_drawdown([r], criteria)
+        assert len(kept) == 1
+        mock_dd.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -880,3 +1078,22 @@ class TestApplyPreset:
         args = self._parse(["--preset", "monster", "--min-price-pos", "0.6"])
         assert args.min_price_pos == 0.6
         assert args.rs_filter is True  # 未显式提供的项仍用预设
+
+    def test_dhq_preset_applied(self):
+        args = self._parse(["--preset", "dhq"])
+        p = PRESETS["dhq"]
+        assert args.max_pe == p["max_pe"]
+        assert args.min_roe == 0.0           # 不卡 ROE（预设覆盖 CLI 默认的 10）
+        assert args.min_rev_growth == p["min_rev_growth"]
+        assert args.min_gross_margin == p["min_gross_margin"]
+        assert args.min_cap == p["min_cap"]
+        assert args.min_drawdown == p["min_drawdown"]
+        # 未在预设中的项保持 CLI 默认：不启用位置/大势维度
+        assert args.max_price_pos == 0.0
+        assert args.market_filter is False
+
+    def test_dhq_explicit_override(self):
+        """显式参数 > 预设：收紧回撤阈值到 30%（书中加仓区上沿）。"""
+        args = self._parse(["--preset", "dhq", "--min-drawdown", "30"])
+        assert args.min_drawdown == 30.0
+        assert args.min_gross_margin == PRESETS["dhq"]["min_gross_margin"]  # 未显式提供的项仍用预设

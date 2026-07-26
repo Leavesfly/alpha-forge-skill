@@ -46,7 +46,11 @@
 
 ### Q: 缓存文件放在哪里？可以删吗？
 
-项目根 `.cache/`（已在 `.gitignore`）。可随时整目录删除，下次运行自动重建；`ALPHA_FORGE_CACHE_DIR` 可改位置。
+三级优先：`ALPHA_FORGE_CACHE_DIR` > 项目根旧 `.cache/klines`（存在且非空时沿用，老用户零迁移）> `~/.alpha-forge/klines`（新默认，与 skill 目录解耦，重装/更新 skill 不丢数据）。可随时整目录删除，下次运行自动重建；实际生效目录用 `run_list.py --doctor` 查看。
+
+### Q: 全市场扫描太慢 / 能不能离线用？
+
+先用 `run_sync.py` 批量预同步（全市场 `--universe CN_Equity_A`，指定标的 `--symbols`），之后扫描/回测直接命中本地缓存；再设 `ALPHA_FORGE_OFFLINE=1` 可完全离线（只读缓存不联网，无缓存的标的报错并提示先同步）。
 
 ### Q: 评分结论总是「回避」，是不是坏了？
 

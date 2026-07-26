@@ -48,6 +48,9 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
 | "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |
+| "帮我找打折的高质量股 / 高增长科技股回调机会 / 错杀的好公司" | `run_screener.py --preset dhq --json` | 打折高质量候选（马哈尼《高增长科技股投资法》标准：营收增速20%++高毛利+已具规模+自高点回撤≥20%）；须声明回撤本身不是买入理由，需确认回撤非基本面恶化（营收失速即双杀），建议接 run_canslim 验证盈利质量 |
+| "帮我找超级强势股 / 便宜的爆发成长股 / 斯泰恩那种100倍强势股" | `run_screener.py --preset superstock --json` | 超级强势股候选（斯泰恩《100倍超级强势股》标准：PE<10+盈利爆发且营收驱动+低杠杆+小市值+突破形态+量价吸筹）；低 PE 与高增速合流极罕见，空结果属正常；须声明内部人买入信号需人工核查增持/回购公告补位，建议接 run_canslim 验证盈利持续性 + run_score 生成含止损交易计划 |
+| "在美股里帮我筛 / 扫一遍美股市场 / 美股全市场找低估值" | `run_screener.py --universe us [--preset <方案>] --json` | 美股全市场候选（东财免费快照 ~13000 只→yfinance 逐只核查，快照不可用时降级 S&P 500 名单）；须提醒市值阈值单位变为亿美元（预设按人民币标定，建议显式覆盖如 --max-cap 20）且 Phase 2 逐只较慢（建议阈值压到百只量级） |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
@@ -60,6 +63,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “拉一下 XX 的行情/K 线/财务” | 直接用 TickFlow SDK（见 [references/data-fetching.md](references/data-fetching.md)） | 数据口径（复权/周期） |
 | “出个报告给我” | 在对应命令加 `--report`（HTML）或 `--plot`（图） | 文件路径（outputs/ 下） |
 | “帮我看看今天整体情况 / 出个总览” | `run_dashboard.py`（可加 `--symbols` 附信号） | Dashboard HTML 路径 + 风控提示摘要 |
+| “把数据先同步到本地 / 我想离线用 / 全市场扫描太慢” | `run_sync.py --universe CN_Equity_A --json`（美股池用 `--universe US_Equity`，指定标的用 `--symbols`） | 成功/失败数量与缓存目录；同步后可设 `ALPHA_FORGE_OFFLINE=1` 完全离线研究；筛选器快照/名单/基本面指标也本地优先（TTL 内重复筛选秒级完成，限流时自动回退陈旧缓存） |
 | “你有哪些功能 / 都能做什么 / 功能列表” | 不执行命令，按「功能总览话术」分门别类介绍（见下） | 七大类能力 + 每类一句话 + 邀请用户选一个试试 |
 | 命令报错 / 环境不确定 | `run_list.py --doctor`；再查 [references/faq.md](references/faq.md) | 失败项与修复建议 |
 
@@ -241,7 +245,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
 | 单股买点三灯 | `run_score.py` 价/势/时三维亮灯 + 决策矩阵结论 + 交易计划与建议仓位；估值分位默认拉取（`--no-valuation` 跳过）、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量三灯（仅势/时维度），达标/降级分列 | scoring.md |
-| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准） | scoring.md |
+| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
 | 持仓登记与体检 | `run_account.py --set` 登记，run_score/run_scan 自动联动 | scoring.md |
 | 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>`，run_score 建议仓位因人而异 | scoring.md |
@@ -270,7 +274,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 
 - 数据获取与回测脚本均在 `scripts/` 目录下用 `uv run python` 运行，首次需 `uv sync`。
 - 回测结果不代表未来收益，参数寻优存在过拟合风险；判断策略真伪以样本外/DSR/PBO 为准（`run_validate.py`），任何策略**夏普比率 > 3 应优先怀疑**数据泄露或过拟合。
-- K 线本地缓存与增量更新、数据源自动兜底（baostock/akshare/yfinance）、网络重试及 `ALPHA_FORGE_*` 环境变量详见 [references/data-fetching.md](references/data-fetching.md) 与 [references/faq.md](references/faq.md)。
+- K 线本地缓存与增量更新、数据源自动兜底（baostock/akshare/yfinance）、网络重试及 `ALPHA_FORGE_*` 环境变量详见 [references/data-fetching.md](references/data-fetching.md) 与 [references/faq.md](references/faq.md)；全市场批量研究前可用 `run_sync.py` 预同步，配合 `ALPHA_FORGE_OFFLINE=1` 离线使用（缓存默认在 `~/.alpha-forge/klines`，重装 skill 不丢）。
 - 机器学习依赖 lightgbm/scikit-learn（`uv sync` 自动装）；macOS 报 `libomp.dylib` 错误时 `brew install libomp` 或改用 `--model ridge`，详见 faq.md。
 - 新闻情绪与事件风险标注采用 **agent-in-the-loop**：脚本抓素材生成模板 → agent（LLM）逐条打分写回 CSV → 脚本回传使用；无 agent 时有词典兜底（质量有限）。
 - `run_signal.py` / `run_paper.py` 仅输出信号与纸面记账，**不做任何自动化下单或券商对接**；全部输出仅供研究参考，不构成投资建议。

@@ -44,6 +44,7 @@ CLI_COMMANDS = [
     "run_dashboard.py",
     "run_list.py",
     "run_verify.py",
+    "run_sync.py",
 ]
 
 

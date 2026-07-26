@@ -386,6 +386,33 @@ uv run python run_screener.py --symbols AAPL.US,00700.HK,600519.SH --json
 uv run python run_screener.py --sort roe --top 20
 ```
 
+### 美股全市场扫描（`--universe us`）
+
+不想手动给名单时，可用 `--universe us` 扫全部美股（与 `--symbols` 互斥）：
+
+- **Phase 1**：东财免费快照（~13000 只，无需 API Key，逐页限速重试，本地缓存
+  1 天——重复筛选不再重拉，限流时回退陈旧缓存）批量过滤 PE/PB/市值；
+  快照与缓存都不可用时自动降级 **S&P 500 成分股名单**（Wikipedia，缓存 7 天）。
+- **Phase 2**：存活标的 yfinance 逐只深度核查（ROE/负债/增速/毛利/位置/回撤等
+  全部维度），较慢——建议用 PE/市值阈值把 Phase 1 存活数压到百只量级。
+- 启用猛兽股技术维度时基准自动用 SPY（含 `--market-filter` 大势前置检查）。
+
+两个口径差异必须知道：
+
+- **市值阈值单位变为亿美元**（A 股模式为亿人民币）。预设的市值阈值按
+  人民币标定，美股使用预设时建议显式覆盖（如 superstock 书中口径
+  `--min-cap 0.5 --max-cap 20`）。
+- 聪明增长（`--smart-growth`）依赖资产增速数据，仅 A 股支持，美股会因
+  数据缺失被剔除。
+
+```bash
+# 美股全市场低 PE 小盘（市值 5~100 亿美元）
+uv run python run_screener.py --universe us --max-pe 10 --min-cap 5 --max-cap 100
+
+# 美股全市场超级强势股（斯泰恩书中原味：微小盘口径显式覆盖市值）
+uv run python run_screener.py --universe us --preset superstock --min-cap 0.5 --max-cap 20 --json
+```
+
 ### 估值历史分位增强（`--valuation-pct`）
 
 绝对阈值（PE<20）无法区分行业差异。启用估值分位增强后，对通过初筛的候选标的
@@ -504,6 +531,87 @@ uv run python run_screener.py --min-growth 25 --min-price-pos 0.75 --trend-filte
 猛兽股典型工作流：
 `run_screener.py --preset monster`（右侧强势初筛）→ `run_score.py --symbol <候选>`
 （买点三灯 + 含止损位的交易计划）→ `run_backtest.py --strategy supertrend`（趋势策略验证，让利润奔跑）。
+
+### 打折的高质量股预设（`--preset dhq`）
+
+取自马克·马哈尼《高增长科技股投资法》（*Nothing But Net*, 2021）的核心策略：
+猎取 DHQ（Dislocated High-Quality，错位/打折的高质量股）——只在高质量公司
+打折时买入，不把精力浪费在质量不佳的企业。阈值按 A 股口径本土化：
+
+| 书中标准 | 预设阈值 | 落地口径 |
+| --- | --- | --- |
+| 高增长：营收增速 20%+（收入驱动） | `min_rev_growth=20` | 盈利来源中收入增长最优，降本式增长靠不住 |
+| 优秀财务特征：毛利率 60%+ | `min_gross_margin=40` | 定价权信号，按 A 股科技口径放宽到 40% |
+| 高质量：已验证的行业领导者 | `min_cap=100` 亿 | 防小盘故事股（书中：Groupon/Snap 不算高质量） |
+| 折扣：自高点回撤 20%~30% 加仓区 | `min_drawdown=20` | 自 52 周高点回撤 ≥20% 才保留，回撤越深评分越高 |
+| 不看传统估值（书中经验 9） | 不卡 PE/PB/ROE | 高增长期利润被创新投入压低（奈飞式），收入增速才是领先指标 |
+
+与其他预设的定位差异：multibagger 是便宜左侧（不择质，只择便宜），dhq 是
+**高质量回调**（先择质再等折扣）；与 monster（追强）口径相反，dhq 买的正是
+强势股的回撤期，故不择大势（回调多发生在弱市，弱市才有折扣）。
+回撤维度需逐只拉日 K（较慢）；`--min-drawdown` 与位置口径可叠加但无必要。
+
+```bash
+# 打折的高质量股筛选 + JSON 输出
+uv run python run_screener.py --preset dhq --json
+
+# 收紧折扣阈值到 30%（书中加仓区上沿，显式参数覆盖预设）
+uv run python run_screener.py --preset dhq --min-drawdown 30
+
+# 按书中美股口径抽查持有的科技股（毛利 60%+）
+uv run python run_screener.py --symbols AAPL.US,MSFT.US --min-rev-growth 20 --min-gross-margin 60 --min-drawdown 20 --max-pe 0 --max-pb 0 --min-roe 0
+```
+
+> 转述时不可省略：回撤本身**不是买入理由**，须确认回撤来自市场情绪而非
+> 基本面恶化——书中反复强调营收增速失速即「双杀」（增速与估值同时下修）；
+> 单期财报口径有滞后，毛利率阈值按 A 股口径放宽，未经 A 股样本外验证。
+
+DHQ 典型工作流：
+`run_screener.py --preset dhq`（打折高质量初筛）→ `run_canslim.py --symbols <候选>`
+（验证盈利质量与持续性，排除基本面恶化的假折扣）→ `run_portfolio.py`（组合持有，书中：专注极少数高质量公司）。
+
+### 超级强势股预设（`--preset superstock`）
+
+取自杰西·斯泰恩《100倍超级强势股》（*Insider Buy Superstocks*, 2013）：作者
+28 个月将 4.8 万美元做到 680 万美元的实盘方法——只买基本面与技术面同时满足
+最高标准的"合流"标的，阈值按 A 股口径本土化：
+
+| 书中标准 | 预设阈值 | 落地口径 |
+| --- | --- | --- |
+| PE<10：低估值锁死成长股下行风险 | `max_pe=10` | 与高增速合流极罕见，是该预设最严的一刀 |
+| 爆发且可持续的盈利（blockbuster earnings） | `min_growth=40, min_rev_growth=20` | 利润大增且由营收驱动，防一次性收益 |
+| 无负债 | `max_debt=50` | A 股口径放宽为负债率<50% |
+| 低流通盘/小市值（市值<1 亿美元，股价 $4~15） | `min_cap=15, max_cap=100` 亿 | 无流通盘维度，用总市值代理；下限防壳股 |
+| 坠实底部后周线巨量突破、陡峭上攻 | `min_price_pos=0.5` | 52 周区间上半部：已启动但不追新高（突破后回踩买） |
+| 神奇支撑线：沿 10 周线上行 | `trend_filter=True` | 收盘 > MA50 且 MA50 > MA200（10 周线≈MA50） |
+| 突破放量、回调缩量（light and tight） | `min_updown_vol=1.2` | 近 50 日上涨日均量/下跌日均量 ≥ 1.2 |
+| 内部人士公开市场买入（书名核心信号） | 无数据维度 | 无 A 股等价数据源，须人工核查大股东/高管增持与回购公告 |
+
+与其他预设的定位差异：monster 追接近新高的强势不看估值，hundredbagger 要高
+ROE 不要求便宜，superstock 要求**便宜的爆发成长**（低 PE 与高增速的罕见合流），
+条件最严、候选最少，空结果属正常（书中纪律：条件不全部满足就等待）。
+技术面维度需逐只拉日 K（较慢）。
+
+```bash
+# 超级强势股筛选 + JSON 输出
+uv run python run_screener.py --preset superstock --json
+
+# 强市叠加大势确认（书中：市场条件也要对你有利）
+uv run python run_screener.py --preset superstock --market-filter
+
+# 盈利爆发阈值放宽到 30%（显式参数覆盖预设）
+uv run python run_screener.py --preset superstock --min-growth 30
+```
+
+> 转述时不可省略：这是作者个人实盘经验的规则化近似，**不是收益预测**，
+> 其业绩有强运气与幸存者偏差成分；书名核心信号"内部人士买入"无法自动化，
+> 必须人工补位；小市值+高增速标的波动大，买强势股须带止损（书中：跌破
+> 10 周线即退出）；阈值源于美股经验未经 A 股样本外验证。
+
+超级强势股典型工作流：
+`run_screener.py --preset superstock`（合流初筛）→ 人工核查增持/回购公告（补位
+内部人信号）→ `run_canslim.py --symbols <候选>`（验证盈利爆发可持续性）→
+`run_score.py --symbol <候选>`（买点三灯 + 含止损位的交易计划）。
 
 典型工作流：
 `run_screener.py`（发现低估候选）→ `run_score.py`（技术面复核）→ `run_paper.py --mode score`（纸面跟踪）。
