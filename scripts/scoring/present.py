@@ -74,6 +74,16 @@ def print_score_report(
             for trig in triggers:
                 log(f"  · {trig}")
 
+    if result.left_plan is not None:
+        lp = result.left_plan
+        log("--- 左侧分批计划（价深绿且无硬伤；分批纪律，不是抄底信号） ---")
+        log(f"依据          : {lp['reason']}")
+        log(f"方式          : {lp['approach']}")
+        log(f"仓位约束      : {lp['position_cap']}")
+        for cond in lp.get("stop_conditions", []):
+            log(f"停止条件      : {cond}")
+        log(f"执行参考      : {lp['suggested_command']}")
+
     if result.position is not None:
         log("--- 持仓状态 ---")
         pos = result.position

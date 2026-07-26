@@ -55,6 +55,11 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   书中核心定性项（管理层质量、"闲聊法"调研、9 条并购原则）无数据源，须
   人工尽调补位。与 hundredbagger（同为质量成长）的差异：fisher 强调研发
   引擎与利润率，不卡小市值（成熟成长公司也可）。
+- dividend：红利股左侧筛选：高股息(股息率>3%) + 低估值(PE<15, PB<2) +
+  PE/PB 历史分位低于 50%(防周期盈利顶部假低估) + 分红纪律(连续分红≥5年，
+  仅 A 股有数据) + 财务稳健(ROE>8%，负债<60%)。红利股的买点常在下跌途中
+  （左侧），但越跌越买须防价值陷阱（分红削减/基本面恶化）：建议对候选
+  接 run_score 复核硬伤，左侧建仓用 run_dca（smart/dip）分批而非一次性抄底。
 
 筛选基于公开财务快照，不构成投资建议；数据为最近报告期，存在滞后。
 
@@ -87,6 +92,9 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 
     # 成长质量筛选（营收+研发驱动的真成长+高利润率+高效再投资，费雪书中标准）
     uv run python run_screener.py --preset fisher
+
+    # 红利股左侧筛选（高股息+低估值+低分位+连续分红+财务稳健；候选接 run_dca 分批）
+    uv run python run_screener.py --preset dividend
 
     # 十倍股预设 + 局部调整（显式参数覆盖预设：放宽市值上限到 300 亿）
     uv run python run_screener.py --preset multibagger --max-cap 300
@@ -150,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 预设方案
     parser.add_argument(
         "--preset", default=None, choices=sorted(PRESETS),
-        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；fisher=成长质量（营收/利润双高增+研发强度+高毛利+高效再投资+合理价格，费雪书中标准）；显式参数可覆盖预设项",
+        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；fisher=成长质量（营收/利润双高增+研发强度+高毛利+高效再投资+合理价格，费雪书中标准）；dividend=红利股左侧（股息率>3%%+PE/PB低且历史分位<50%%+连续分红≥5年+ROE>8%%+负债<60%%，候选接 run_dca 分批建仓）；显式参数可覆盖预设项",
     )
 
     # 阈值参数
@@ -159,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-roe", type=float, default=10.0, help="ROE 下限(%%)，默认 10（0=不限）")
     parser.add_argument("--max-debt", type=float, default=70.0, help="资产负债率上限(%%)，默认 70（会剔除银行/保险等高杠杆金融股，0=不限）")
     parser.add_argument("--min-div", type=float, default=0.0, help="股息率下限(%%)，默认 0（0=不限）")
+    parser.add_argument("--min-div-years", type=int, default=0, help="连续分红年数下限，默认 0=不限（红利股分红纪律；仅 A 股有数据，启用时逐只拉分红历史较慢，非 A 股按数据缺失剔除）")
     parser.add_argument("--min-growth", type=float, default=0.0, help="净利润增速下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-rev-growth", type=float, default=0.0, help="营收增速下限(%%)，默认 0（0=不限；百倍股标准：增长须由营收驱动）")
     parser.add_argument("--min-gross-margin", type=float, default=0.0, help="毛利率下限(%%)，默认 0=不限（DHQ 标准：高毛利=定价权与规模效应信号）")
@@ -194,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--valuation-lookback", type=int, default=5,
         help="估值分位回看年数，默认 5",
     )
+    parser.add_argument(
+        "--max-val-pct", type=float, default=0.0,
+        help="PE/PB 历史分位均值上限(0~1)，默认 0=不限；如 0.5=只要分位低于 50%%（硬条件而非加分，防周期盈利顶部假低估；启用时自动拉取估值历史分位较慢，分位缺失按数据缺失剔除）",
+    )
     add_json_arg(parser)
     return parser
 
@@ -225,6 +238,7 @@ def main() -> None:
         min_roe=args.min_roe,
         max_debt=args.max_debt,
         min_div=args.min_div,
+        min_div_years=args.min_div_years,
         min_growth=args.min_growth,
         min_rev_growth=args.min_rev_growth,
         min_gross_margin=args.min_gross_margin,
@@ -240,6 +254,7 @@ def main() -> None:
         rs_filter=args.rs_filter,
         min_updown_vol=args.min_updown_vol,
         market_filter=args.market_filter,
+        max_val_pct=args.max_val_pct,
         use_valuation_pct=args.valuation_pct,
         valuation_lookback=args.valuation_lookback,
     )
@@ -300,6 +315,7 @@ def main() -> None:
             rev_str = f"营收 {item['revenue_growth']:+.0f}%" if item.get("revenue_growth") else ""
             gross_str = f"毛利 {item['gross_margin']:.0f}%" if item.get("gross_margin") else ""
             rd_str = f"研发 {item['rd_ratio']:.1f}%" if item.get("rd_ratio") is not None else ""
+            divy_str = f"连续分红 {item['div_years']}年" if item.get("div_years") is not None else ""
             cash_str = f"现金流 {item['cash_yield']:.1f}%" if item.get("cash_yield") else ""
             pos_str = f"52周位置 {item['price_pos']:.0%}" if item.get("price_pos") is not None else ""
             dd_str = f"回撤 {item['drawdown']:.0f}%" if item.get("drawdown") is not None else ""
@@ -319,7 +335,7 @@ def main() -> None:
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {rev_str}  {gross_str}  {rd_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {divy_str}  {growth_str}  {rev_str}  {gross_str}  {rd_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
             )
     elif market_info is not None and not market_info["uptrend"]:
         log("（本次未筛选：大势未确认上行。《猛兽股》纪律为大势不对不买，等基准重新站上 MA50/MA200 后再筛。）")
@@ -352,6 +368,11 @@ def main() -> None:
             "书中核心定性项——管理层质量、‘闲聊法’调研、9 条并购原则——无数据源，"
             "须人工尽调补位；卖出遵循书中三理由（基本面恶化/当初判断错误/有更好标的），"
             "不因大盘恐慌卖出好公司；单期同比增速有滑头，建议接 run_canslim.py 验证盈利持续性。")
+    if args.preset == "dividend":
+        log("提示：dividend 是红利股左侧筛选，不是收益预测；股息率为快照静态口径，"
+            "高股息可能来自股价大跌（价值陷阱：分红削减/盈利恶化会双杀）；"
+            "左侧建仓应分批而非一次性抄底：建议先接 run_score.py 复核硬伤与估值深度"
+            "（价灯深绿且无硬伤时会输出左侧分批计划），再用 run_dca.py --mode smart/dip 分批。")
     if criteria.max_debt > 0:
         log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
     if not criteria.use_valuation_pct:
@@ -373,6 +394,12 @@ def main() -> None:
             log,
             "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（验证盈利爆发的可持续性）",
             "对候选做买点三灯并生成含止损位的交易计划 run_score.py --symbol <代码>（书中：缩量收紧至 10 周线附近再买）",
+        )
+    elif args.preset == "dividend":
+        log_next_steps(
+            log,
+            "对候选做买点三灯复核 run_score.py --symbol <代码>（硬伤否决+估值深度；价灯深绿且无硬伤时输出左侧分批计划）",
+            "左侧分批建仓 run_dca.py --symbol <代码> --mode smart --dividends auto（越便宜投越多，含分红建模）",
         )
     else:
         log_next_steps(
@@ -415,6 +442,13 @@ def main() -> None:
                 {"action": "score", "reason": "对候选做买点三灯并生成含止损位的交易计划（书中：跌破 10 周线即退出）",
                  "command": "run_score.py --symbol <代码> --json"},
             )
+        elif args.preset == "dividend":
+            next_steps = build_next_steps(
+                {"action": "score", "reason": "对候选做买点三灯复核：硬伤否决+估值深度，价灯深绿且无硬伤时输出左侧分批计划",
+                 "command": "run_score.py --symbol <代码> --json"},
+                {"action": "dca", "reason": "左侧分批建仓（越便宜投越多，含分红建模），不做一次性抄底",
+                 "command": "run_dca.py --symbol <代码> --mode smart --dividends auto --json"},
+            )
         else:
             next_steps = build_next_steps(
                 {"action": "score", "reason": "对达标候选做技术面买点三灯复核",
@@ -453,6 +487,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"负债<{criteria.max_debt:.0f}%")
     if criteria.min_div > 0:
         parts.append(f"股息>{criteria.min_div:.1f}%")
+    if criteria.min_div_years > 0:
+        parts.append(f"连续分红≥{criteria.min_div_years}年")
     if criteria.min_growth > 0:
         parts.append(f"增速>{criteria.min_growth:.0f}%")
     if criteria.min_rev_growth > 0:
@@ -483,6 +519,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"上涨/下跌量比>{criteria.min_updown_vol:.1f}")
     if criteria.market_filter:
         parts.append("大势确认(基准站上MA50/MA200)")
+    if criteria.max_val_pct > 0:
+        parts.append(f"PE/PB历史分位<{criteria.max_val_pct:.0%}")
     if criteria.use_valuation_pct:
         parts.append(f"估值分位增强(近{criteria.valuation_lookback}年)")
     return "、".join(parts) if parts else "无限制"

@@ -316,17 +316,23 @@ def _build_json_payload(args, result, regime, bench_symbol, replay_payload, cali
     plan_str = ""
     if result.plan:
         plan_str = f"参考计划：入场 {result.plan.get('entry')} / 止损 {result.plan.get('stop')}。"
+    left_str = ""
+    if result.left_plan:
+        left_str = "价灯深绿且无硬伤，已附左侧分批计划（引导 DCA 分批，不做一次性抄底）。"
     rule = result.decision.get("rule", "")
     rule_str = f"（{rule}）" if rule else ""
     summary = (
         f"{args.symbol} 买点三灯：{result.lights_summary} → {result.verdict_cn}{rule_str}。"
-        f"{plan_str}"
+        f"{plan_str}{left_str}"
         f"三灯是纪律过滤而非涨跌预测，不构成投资建议。"
     )
     next_steps = build_next_steps(
         {"action": "paper", "reason": "结论非回避，按三灯裁决每日纸面跟踪",
          "condition": "verdict != avoid",
          "command": f"run_paper.py --symbol {args.symbol} --mode score --json"},
+        {"action": "dca", "reason": "左侧观察且价灯深绿：用定投分批建仓替代一次性抄底（见 left_plan）",
+         "condition": "left_plan != null",
+         "command": (result.left_plan or {}).get("suggested_command", f"run_dca.py --symbol {args.symbol} --mode smart") + " --json"},
         {"action": "replay", "reason": "回放验证三灯规则有效性（仅势/时维度）",
          "command": f"run_score.py --symbol {args.symbol} --replay 120 --json"},
         {"action": "backtest", "reason": "用策略回测验证历史表现",

@@ -14,7 +14,8 @@
 
 - 势绿+时绿 → 「趋势买点」（价红非硬伤时降为「纯趋势仓」，强制估值警示）；
 - 势绿+时非绿 → 「等回踩」（给回踩参考位）；
-- 价绿+势弱 → 「左侧观察」（进观察名单，给触发条件，不抄底）；
+- 价绿+势弱 → 「左侧观察」（进观察名单，给触发条件，不抄底；价灯深绿
+  且无硬伤时附「左侧分批计划」，引导 DCA 分批而非一次性抄底）；
 - 价硬伤红 → 「回避」（一票否决）；势弱且价无吸引力 → 「回避」；
 - 持仓且势红/价硬伤 → 「持仓需减风险」（不等待回本）。
 
@@ -70,6 +71,9 @@ TREND_RED = 45.0
 VAL_GREEN = 0.4
 VAL_RED = 0.7
 
+#: 价灯「深绿」阈值：分位均值 ≤0.25 才够便宜，左侧观察附分批计划（引导 DCA）
+VAL_DEEP = 0.25
+
 #: 波动率缩放因子边界（动态阈值）
 VOL_K_MIN = 0.8
 VOL_K_MAX = 1.4
@@ -108,6 +112,7 @@ class ScoreResult:
     position: dict | None = None  # 持仓联动（只改操作建议）
     risk_events: list[dict] = field(default_factory=list)  # 触发的风险事件
     evidence: list[dict] = field(default_factory=list)  # 结构化证据链（Agent 可引用）
+    left_plan: dict | None = None  # 左侧分批计划（仅左侧观察且价深绿+无硬伤）
 
     @property
     def verdict_cn(self) -> str:
@@ -139,6 +144,7 @@ class ScoreResult:
             "n_bars": self.n_bars,
             "position": self.position,
             "risk_events": self.risk_events,
+            "left_plan": self.left_plan,
         }
 
 
@@ -230,6 +236,11 @@ def score_symbol(
             position, close, atr14, verdict, value_light, trend_light
         )
 
+    # ---------- 左侧分批计划（仅左侧观察且价深绿+无硬伤，引导 DCA） ----------
+    left_plan = None
+    if verdict == "left_watch":
+        left_plan = _left_side_plan(value_light, decision, symbol)
+
     snapshot["close"] = series_last(close)
     snapshot["vol_k"] = round(vol_k, 3)
 
@@ -253,6 +264,7 @@ def score_symbol(
         position=position_out,
         risk_events=triggered_events,
         evidence=evidence,
+        left_plan=left_plan,
     )
 
 
@@ -681,6 +693,39 @@ def _watch_triggers(trend: dict) -> list[str]:
     if detail.get("bench_risk_off"):
         triggers.append("基准收复其 MA200（大盘转多）")
     return triggers
+
+
+# ---------------------------------------------------------------- 左侧分批计划
+
+
+def _left_side_plan(value: dict, decision: dict, symbol: str) -> dict | None:
+    """左侧观察的分批计划：价深绿 + 无硬伤时引导 DCA 分批，不改「不抄底」纪律。
+
+    左侧不预测底部价格，用时间分批（定投）替代价格网格：越便宜投越多由
+    run_dca 的 smart/dip 模式执行；由盈转亏、硬伤或估值修复到中枢即停止加码。
+    不满足深绿/无硬伤条件时返回 None（仍只进观察名单）。
+    """
+    detail = value.get("detail", {})
+    val_avg = detail.get("valuation_avg")
+    if val_avg is None or val_avg > VAL_DEEP:
+        return None
+    if detail.get("hard_flaw") or detail.get("profit_to_loss"):
+        return None
+    sym = symbol or "<代码>"
+    dca_cmd = f"run_dca.py --symbol {sym} --mode smart"
+    if sym.upper().endswith((".SH", ".SZ", ".BJ")):
+        dca_cmd += " --dividends auto"  # A 股可显式建模分红（红利股收益大头）
+    return {
+        "reason": f"估值分位均值 {val_avg:.0%} ≤ {VAL_DEEP:.0%}（价灯深绿）且基本面无硬伤",
+        "approach": "时间分批（DCA）替代一次性抄底：左侧不预测底部，用纪律分批摊低成本",
+        "position_cap": "左侧累计仓位建议不超过目标仓位的一半，剩余等趋势修复（右侧触发条件满足）再加",
+        "stop_conditions": [
+            "出现基本面硬伤（ST/连续亏损/资不抵债）或分红大幅削减：立即停止加码并离场",
+            f"估值分位回升至 {VAL_GREEN:.0%} 以上（修复到中枢）：停止加码，改按右侧触发条件评估",
+        ],
+        "right_side_triggers": decision.get("triggers", []),
+        "suggested_command": dca_cmd,
+    }
 
 
 # ---------------------------------------------------------------- 持仓联动

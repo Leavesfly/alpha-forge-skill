@@ -1,6 +1,6 @@
 ---
 name: alpha-forge-skill
-description: A股/港股/美股量化研究与交易辅助：行情/财务数据获取、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、买点三灯决策（价·势·时三维判断能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、每日信号与模拟盘、统一持仓账户。对话式触发："XX现在能买吗""持仓该不该卖""买多少合适""帮我回测/调参/做组合/定投""最近有什么值得买的""有没有低估值的股票""这只股符不符合CAN SLIM""每天帮我盯盘"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
+description: A股/港股/美股量化研究与交易辅助：行情/财务数据获取、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、买点三灯决策（价·势·时三维判断能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、红利股左侧分批、每日信号与模拟盘、统一持仓账户。对话式触发："XX现在能买吗""持仓该不该卖""买多少合适""帮我回测/调参/做组合/定投""最近有什么值得买的""有没有低估值的股票""红利股能不能越跌越买""这只股符不符合CAN SLIM""每天帮我盯盘"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
@@ -45,6 +45,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万” | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
 | "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；扫描仅覆盖势/时维度（价灯未评估），建议对入选者再跑 run_score 补全价维度复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
+| "红利股能不能越跌越买 / 帮我找高股息的分批买 / 股息率高又便宜的" | 三步链路：`run_screener.py --preset dividend --json` 筛候选 → 对候选 `run_score.py --symbol <代码> --json` 复核硬伤与估值深度 → 价灯深绿且无硬伤时按其 left_plan 用 `run_dca.py --symbol <代码> --mode smart --dividends auto --json` 分批 | 红利候选（股息率/连续分红年数/估值分位）；须声明个股越跌越买有价值陷阱风险（分红削减/基本面恶化双杀），左侧建仓应分批（DCA）而非一次性抄底，且左侧仓位建议不超目标仓位一半（剩余等趋势修复再加） |
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
 | "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |
@@ -103,7 +104,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | 类别 | 白话介绍（转述给用户） |
 |------|----------------------|
 | 🎯 买卖决策 | 一只股票**现在能不能买、持仓该不该卖、买多少合适**：买点三灯（价·势·时各亮绿黄红灯）给出结论 + 交易计划与建议仓位；还能按 CAN SLIM 七项法则逐条核查 |
-| 🔍 选股筛选 | **全市场找机会**：低估值/高分红筛选、潜在十倍股/百倍股/猛兽股预设筛选、多因子打分选股、自选池批量扫描 |
+| 🔍 选股筛选 | **全市场找机会**：低估值/高分红筛选、红利股左侧分批筛选、潜在十倍股/百倍股/猛兽股预设筛选、多因子打分选股、自选池批量扫描 |
 | 📊 策略回测 | **验证想法靠不靠谱**：14 个内置策略回测与一键对比、用自然语言自定义策略规则、参数寻优 + 过拟合检验（样本外/DSR/PBO）、压力测试 |
 | 💼 组合管理 | **多只股票怎么配**：动量轮动、等权/风险平价/HRP 等组合优化、风险归因、配对交易套利 |
 | 🤖 智能与另类 | 机器学习走步预测方向、新闻情绪打分并回测情绪信号 |
@@ -246,7 +247,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
 | 单股买点三灯 | `run_score.py` 价/势/时三维亮灯 + 决策矩阵结论 + 交易计划与建议仓位；估值分位默认拉取（`--no-valuation` 跳过）、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量三灯（仅势/时维度），达标/降级分列 | scoring.md |
-| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准），`--preset fisher` 成长质量（费雪《费雪论成长股获利》标准：营收+研发驱动） | scoring.md |
+| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准），`--preset fisher` 成长质量（费雪《费雪论成长股获利》标准：营收+研发驱动），`--preset dividend` 红利股左侧（高股息+低估值+低分位+连续分红，候选接 run_dca 分批建仓） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
 | 持仓登记与体检 | `run_account.py --set` 登记，run_score/run_scan 自动联动 | scoring.md |
 | 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>`，run_score 建议仓位因人而异 | scoring.md |

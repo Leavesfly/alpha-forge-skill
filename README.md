@@ -368,6 +368,7 @@ uv run python run_score.py --symbol 600000.SH --json
 | "我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万" | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
 | "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/未达标分列；扫描仅覆盖势/时维度，建议对入选者再跑 run_score 补全价维度复核 |
 | "有没有低估值的股票 / 高分红的 / 便宜又好的" | `run_screener.py --json`（A 股全市场默认）或 `--symbols <列表>`（港美股） | 达标候选排名 + 关键估值指标；建议对候选跑 run_score 做技术面复核 |
+| "红利股能不能越跌越买 / 帮我找高股息的分批买" | `run_screener.py --preset dividend --json` 筛候选 → `run_score.py --symbol <代码> --json` 复核硬伤与估值深度 → 价灯深绿且无硬伤时按 left_plan 用 `run_dca.py --mode smart --dividends auto` 分批 | 红利候选（股息率/连续分红年数/估值分位）；须声明个股越跌越买有价值陷阱风险（分红削减/基本面恶化），左侧建仓应分批（DCA）而非一次性抄底 |
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
 | "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |

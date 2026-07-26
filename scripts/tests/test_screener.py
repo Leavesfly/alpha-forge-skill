@@ -21,9 +21,11 @@ from screener.engine import (
     _check_detail_criteria,
     _check_tech_criteria,
     _code_to_symbol,
+    _filter_dividend_years,
     _filter_drawdown,
     _filter_monster_tech,
     _filter_price_position,
+    _filter_valuation_pct,
     _sort_results,
     screen_astock_phase1,
     screen_astock_phase2,
@@ -112,6 +114,19 @@ class TestScreenCriteria:
         assert d["min_rd_ratio"] == 3.0
         assert "min_rd_ratio" not in ScreenCriteria().to_dict()
 
+    def test_to_dict_dividend_dims(self):
+        """红利股维度：连续分红/分位上限默认不启用；分位上限隐含启用分位拉取。"""
+        assert ScreenCriteria().min_div_years == 0
+        assert ScreenCriteria().max_val_pct == 0.0
+        c = ScreenCriteria(min_div_years=5, max_val_pct=0.5)
+        d = c.to_dict()
+        assert d["min_div_years"] == 5
+        assert d["max_val_pct"] == 0.5
+        assert d["use_valuation_pct"] is True
+        d2 = ScreenCriteria().to_dict()
+        assert "min_div_years" not in d2
+        assert "max_val_pct" not in d2
+
 
 class TestPresets:
     def test_multibagger_preset_exists(self):
@@ -131,6 +146,20 @@ class TestPresets:
 
     def test_fisher_preset_exists(self):
         assert "fisher" in PRESETS
+
+    def test_dividend_preset_exists(self):
+        assert "dividend" in PRESETS
+
+    def test_dividend_preset_semantics(self):
+        """预设语义（红利股左侧）：高股息+低估值+低分位+连续分红+财务稳健。"""
+        p = PRESETS["dividend"]
+        assert p["min_div"] >= 3.0            # 高股息
+        assert 0 < p["max_pe"] <= 20.0        # 低估值
+        assert 0 < p["max_pb"] <= 2.0
+        assert 0 < p["max_val_pct"] <= 0.5    # 低分位硬条件（防周期顶部假低估）
+        assert p["min_div_years"] >= 3        # 分红纪律
+        assert p["min_roe"] > 0               # 利润支撑分红
+        assert 0 < p["max_debt"] <= 70.0      # 低杠杆，股息不靠债撑
 
     def test_preset_keys_are_criteria_fields(self):
         """预设键必须是 ScreenCriteria 字段（同时也是 CLI dest）。"""
@@ -1188,3 +1217,118 @@ class TestApplyPreset:
         args = self._parse(["--preset", "dhq", "--min-drawdown", "30"])
         assert args.min_drawdown == 30.0
         assert args.min_gross_margin == PRESETS["dhq"]["min_gross_margin"]  # 未显式提供的项仍用预设
+
+    def test_dividend_preset_applied(self):
+        args = self._parse(["--preset", "dividend"])
+        p = PRESETS["dividend"]
+        assert args.max_pe == p["max_pe"]
+        assert args.min_div == p["min_div"]
+        assert args.min_div_years == p["min_div_years"]
+        assert args.max_val_pct == p["max_val_pct"]
+        assert args.max_debt == p["max_debt"]
+        # 未在预设中的项保持 CLI 默认：不启用成长/位置/大势维度
+        assert args.min_growth == 0.0
+        assert args.max_price_pos == 0.0
+        assert args.market_filter is False
+
+    def test_dividend_explicit_override(self):
+        """显式参数 > 预设：股息率抬高到 5%、连续分红放宽到 3 年。"""
+        args = self._parse(["--preset", "dividend", "--min-div", "5", "--min-div-years", "3"])
+        assert args.min_div == 5.0
+        assert args.min_div_years == 3
+        assert args.max_val_pct == PRESETS["dividend"]["max_val_pct"]  # 未显式提供的项仍用预设
+
+
+# ---------------------------------------------------------------------------
+# 红利股：_filter_dividend_years / _filter_valuation_pct / 连续分红年数口径
+# ---------------------------------------------------------------------------
+
+
+class TestFilterDividendYears:
+    def _make_results(self):
+        return [
+            ScreenResult("600001.SH", "纪律长", {"div_yield": 5.0}, 50, True),
+            ScreenResult("600002.SH", "纪律短", {"div_yield": 4.0}, 50, True),
+            ScreenResult("00700.HK", "无数据", {"div_yield": 3.5}, 50, True),
+        ]
+
+    @patch("screener.engine.fetch_dividend_years")
+    def test_filter_keeps_long_streak(self, mock_years):
+        """只保留连续分红达阈的标的；年数写入 metrics 并重算评分，缺失剔除。"""
+        mock_years.side_effect = [8, 2, None]
+        criteria = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_div_years=5)
+        kept = _filter_dividend_years(self._make_results(), criteria)
+        assert [r.symbol for r in kept] == ["600001.SH"]
+        assert kept[0].metrics["div_years"] == 8
+        assert kept[0].score > 0
+
+
+class TestFilterValuationPct:
+    def _result(self, symbol, valuation):
+        r = ScreenResult(symbol, symbol, {"pe": 10.0}, 50, True)
+        r.valuation = valuation
+        return r
+
+    def test_low_kept_high_and_missing_dropped(self):
+        """分位均值超阈与分位缺失都剔除（低分位是硬条件，无法核查即不买）。"""
+        criteria = ScreenCriteria(max_val_pct=0.5)
+        results = [
+            self._result("600001.SH", {"pe_percentile": 0.2, "pb_percentile": 0.3}),
+            self._result("600002.SH", {"pe_percentile": 0.8, "pb_percentile": 0.9}),
+            self._result("600003.SH", None),
+        ]
+        kept = _filter_valuation_pct(results, criteria)
+        assert [r.symbol for r in kept] == ["600001.SH"]
+
+    def test_single_percentile_used_when_other_missing(self):
+        """PE/PB 只有一个分位时用可用那个判定，不按缺失剔除。"""
+        criteria = ScreenCriteria(max_val_pct=0.5)
+        r = self._result("600001.SH", {"pe_percentile": None, "pb_percentile": 0.4})
+        assert [x.symbol for x in _filter_valuation_pct([r], criteria)] == ["600001.SH"]
+
+
+class TestDividendYearsStreak:
+    """_fetch_dividend_years_remote 的连续年数口径（mock 分红序列，不依赖网络）。"""
+
+    def _series(self, years):
+        idx = pd.DatetimeIndex([pd.Timestamp(f"{y}-07-01") for y in years])
+        return pd.Series([0.5] * len(idx), index=idx)
+
+    @patch("data.dividends.fetch_dividends")
+    def test_consecutive_years_counted(self, mock_div):
+        from datetime import date
+
+        from screener.data import _fetch_dividend_years_remote
+
+        y = date.today().year
+        mock_div.return_value = self._series(range(y - 6, y + 1))
+        assert _fetch_dividend_years_remote("600001.SH")["div_years"] == 7
+
+    @patch("data.dividends.fetch_dividends")
+    def test_streak_breaks_on_gap(self, mock_div):
+        from datetime import date
+
+        from screener.data import _fetch_dividend_years_remote
+
+        y = date.today().year
+        mock_div.return_value = self._series([y, y - 1, y - 3, y - 4])
+        assert _fetch_dividend_years_remote("600001.SH")["div_years"] == 2
+
+    @patch("data.dividends.fetch_dividends")
+    def test_lapsed_streak_returns_zero(self, mock_div):
+        """最近分红早于去年 → 纪律已中断，返回 0（而非历史段长度）。"""
+        from datetime import date
+
+        from screener.data import _fetch_dividend_years_remote
+
+        y = date.today().year
+        mock_div.return_value = self._series([y - 3, y - 4])
+        assert _fetch_dividend_years_remote("600001.SH")["div_years"] == 0
+
+    @patch("data.dividends.fetch_dividends")
+    def test_fetch_failure_returns_none(self, mock_div):
+        """非 A 股/接口异常 → None（调用方按数据缺失剔除）。"""
+        from screener.data import _fetch_dividend_years_remote
+
+        mock_div.side_effect = RuntimeError("分红数据目前仅支持 A 股")
+        assert _fetch_dividend_years_remote("AAPL.US") is None

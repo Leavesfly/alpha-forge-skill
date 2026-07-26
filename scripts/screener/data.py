@@ -427,6 +427,53 @@ def fetch_astock_gross_margin(code: str) -> float | None:
 _SINA_PREFIX = {"6": "sh", "0": "sz", "3": "sz"}
 
 
+def fetch_dividend_years(symbol: str) -> int | None:
+    """A 股连续分红年数（本地优先）：自最近分红年份向前连续有现金分红的年数。
+
+    红利股分红纪律维度：数据源为东财分红送配详情（复用 ``data.dividends``，
+    无需 API Key），仅 A 股支持；仅启用该维度时逐只调用，避免全市场扫描
+    额外打接口。
+
+    Returns:
+        连续分红年数（纪律已中断返回 0）；非 A 股、接口异常或从未分红
+        返回 None（调用方按数据缺失剔除）。
+    """
+    from data.cache import load_json_obj
+
+    code = symbol.split(".")[0]
+    payload = load_json_obj(
+        lambda: _fetch_dividend_years_remote(symbol), f"astock_div_years_{code}"
+    )
+    return payload.get("div_years") if payload else None
+
+
+def _fetch_dividend_years_remote(symbol: str) -> dict | None:
+    """连续分红年数远端拉取（无缓存）：按除权除息日所属自然年逐年回数。
+
+    连续口径：从最近分红年份向前逐年回数，中断即止；年报分红多在次年
+    实施，故最近分红年份为今年或去年都算纪律未断，更早则视为已中断（返回 0）。
+    """
+    from datetime import date
+
+    from data.dividends import fetch_dividends
+
+    try:
+        series = fetch_dividends(symbol)
+    except Exception:
+        return None
+    years = sorted({ts.year for ts in series.index}, reverse=True)
+    if not years:
+        return None
+    if years[0] < date.today().year - 1:
+        return {"div_years": 0}
+    count = 1
+    for prev, cur in zip(years, years[1:]):
+        if prev - cur != 1:
+            break
+        count += 1
+    return {"div_years": count}
+
+
 def fetch_astock_rd_ratio(code: str) -> float | None:
     """A 股单标的研发强度(%)：研发费用 / 营业总收入 × 100（本地优先）。
 

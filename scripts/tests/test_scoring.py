@@ -175,6 +175,45 @@ class TestVerdictMatrix:
         assert default_benchmark("cu2501.SHF") is None
 
 
+class TestLeftPlan:
+    """左侧分批计划：仅左侧观察且价深绿+无硬伤时附 left_plan（引导 DCA）。"""
+
+    def test_deep_value_left_watch_has_left_plan(self):
+        """价深绿（分位均值 ≤25%）+ 势弱 + 无硬伤 → 附左侧分批计划。"""
+        res = score_symbol(_downtrend_df(), symbol="600001.SH", valuation=LOW_VAL)
+        assert res.verdict == "left_watch"
+        assert res.left_plan is not None
+        assert "run_dca.py" in res.left_plan["suggested_command"]
+        assert "--dividends auto" in res.left_plan["suggested_command"]  # A 股附分红建模
+        assert res.left_plan["right_side_triggers"]  # 右侧触发条件保留
+        assert res.to_dict()["left_plan"] is not None
+
+    def test_shallow_green_left_watch_no_left_plan(self):
+        """价绿但不深（25%~40%）→ 仍左侧观察，不给分批计划（不够便宜不加码）。"""
+        res = score_symbol(
+            _downtrend_df(), symbol="TEST.SH",
+            valuation={"pe_percentile": 0.30, "pb_percentile": 0.35, "source": "test"},
+        )
+        assert res.verdict == "left_watch"
+        assert res.left_plan is None
+
+    def test_non_astock_command_without_dividends(self):
+        """非 A 股的 DCA 命令不附 --dividends auto（分红数据源仅 A 股）。"""
+        res = score_symbol(_downtrend_df(), symbol="AAPL.US", valuation=LOW_VAL)
+        assert res.verdict == "left_watch"
+        assert res.left_plan is not None
+        assert "--dividends" not in res.left_plan["suggested_command"]
+
+    def test_trend_entry_has_no_left_plan(self):
+        """非左侧观察结论不附左侧计划（即使价深绿）。"""
+        res = score_symbol(
+            _uptrend_df(), symbol="TEST.SH",
+            benchmark_close=_flat_benchmark(), valuation=LOW_VAL,
+        )
+        assert res.verdict == "trend_entry"
+        assert res.left_plan is None
+
+
 class TestValueLight:
     """价灯单元测试：硬伤/由盈转亏/估值分位/灰灯。"""
 

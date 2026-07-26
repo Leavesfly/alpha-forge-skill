@@ -17,6 +17,7 @@ from .data import (
     fetch_astock_rd_ratio,
     fetch_astock_snapshot,
     fetch_benchmark_close,
+    fetch_dividend_years,
     fetch_drawdown_52w,
     fetch_price_position,
     fetch_sp500_symbols,
@@ -52,6 +53,8 @@ class ScreenCriteria:
     rs_filter: bool = False     # RS 线：加权相对强度（3/6/9/12 月）跑赢基准
     min_updown_vol: float = 0.0  # 近 50 日上涨日均量/下跌日均量下限，0=不筛（吸筹特征）
     market_filter: bool = False  # 大势确认：基准站上 MA50 与 MA200（猛兽股必要条件）
+    min_div_years: int = 0      # 连续分红年数下限，0=不筛（红利股：分红纪律，仅 A 股有数据）
+    max_val_pct: float = 0.0    # PE/PB 历史分位均值上限(0~1)，0=不筛（红利股：防周期顶部假低估）
     use_valuation_pct: bool = False  # 是否启用估值历史分位增强（逐只拉取，较慢）
     valuation_lookback: int = 5      # 估值分位回看年数
 
@@ -91,7 +94,11 @@ class ScreenCriteria:
             d["min_updown_vol"] = self.min_updown_vol
         if self.market_filter:
             d["market_filter"] = True
-        if self.use_valuation_pct:
+        if self.min_div_years > 0:
+            d["min_div_years"] = self.min_div_years
+        if self.max_val_pct > 0:
+            d["max_val_pct"] = self.max_val_pct
+        if self.use_valuation_pct or self.max_val_pct > 0:
             d["use_valuation_pct"] = True
             d["valuation_lookback"] = self.valuation_lookback
         return d
@@ -127,6 +134,11 @@ class ScreenCriteria:
 #: 定性项——管理层质量、闲聊法调研、9 条并购原则——无数据源，须人工
 #: 尽调补位。与 hundredbagger（同为质量成长）差异：fisher 强调研发引擎
 #: 与利润率，不卡小市值（成熟成长公司也可）。
+#: dividend 为红利股左侧筛选：高股息（>3%）+ 低估值（PE<15/PB<2 且 PE/PB
+#: 历史分位低于 50%，防周期顶部假低估）+ 分红纪律（连续分红 ≥5 年，仅 A 股
+#: 有数据）+ 财务稳健（ROE>8% 利润支撑分红、负债<60% 杠杆不撑股息）。
+#: 与 multibagger（便宜小市值博弹性）差异：dividend 买的是可持续现金流，
+#: 候选偏大盘成熟股；左侧分批建仓应接 run_dca（smart/dip），不做一次性抄底。
 PRESETS: dict[str, dict] = {
     "multibagger": {
         "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
@@ -180,6 +192,15 @@ PRESETS: dict[str, dict] = {
         "min_price_pos": 0.5,    # 已突破启动：52 周区间上半部（突破后回踩买，不追新高）
         "trend_filter": True,    # 神奇支撑线：沿 10 周线（≈MA50）上行的多头结构
         "min_updown_vol": 1.2,   # 突破放量回调缩量：上涨/下跌日均量比 ≥1.2（机构吸筹）
+    },
+    "dividend": {
+        "max_pe": 15.0,        # 低估值：低价买现金流（对应 README 高分红低估值口径）
+        "max_pb": 2.0,         # 低估值：账面资产不贵
+        "min_roe": 8.0,        # 盈利质量底线：分红须有利润支撑，不吃老本
+        "max_debt": 60.0,      # 低负债：高杠杆撑起的高股息不可持续
+        "min_div": 3.0,        # 高股息：股息率 > 3%
+        "min_div_years": 5,    # 分红纪律：连续分红 ≥5 年（仅 A 股有数据）
+        "max_val_pct": 0.5,    # PE/PB 历史分位低于 50%：防周期股盈利顶部的假低估
     },
     "fisher": {
         "max_pe": 40.0,            # 合理价格：不为成长付任意高价（宽松上限防纯故事股）
@@ -254,6 +275,7 @@ _WEIGHTS = {
     "dd": 0.10,
     "rs": 0.15,
     "vol": 0.10,
+    "div_years": 0.10,
 }
 
 
@@ -357,6 +379,12 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         ratio = updown / criteria.min_updown_vol
         scores["vol"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["vol"] = _WEIGHTS["vol"]
+
+    div_years = metrics.get("div_years")
+    if criteria.min_div_years > 0 and div_years is not None:
+        ratio = div_years / criteria.min_div_years
+        scores["div_years"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["div_years"] = _WEIGHTS["div_years"]
 
     if not weights:
         return 0.0
@@ -869,11 +897,19 @@ def run_screen(
     if tech_needed and all_results:
         all_results = _filter_monster_tech(all_results, criteria, log, on_progress)
 
-    # 估值分位增强（可选，逐只拉取历史 PE/PB）
-    if criteria.use_valuation_pct and all_results:
+    # 红利股维度：连续分红年数过滤（逐只拉分红历史，仅 A 股有数据源）
+    if criteria.min_div_years > 0 and all_results:
+        all_results = _filter_dividend_years(all_results, criteria, log, on_progress)
+
+    # 估值分位增强（可选，逐只拉取历史 PE/PB）；启用分位上限时强制拉取
+    if (criteria.use_valuation_pct or criteria.max_val_pct > 0) and all_results:
         all_results = _enrich_valuation(
             all_results, criteria.valuation_lookback, log, on_progress
         )
+
+    # 红利股维度：PE/PB 历史分位上限过滤（防周期股盈利顶部的假低估）
+    if criteria.max_val_pct > 0 and all_results:
+        all_results = _filter_valuation_pct(all_results, criteria, log)
 
     # 排序
     all_results = _sort_results(all_results, sort_by)
@@ -1092,6 +1128,77 @@ def _filter_drawdown(
         log(
             f"DHQ 折扣过滤：{len(results)} 只 → {len(kept)} 只存活"
             f"（回撤未达阈 {n_shallow} 只，数据缺失 {n_missing} 只）"
+        )
+    return kept
+
+
+def _filter_dividend_years(
+    results: list[ScreenResult],
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
+) -> list[ScreenResult]:
+    """红利股分红纪律过滤：逐只拉分红历史，保留连续分红年数达阈的标的。
+
+    连续年数计入综合评分（越长分红纪律越好得分越高）；数据源仅支持
+    A 股，非 A 股/拉取失败视为数据缺失剔除（无法核查即不买）。
+    """
+    if log:
+        log(f"分红纪律过滤：拉取 {len(results)} 只候选的历史分红记录（仅 A 股有数据）...")
+
+    kept: list[ScreenResult] = []
+    n_short, n_missing = 0, 0
+    for i, r in enumerate(results):
+        years = fetch_dividend_years(r.symbol)
+        if years is None:
+            n_missing += 1
+        elif years < criteria.min_div_years:
+            n_short += 1
+        else:
+            r.metrics["div_years"] = years
+            r.score = composite_score(r.metrics, criteria)
+            kept.append(r)
+        if on_progress:
+            on_progress(i + 1, r.symbol)
+
+    if log:
+        log(
+            f"分红纪律过滤：{len(results)} 只 → {len(kept)} 只存活"
+            f"（连续分红不足 {criteria.min_div_years} 年 {n_short} 只，数据缺失 {n_missing} 只）"
+        )
+    return kept
+
+
+def _filter_valuation_pct(
+    results: list[ScreenResult],
+    criteria: ScreenCriteria,
+    log: Callable[..., None] | None = None,
+) -> list[ScreenResult]:
+    """估值分位上限过滤：PE/PB 分位均值超阈剔除（防周期顶部假低估）。
+
+    需先经 :func:`_enrich_valuation` 附加分位数据；分位拉取失败的标的
+    视为数据缺失剔除（低分位是硬条件而非加分项，无法核查即不买）。
+    """
+    kept: list[ScreenResult] = []
+    n_high, n_missing = 0, 0
+    for r in results:
+        pcts = []
+        if r.valuation is not None:
+            pcts = [
+                p for p in (r.valuation.get("pe_percentile"), r.valuation.get("pb_percentile"))
+                if p is not None
+            ]
+        if not pcts:
+            n_missing += 1
+        elif sum(pcts) / len(pcts) > criteria.max_val_pct:
+            n_high += 1
+        else:
+            kept.append(r)
+
+    if log:
+        log(
+            f"估值分位过滤：{len(results)} 只 → {len(kept)} 只存活"
+            f"（分位高于 {criteria.max_val_pct:.0%} 共 {n_high} 只，数据缺失 {n_missing} 只）"
         )
     return kept
 
