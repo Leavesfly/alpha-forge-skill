@@ -613,6 +613,49 @@ uv run python run_screener.py --preset superstock --min-growth 30
 内部人信号）→ `run_canslim.py --symbols <候选>`（验证盈利爆发可持续性）→
 `run_score.py --symbol <候选>`（买点三灯 + 含止损位的交易计划）。
 
+### 费雪式成长质量预设（`--preset fisher`）
+
+取自菲利普·费雪《费雪论成长股获利》（*Paths to Wealth Through Common
+Stocks*, 1960，《怎样选择成长股》姊妹篇）的成长质量标准，阈值按 A 股
+口径本土化：
+
+| 书中标准 | 预设阈值 | 落地口径 |
+| --- | --- | --- |
+| 真成长由营收驱动（识破虚假成长） | `min_growth=15, min_rev_growth=15` | 利润/营收双高增，防削减成本/一次性收益冲利润 |
+| 研发是成长引擎（科技驱动生产力） | `min_rd_ratio=3` | 研发费用/营收 ≥3%（A 股取新浪利润表，港美股取 yfinance 利润表）；未披露研发的公司（如金融/地产）按数据缺失剔除 |
+| 利润率高于行业（定价权） | `min_gross_margin=30` | 毛利率下限按 A 股全行业口径取 30% |
+| 管理层高效再投资 | `min_roe=15` + `smart_growth=True` | 高回报再投资 + 资产增速<利润增速（聪明增长仅 A 股有数据） |
+| 财务稳健（少靠债务/增发稀释） | `max_debt=60` | 顺带剔除高杠杆金融股 |
+| 合理价格（不为成长付任意高价） | `max_pe=40`，不卡 PB | 宽松上限防纯故事股；费雪评估质地而非账面资产 |
+| 买好公司长期持有、不择时 | 不启用位置/大势维度 | 不因大盘波动卖出好公司 |
+
+与其他预设的定位差异：hundredbagger 同为质量成长但卡小市值起点，fisher
+强调**研发引擎与利润率**且不卡市值上限（成熟成长公司也可）；dhq 只买
+高质量回调，fisher 不择时。研发强度维度（`--min-rd-ratio`）启用时需逐只
+拉利润表（较慢，已缓存），也可单独叠加到其他预设上。
+
+```bash
+# 费雪式成长质量筛选 + JSON 输出
+uv run python run_screener.py --preset fisher --json
+
+# 研发强度抬高到 8%（硬科技口径，显式参数覆盖预设）
+uv run python run_screener.py --preset fisher --min-rd-ratio 8
+
+# 给百倍股预设叠加研发引擎维度
+uv run python run_screener.py --preset hundredbagger --min-rd-ratio 3
+```
+
+> 转述时不可省略：这是费雪成长质量标准的**可量化近似**，不是收益预测；
+> 书中核心定性项——管理层质量、“闲聊法”（Scuttlebutt）调研、9 条并购
+> 原则——无标准化数据源，须人工尽调补位；卖出遵循书中三理由（基本面
+> 恶化/当初判断错误/有更好标的），不因大盘恐慌卖出好公司；单期同比
+> 增速与最新报告期研发强度均有滞后，阈值未经 A 股样本外验证。
+
+费雪式典型工作流：
+`run_screener.py --preset fisher`（成长质量初筛）→ `run_canslim.py --symbols <候选>`
+（验证盈利增长的持续性与加速度）→ 人工尽调（管理层/研发转化/并购记录，
+补位定性项）→ `run_portfolio.py`（组合长期持有）。
+
 典型工作流：
 `run_screener.py`（发现低估候选）→ `run_score.py`（技术面复核）→ `run_paper.py --mode score`（纸面跟踪）。
 

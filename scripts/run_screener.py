@@ -47,6 +47,14 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查大股东/高管增持
   与回购公告补位。与 monster 的差异：monster 追接近新高的强势不看估值，
   superstock 要求便宜的爆发成长（罕见合流），条件更严候选更少。
+- fisher：成长质量筛选，取自费雪《费雪论成长股获利》(Paths to Wealth
+  Through Common Stocks, 1960)：真成长由营收与研发驱动——利润/营收双高增
+  (>15%，识破削减成本的虚假成长) + 研发强度(研发费用/营收≥3%，成长引擎)
+  + 利润率高于行业(毛利率>30%，定价权) + 管理层高效再投资(ROE>15% +
+  聪明增长) + 财务稳健(负债<60%) + 合理价格(PE<40，不为成长付任意高价)。
+  书中核心定性项（管理层质量、"闲聊法"调研、9 条并购原则）无数据源，须
+  人工尽调补位。与 hundredbagger（同为质量成长）的差异：fisher 强调研发
+  引擎与利润率，不卡小市值（成熟成长公司也可）。
 
 筛选基于公开财务快照，不构成投资建议；数据为最近报告期，存在滞后。
 
@@ -76,6 +84,9 @@ A 股走 akshare 免费批量接口（无需 API Key）：
 
     # 超级强势股筛选（低 PE+盈利爆发+小市值+突破形态，斯泰恩书中标准）
     uv run python run_screener.py --preset superstock
+
+    # 成长质量筛选（营收+研发驱动的真成长+高利润率+高效再投资，费雪书中标准）
+    uv run python run_screener.py --preset fisher
 
     # 十倍股预设 + 局部调整（显式参数覆盖预设：放宽市值上限到 300 亿）
     uv run python run_screener.py --preset multibagger --max-cap 300
@@ -139,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 预设方案
     parser.add_argument(
         "--preset", default=None, choices=sorted(PRESETS),
-        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；显式参数可覆盖预设项",
+        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；fisher=成长质量（营收/利润双高增+研发强度+高毛利+高效再投资+合理价格，费雪书中标准）；显式参数可覆盖预设项",
     )
 
     # 阈值参数
@@ -151,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-growth", type=float, default=0.0, help="净利润增速下限(%%)，默认 0（0=不限）")
     parser.add_argument("--min-rev-growth", type=float, default=0.0, help="营收增速下限(%%)，默认 0（0=不限；百倍股标准：增长须由营收驱动）")
     parser.add_argument("--min-gross-margin", type=float, default=0.0, help="毛利率下限(%%)，默认 0=不限（DHQ 标准：高毛利=定价权与规模效应信号）")
+    parser.add_argument("--min-rd-ratio", type=float, default=0.0, help="研发强度下限(%%，研发费用/营收)，默认 0=不限（费雪标准：研发是成长引擎；启用时逐只拉利润表较慢，未披露研发的公司按数据缺失剔除）")
     parser.add_argument("--min-cap", type=float, default=30.0, help="总市值下限(亿)，默认 30")
     parser.add_argument("--max-cap", type=float, default=0.0, help="总市值上限(亿)，默认 0=不限（十倍股研究：小市值起步）")
     parser.add_argument("--min-cash-yield", type=float, default=0.0, help="现金流收益率下限(%%)，默认 0=不限（A 股=每股经营现金流/股价，港美股=FCF/市值）")
@@ -216,6 +228,7 @@ def main() -> None:
         min_growth=args.min_growth,
         min_rev_growth=args.min_rev_growth,
         min_gross_margin=args.min_gross_margin,
+        min_rd_ratio=args.min_rd_ratio,
         min_cap=args.min_cap,
         max_cap=args.max_cap,
         min_cash_yield=args.min_cash_yield,
@@ -286,6 +299,7 @@ def main() -> None:
             growth_str = f"增速 {item['profit_growth']:+.0f}%" if item.get("profit_growth") else ""
             rev_str = f"营收 {item['revenue_growth']:+.0f}%" if item.get("revenue_growth") else ""
             gross_str = f"毛利 {item['gross_margin']:.0f}%" if item.get("gross_margin") else ""
+            rd_str = f"研发 {item['rd_ratio']:.1f}%" if item.get("rd_ratio") is not None else ""
             cash_str = f"现金流 {item['cash_yield']:.1f}%" if item.get("cash_yield") else ""
             pos_str = f"52周位置 {item['price_pos']:.0%}" if item.get("price_pos") is not None else ""
             dd_str = f"回撤 {item['drawdown']:.0f}%" if item.get("drawdown") is not None else ""
@@ -305,7 +319,7 @@ def main() -> None:
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {rev_str}  {gross_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {growth_str}  {rev_str}  {gross_str}  {rd_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
             )
     elif market_info is not None and not market_info["uptrend"]:
         log("（本次未筛选：大势未确认上行。《猛兽股》纪律为大势不对不买，等基准重新站上 MA50/MA200 后再筛。）")
@@ -333,11 +347,16 @@ def main() -> None:
             "书名核心信号‘内部人士买入’无 A 股等价数据，须人工核查候选的大股东/高管"
             "增持与回购公告补位；低 PE + 高增速合流极罕见，空结果属正常（书中纪律："
             "条件不全部满足就等待）；买强势股须带止损（书中：跌破 10 周线即退出）。")
+    if args.preset == "fisher":
+        log("提示：fisher 是《费雪论成长股获利》成长质量标准的可量化近似，不是收益预测；"
+            "书中核心定性项——管理层质量、‘闲聊法’调研、9 条并购原则——无数据源，"
+            "须人工尽调补位；卖出遵循书中三理由（基本面恶化/当初判断错误/有更好标的），"
+            "不因大盘恐慌卖出好公司；单期同比增速有滑头，建议接 run_canslim.py 验证盈利持续性。")
     if criteria.max_debt > 0:
         log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
     if not criteria.use_valuation_pct:
         log("提示：低 PE 可能是周期股盈利顶部假象，可加 --valuation-pct 用估值历史分位交叉验证。")
-    if args.preset in ("multibagger", "hundredbagger", "dhq"):
+    if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher"):
         log_next_steps(
             log,
             "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（盈利加速+RS 强度）",
@@ -375,7 +394,7 @@ def main() -> None:
                 f"扫描 {n_scanned} 只标的：{n_final} 只达标。"
                 f"最优候选：{top_sym}。筛选基于基本面快照，非收益预测。"
             )
-        if args.preset in ("multibagger", "hundredbagger", "dhq"):
+        if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher"):
             next_steps = build_next_steps(
                 {"action": "canslim", "reason": "对候选做 CAN SLIM 成长面交叉确认（盈利加速+RS 强度）",
                  "command": "run_canslim.py --symbols <候选列表> --json"},
@@ -440,6 +459,8 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"营收增速>{criteria.min_rev_growth:.0f}%")
     if criteria.min_gross_margin > 0:
         parts.append(f"毛利率>{criteria.min_gross_margin:.0f}%")
+    if criteria.min_rd_ratio > 0:
+        parts.append(f"研发强度>{criteria.min_rd_ratio:.0f}%")
     if criteria.min_cap > 0:
         parts.append(f"市值>{criteria.min_cap:.0f}亿")
     if criteria.max_cap > 0:

@@ -423,6 +423,99 @@ def fetch_astock_gross_margin(code: str) -> float | None:
     return None
 
 
+#: 新浪财报接口的市场前缀（研发强度取数用；北交所新浪无覆盖，返回 None）
+_SINA_PREFIX = {"6": "sh", "0": "sz", "3": "sz"}
+
+
+def fetch_astock_rd_ratio(code: str) -> float | None:
+    """A 股单标的研发强度(%)：研发费用 / 营业总收入 × 100（本地优先）。
+
+    费雪成长股维度：研发投入是成长引擎，研发转化能力决定长期增长质量。
+    数据源为新浪利润表（``ak.stock_financial_report_sina``，无需 API Key），
+    取最新报告期；仅启用该维度时逐只调用，避免全市场扫描额外打接口。
+
+    Returns:
+        研发费用/营收占比(%)；接口异常、北交所或未披露研发费用（如
+        金融/地产）返回 None（调用方按数据缺失剔除）。
+    """
+    from data.cache import load_json_obj
+
+    payload = load_json_obj(
+        lambda: _fetch_astock_rd_ratio_remote(code), f"astock_rd_{code}"
+    )
+    return payload.get("rd_ratio") if payload else None
+
+
+def _fetch_astock_rd_ratio_remote(code: str) -> dict | None:
+    """A 股研发强度远端拉取（无缓存）：新浪利润表最新报告期。
+
+    报表无研发科目时返回 ``{"rd_ratio": None}``（可缓存，避免重拉）；
+    接口异常返回 None（不缓存，下次重试）。
+    """
+    prefix = _SINA_PREFIX.get(str(code)[:1])
+    if prefix is None:
+        return {"rd_ratio": None}  # 北交所等新浪无覆盖
+    try:
+        import akshare as ak
+
+        with contextlib.redirect_stdout(sys.stderr):
+            df = ak.stock_financial_report_sina(stock=f"{prefix}{code}", symbol="利润表")
+    except Exception:
+        return None
+
+    if df is None or len(df) == 0:
+        return None
+
+    date_col = _find_col(df, ["报告日", "报告期", "date"])
+    if date_col:
+        df = df.sort_values(date_col, ascending=False)
+    rd_col = _find_col(df, ["研发费用", "rd_expense"])
+    rev_col = _find_col(df, ["营业总收入", "营业收入", "revenue"])
+    if rd_col is None or rev_col is None:
+        return {"rd_ratio": None}  # 无研发科目：视为未披露研发投入
+
+    # 取最新一期两列同时非空的记录（新浪早年报告期无研发费用列值）
+    for _, row in df.iterrows():
+        rd = pd.to_numeric(row.get(rd_col), errors="coerce")
+        rev = pd.to_numeric(row.get(rev_col), errors="coerce")
+        if pd.notna(rd) and pd.notna(rev) and rev > 0:
+            return {"rd_ratio": float(rd / rev * 100.0)}
+    return {"rd_ratio": None}
+
+
+def fetch_yfinance_rd_ratio(symbol: str) -> float | None:
+    """港美股单标的研发强度(%)：利润表 R&D / Total Revenue × 100。
+
+    ``.info`` 无研发字段，需额外拉取年度利润表（仅启用费雪研发维度时
+    调用，避免逐只多打一次接口）。
+
+    Returns:
+        最新财年研发费用/营收占比(%)；无研发科目或接口异常返回 None。
+    """
+    try:
+        import yfinance as yf
+
+        from data.sources import _to_yahoo_symbol
+
+        stmt = yf.Ticker(_to_yahoo_symbol(symbol)).income_stmt
+    except Exception:
+        return None
+
+    if stmt is None or len(stmt) == 0:
+        return None
+    if "Research And Development" not in stmt.index or "Total Revenue" not in stmt.index:
+        return None
+    rd = pd.to_numeric(stmt.loc["Research And Development"], errors="coerce").dropna()
+    rev = pd.to_numeric(stmt.loc["Total Revenue"], errors="coerce").dropna()
+    common = rd.index.intersection(rev.index)
+    if not len(common):
+        return None
+    latest = max(common)
+    if rev[latest] <= 0:
+        return None
+    return float(rd[latest] / rev[latest] * 100.0)
+
+
 def fetch_price_position(symbol: str, lookback: int = 250) -> float | None:
     """52 周价格位置：(当前价 - 区间最低) / (区间最高 - 区间最低)，取值 0~1。
 

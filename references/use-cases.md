@@ -332,6 +332,7 @@ print(format_report(result.metrics))
 | 猛兽股右侧强势筛选 | `run_screener.py --preset monster` | 波伊克《猛兽股》标准（大势确认+盈利高增+接近 52 周新高+RS 跑赢基准+量价吸筹，非收益预测），大势不对时纪律性不筛，买强势股须带止损，建议接 score 生成交易计划 | [scoring.md](scoring.md) |
 | 打折的高质量股筛选 | `run_screener.py --preset dhq` | 马哈尼《高增长科技股投资法》标准（营收增速 20%++高毛利+已具规模+自 52 周高点回撤 ≥20%，非收益预测），回撤本身不是买入理由（营收失速即双杀），建议接 canslim 验证盈利质量 | [scoring.md](scoring.md) |
 | 超级强势股筛选 | `run_screener.py --preset superstock` | 斯泰恩《100倍超级强势股》标准（PE<10+盈利爆发且营收驱动+低杠杆+小市值+突破形态+量价吸筹，非收益预测），低 PE 与高增速合流极罕见空结果属正常，内部人买入信号须人工核查增持/回购公告补位，建议接 canslim 验证盈利持续性 | [scoring.md](scoring.md) |
+| 费雪式成长质量筛选 | `run_screener.py --preset fisher` | 费雪《费雪论成长股获利》标准（营收/利润双高增+研发强度≥3%+高毛利+高效再投资+合理价格，非收益预测），管理层质量/闲聊法调研/并购原则等定性项须人工尽调补位，建议接 canslim 验证盈利持续性 + portfolio 组合长期持有 | [scoring.md](scoring.md) |
 | 美股全市场筛选 | `run_screener.py --universe us [--preset <方案>]` | 东财免费快照 ~13000 只批量过滤 PE/PB/市值 → yfinance 逐只深度核查（较慢，建议阈值压到百只量级）；快照不可用时降级 S&P 500 名单；注意市值阈值单位变为亿美元（预设按人民币标定需显式覆盖） | [scoring.md](scoring.md) |
 
 （上表命令均以 `uv run python` 前缀在 `scripts/` 下运行，如 `uv run python run_factor.py ...`。）

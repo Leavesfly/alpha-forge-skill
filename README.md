@@ -371,6 +371,7 @@ uv run python run_score.py --symbol 600000.SH --json
 | "帮我找潜在十倍股 / 十倍成长股 / multibagger" | `run_screener.py --preset multibagger --json` | 十倍股统计特征候选；须声明是统计共性非预测，建议接 run_canslim 交叉确认 + run_portfolio 组合持有 |
 | "帮我找百倍股 / 100倍回报的股票 / 高ROE复利机器" | `run_screener.py --preset hundredbagger --json` | 百倍股质量成长候选（迈耶书中标准：高ROE+双高增+小市值）；须声明百倍靠 20+ 年买对拿住非预测，建议接 run_canslim 验证盈利持续性 |
 | "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |
+| "帮我找费雪式成长股 / 研发驱动的好公司 / 真成长的优质股" | `run_screener.py --preset fisher --json` | 成长质量候选（费雪书中标准：营收/利润双高增+研发强度≥3%+高毛利+高效再投资）；管理层质量等定性项需人工尽调补位，建议接 run_canslim 验证盈利持续性 |
 | "XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛" | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | "XX 用什么策略好 / 哪个策略适合 XX" | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | "帮我回测一下 XX 的 YY 策略" | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |

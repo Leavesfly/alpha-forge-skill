@@ -14,6 +14,7 @@ from typing import Callable
 from .data import (
     fetch_astock_detail,
     fetch_astock_gross_margin,
+    fetch_astock_rd_ratio,
     fetch_astock_snapshot,
     fetch_benchmark_close,
     fetch_drawdown_52w,
@@ -22,6 +23,7 @@ from .data import (
     fetch_technical_profile,
     fetch_us_snapshot,
     fetch_yfinance_metrics,
+    fetch_yfinance_rd_ratio,
     is_a_share,
 )
 
@@ -38,6 +40,7 @@ class ScreenCriteria:
     min_growth: float = 0.0     # 净利润增速下限(%)，0=不筛
     min_rev_growth: float = 0.0  # 营收增速下限(%)，0=不筛（百倍股：增长须由营收驱动）
     min_gross_margin: float = 0.0  # 毛利率下限(%)，0=不筛（DHQ：定价权与规模效应信号）
+    min_rd_ratio: float = 0.0   # 研发强度下限(%)，0=不筛（费雪：研发是成长引擎）
     min_cap: float = 30.0       # 总市值下限(亿)
     max_cap: float = 0.0        # 总市值上限(亿)，0=不筛（十倍股：小市值起步）
     min_cash_yield: float = 0.0  # 现金流收益率下限(%)，0=不筛（FCF Yield 近似）
@@ -66,6 +69,8 @@ class ScreenCriteria:
             d["min_rev_growth"] = self.min_rev_growth
         if self.min_gross_margin > 0:
             d["min_gross_margin"] = self.min_gross_margin
+        if self.min_rd_ratio > 0:
+            d["min_rd_ratio"] = self.min_rd_ratio
         if self.min_drawdown > 0:
             d["min_drawdown"] = self.min_drawdown
         if self.max_cap > 0:
@@ -114,6 +119,14 @@ class ScreenCriteria:
 #: 缩量。书名核心信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查
 #: 大股东/高管增持与回购公告补位。与 monster 差异：monster 追接近新高的
 #: 强势不看估值，superstock 要求便宜的爆发成长，条件更严候选更少。
+#: fisher 取自费雪《费雪论成长股获利》（Paths to Wealth Through Common
+#: Stocks, 1960）的成长质量标准：真成长由营收与研发驱动（识破削减
+#: 成本/一次性收益的虚假成长）+ 利润率高于行业（定价权）+ 管理层高效
+#: 再投资（高 ROE 且资产增速<利润增速）+ 财务稳健（低杠杆，少靠增发
+#: 稀释）+ 合理价格（不为成长付任意高价，但不要求便宜）。书中核心
+#: 定性项——管理层质量、闲聊法调研、9 条并购原则——无数据源，须人工
+#: 尽调补位。与 hundredbagger（同为质量成长）差异：fisher 强调研发引擎
+#: 与利润率，不卡小市值（成熟成长公司也可）。
 PRESETS: dict[str, dict] = {
     "multibagger": {
         "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
@@ -167,6 +180,17 @@ PRESETS: dict[str, dict] = {
         "min_price_pos": 0.5,    # 已突破启动：52 周区间上半部（突破后回踩买，不追新高）
         "trend_filter": True,    # 神奇支撑线：沿 10 周线（≈MA50）上行的多头结构
         "min_updown_vol": 1.2,   # 突破放量回调缩量：上涨/下跌日均量比 ≥1.2（机构吸筹）
+    },
+    "fisher": {
+        "max_pe": 40.0,            # 合理价格：不为成长付任意高价（宽松上限防纯故事股）
+        "max_pb": 0.0,             # 不看 PB：费雪评估企业质地与前景而非账面资产
+        "min_roe": 15.0,           # 管理层高效运用资本：持续高回报再投资
+        "max_debt": 60.0,          # 财务稳健：成长靠内生利润而非债务/股权稀释
+        "min_growth": 15.0,        # 利润增长高于平均水平
+        "min_rev_growth": 15.0,    # 真成长由营收驱动（识破削减成本的虚假成长）
+        "min_gross_margin": 30.0,  # 利润率高于行业平均（定价权），A 股全行业口径
+        "smart_growth": True,      # 再投资效率：资产增速 < 利润增速（仅 A 股有数据）
+        "min_rd_ratio": 3.0,       # 研发引擎：研发费用/营收 ≥3%（科技对成长的驱动）
     },
 }
 
@@ -224,6 +248,7 @@ _WEIGHTS = {
     "growth": 0.10,
     "rev_growth": 0.10,
     "gross": 0.15,
+    "rd": 0.15,
     "cash": 0.15,
     "pos": 0.10,
     "dd": 0.10,
@@ -291,6 +316,12 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         ratio = gross / criteria.min_gross_margin
         scores["gross"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["gross"] = _WEIGHTS["gross"]
+
+    rd = metrics.get("rd_ratio")
+    if criteria.min_rd_ratio > 0 and rd is not None:
+        ratio = rd / criteria.min_rd_ratio
+        scores["rd"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["rd"] = _WEIGHTS["rd"]
 
     cash = metrics.get("cash_yield")
     if criteria.min_cash_yield > 0 and cash is not None:
@@ -455,6 +486,7 @@ def screen_astock_phase2(
         criteria.min_roe > 0 or criteria.max_debt > 0 or criteria.min_growth > 0
         or criteria.min_rev_growth > 0 or criteria.min_gross_margin > 0
         or criteria.min_cash_yield > 0 or criteria.smart_growth
+        or criteria.min_rd_ratio > 0
     )
 
     results: list[ScreenResult] = []
@@ -478,6 +510,7 @@ def screen_astock_phase2(
             "asset_growth": None,
             "cash_yield": None,
             "gross_margin": None,
+            "rd_ratio": None,
         }
 
         # 股息率 Phase 1 过滤（如果快照有该字段且阈值启用）
@@ -505,6 +538,9 @@ def screen_astock_phase2(
             # 毛利率兜底：新浪口径近年普遍 NaN，启用该维度时用同花顺摘要补齐
             if criteria.min_gross_margin > 0 and metrics["gross_margin"] is None:
                 metrics["gross_margin"] = fetch_astock_gross_margin(code)
+            # 研发强度：新浪财务分析指标无该字段，启用维度时用利润表补齐
+            if criteria.min_rd_ratio > 0:
+                metrics["rd_ratio"] = fetch_astock_rd_ratio(code)
             # 现金流收益率 = 每股经营现金流 / 股价（FCF Yield 的 A 股免费近似）
             ocf = detail.get("ocf_per_share")
             close = metrics.get("close")
@@ -576,6 +612,13 @@ def _check_detail_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]
         elif gross < criteria.min_gross_margin:
             reasons.append(f"毛利率 {gross:.1f}% < {criteria.min_gross_margin:.0f}%（定价权不足）")
 
+    if criteria.min_rd_ratio > 0:
+        rd = metrics.get("rd_ratio")
+        if rd is None:
+            reasons.append("研发费用数据缺失（或未披露研发投入）")
+        elif rd < criteria.min_rd_ratio:
+            reasons.append(f"研发强度 {rd:.1f}% < {criteria.min_rd_ratio:.0f}%（研发引擎不足）")
+
     if criteria.min_cash_yield > 0:
         cash = metrics.get("cash_yield")
         if cash is None:
@@ -637,6 +680,11 @@ def screen_yfinance(
             "total_mv": info.get("total_mv"),
             "close": info.get("close"),
         }
+
+        # 研发强度：.info 无该字段，启用费雪维度时额外拉年度利润表
+        metrics["rd_ratio"] = (
+            fetch_yfinance_rd_ratio(symbol) if criteria.min_rd_ratio > 0 else None
+        )
 
         # 全维度过滤
         fail_reasons = _check_all_criteria(metrics, criteria)
@@ -1104,6 +1152,10 @@ def _screen_astock_manual(
         # 毛利率兜底：新浪/yfinance 都缺失时用同花顺摘要补齐
         if criteria.min_gross_margin > 0 and metrics.get("gross_margin") is None:
             metrics["gross_margin"] = fetch_astock_gross_margin(code)
+
+        # 研发强度：启用费雪维度时用新浪利润表补齐（与全市场路径同口径）
+        if criteria.min_rd_ratio > 0:
+            metrics["rd_ratio"] = fetch_astock_rd_ratio(code)
 
         fail_reasons = _check_all_criteria(metrics, criteria)
         passed = len(fail_reasons) == 0

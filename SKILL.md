@@ -50,6 +50,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | "帮我找猛兽股 / 年内翻倍股 / 强势龙头股" | `run_screener.py --preset monster --json` | 猛兽股右侧强势候选（波伊克书中标准：大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹）；大势不对时纪律性返回空结果是特性；买强势股须带止损，建议接 run_score 生成交易计划 |
 | "帮我找打折的高质量股 / 高增长科技股回调机会 / 错杀的好公司" | `run_screener.py --preset dhq --json` | 打折高质量候选（马哈尼《高增长科技股投资法》标准：营收增速20%++高毛利+已具规模+自高点回撤≥20%）；须声明回撤本身不是买入理由，需确认回撤非基本面恶化（营收失速即双杀），建议接 run_canslim 验证盈利质量 |
 | "帮我找超级强势股 / 便宜的爆发成长股 / 斯泰恩那种100倍强势股" | `run_screener.py --preset superstock --json` | 超级强势股候选（斯泰恩《100倍超级强势股》标准：PE<10+盈利爆发且营收驱动+低杠杆+小市值+突破形态+量价吸筹）；低 PE 与高增速合流极罕见，空结果属正常；须声明内部人买入信号需人工核查增持/回购公告补位，建议接 run_canslim 验证盈利持续性 + run_score 生成含止损交易计划 |
+| "帮我找费雪式成长股 / 研发驱动的好公司 / 真成长的优质股" | `run_screener.py --preset fisher --json` | 成长质量候选（费雪《费雪论成长股获利》标准：营收/利润双高增+研发强度≥3%+高毛利+高效再投资+合理价格）；须声明管理层质量/闲聊法调研/并购原则等定性项需人工尽调补位，建议接 run_canslim 验证盈利持续性 + run_portfolio 组合长期持有 |
 | "在美股里帮我筛 / 扫一遍美股市场 / 美股全市场找低估值" | `run_screener.py --universe us [--preset <方案>] --json` | 美股全市场候选（东财免费快照 ~13000 只→yfinance 逐只核查，快照不可用时降级 S&P 500 名单）；须提醒市值阈值单位变为亿美元（预设按人民币标定，建议显式覆盖如 --max-cap 20）且 Phase 2 逐只较慢（建议阈值压到百只量级） |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
@@ -245,7 +246,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
 | 单股买点三灯 | `run_score.py` 价/势/时三维亮灯 + 决策矩阵结论 + 交易计划与建议仓位；估值分位默认拉取（`--no-valuation` 跳过）、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量三灯（仅势/时维度），达标/降级分列 | scoring.md |
-| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准） | scoring.md |
+| 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准），`--preset fisher` 成长质量（费雪《费雪论成长股获利》标准：营收+研发驱动） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
 | 持仓登记与体检 | `run_account.py --set` 登记，run_score/run_scan 自动联动 | scoring.md |
 | 用户风险画像 | `run_profile.py --set --risk-tolerance <档位>`，run_score 建议仓位因人而异 | scoring.md |

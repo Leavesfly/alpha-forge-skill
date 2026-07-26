@@ -104,6 +104,14 @@ class TestScreenCriteria:
         assert "min_gross_margin" not in d2
         assert "min_drawdown" not in d2
 
+    def test_to_dict_fisher_dims(self):
+        """费雪维度：研发强度默认不启用，启用后进入契约。"""
+        assert ScreenCriteria().min_rd_ratio == 0.0
+        c = ScreenCriteria(min_rd_ratio=3.0)
+        d = c.to_dict()
+        assert d["min_rd_ratio"] == 3.0
+        assert "min_rd_ratio" not in ScreenCriteria().to_dict()
+
 
 class TestPresets:
     def test_multibagger_preset_exists(self):
@@ -120,6 +128,9 @@ class TestPresets:
 
     def test_superstock_preset_exists(self):
         assert "superstock" in PRESETS
+
+    def test_fisher_preset_exists(self):
+        assert "fisher" in PRESETS
 
     def test_preset_keys_are_criteria_fields(self):
         """预设键必须是 ScreenCriteria 字段（同时也是 CLI dest）。"""
@@ -192,6 +203,21 @@ class TestPresets:
         assert p["min_updown_vol"] > 1.0     # 突破放量回调缩量（吸筹）
         assert "max_price_pos" not in p      # 与左侧低位口径互斥
         assert "market_filter" not in p      # 不强制择大势：合流已够严，留给用户叠加
+
+    def test_fisher_preset_semantics(self):
+        """预设语义（费雪《费雪论成长股获利》）：营收+研发驱动的真成长，不卡小市值、不择时。"""
+        p = PRESETS["fisher"]
+        assert p["min_rd_ratio"] > 0         # 核心维度：研发是成长引擎
+        assert p["min_growth"] > 0           # 利润增长高于平均
+        assert p["min_rev_growth"] > 0       # 真成长由营收驱动（防削减成本假增长）
+        assert p["min_gross_margin"] > 0     # 利润率高于行业（定价权）
+        assert p["min_roe"] >= 15.0          # 管理层高效运用资本
+        assert p["smart_growth"] is True     # 再投资效率：资产增速<利润增速
+        assert 0 < p["max_debt"] <= 70.0     # 财务稳健
+        assert p["max_pe"] > 0               # 合理价格（宽松上限防纯故事股）
+        assert p["max_pb"] == 0.0            # 不看 PB：评估质地而非账面资产
+        assert "max_cap" not in p            # 不卡小市值：成熟成长公司也可
+        assert "max_price_pos" not in p      # 不择时：买好公司长期持有
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +304,13 @@ class TestCompositeScore:
         assert composite_score({"gross_margin": 40.0}, c) == 50.0
         assert composite_score({"gross_margin": 80.0}, c) == 100.0
 
+    def test_rd_ratio_score(self):
+        """研发强度达标程度评分：阈值处 50 分，2 倍阈值封顶 100 分；缺失不参与。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_rd_ratio=3)
+        assert composite_score({"rd_ratio": 3.0}, c) == 50.0
+        assert composite_score({"rd_ratio": 6.0}, c) == 100.0
+        assert composite_score({"rd_ratio": None}, c) == 0.0
+
     def test_drawdown_score_deeper_is_better(self):
         """DHQ 口径：回撤越深折扣越大得分越高（阈值处 50 分，2 倍阈值封顶）。"""
         c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_drawdown=20)
@@ -354,6 +387,15 @@ class TestCheckDetailCriteria:
         assert any("定价权不足" in r for r in reasons)
         reasons = _check_detail_criteria({"gross_margin": None}, c)
         assert any("缺失" in r for r in reasons)
+
+    def test_rd_ratio_pass_fail(self):
+        """研发强度维度（费雪：研发是成长引擎）。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, min_rd_ratio=3)
+        assert _check_detail_criteria({"rd_ratio": 5.0}, c) == []
+        reasons = _check_detail_criteria({"rd_ratio": 1.2}, c)
+        assert any("研发引擎不足" in r for r in reasons)
+        reasons = _check_detail_criteria({"rd_ratio": None}, c)
+        assert any("未披露" in r for r in reasons)
 
     def test_smart_growth_pass_fail(self):
         c = ScreenCriteria(min_roe=0, max_debt=0, smart_growth=True)
@@ -646,6 +688,32 @@ class TestScreenAstockPhase2:
         results = screen_astock_phase2(survivors, criteria)
         assert len(results) == 0
 
+    @patch("screener.engine.fetch_astock_rd_ratio")
+    @patch("screener.engine.fetch_astock_detail")
+    def test_rd_ratio_filter(self, mock_detail, mock_rd):
+        """研发强度：启用时逐只拉利润表补齐并过滤，未启用时不打接口。"""
+        mock_detail.return_value = {"roe": 20, "debt_ratio": 40, "profit_growth": 20}
+        mock_rd.return_value = 5.5
+        survivors = [
+            {"code": "600000", "name": "测试", "pe": 10, "pb": 1,
+             "total_mv": 100, "div_yield": 2, "close": 10.0},
+        ]
+        criteria = ScreenCriteria(min_roe=10, max_debt=70, min_rd_ratio=3)
+        results = screen_astock_phase2(survivors, criteria)
+        assert len(results) == 1
+        assert results[0].metrics["rd_ratio"] == pytest.approx(5.5)
+        # 研发强度不足 → 剔除
+        mock_rd.return_value = 1.0
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 未披露研发（None）→ 数据缺失剔除
+        mock_rd.return_value = None
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 未启用维度 → 不调研发接口
+        mock_rd.reset_mock()
+        criteria = ScreenCriteria(min_roe=10, max_debt=70)
+        screen_astock_phase2(survivors, criteria)
+        mock_rd.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # screen_yfinance (mock)
@@ -671,6 +739,29 @@ class TestScreenYfinance:
         criteria = ScreenCriteria()
         results = screen_yfinance(["INVALID.US"], criteria)
         assert len(results) == 0
+
+    @patch("screener.engine.fetch_yfinance_rd_ratio")
+    @patch("screener.engine.fetch_yfinance_metrics")
+    def test_rd_ratio_filter(self, mock_yf, mock_rd):
+        """研发强度：启用时额外拉利润表，未启用时不打接口。"""
+        mock_yf.return_value = {
+            "name": "Test", "close": 100, "pe": 20, "pb": 3,
+            "roe": 25, "div_yield": 1, "debt_ratio": 40,
+            "profit_growth": 20, "total_mv": 500,
+        }
+        mock_rd.return_value = 8.0
+        criteria = ScreenCriteria(max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0, min_rd_ratio=3)
+        results = screen_yfinance(["MSFT.US"], criteria)
+        assert len(results) == 1
+        assert results[0].metrics["rd_ratio"] == pytest.approx(8.0)
+        # 无研发科目 → 数据缺失剔除
+        mock_rd.return_value = None
+        assert screen_yfinance(["MSFT.US"], criteria) == []
+        # 未启用维度 → 不调研发接口
+        mock_rd.reset_mock()
+        criteria = ScreenCriteria(max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0)
+        screen_yfinance(["MSFT.US"], criteria)
+        mock_rd.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
