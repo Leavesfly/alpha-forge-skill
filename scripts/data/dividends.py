@@ -1,4 +1,4 @@
-"""分红数据获取：A 股现金分红历史（akshare 数据源）。
+"""分红数据获取：A 股（akshare）+ 港美股（openbb）现金分红历史。
 
 从 datafeed.py 拆分而来，职责单一化。
 """
@@ -14,22 +14,26 @@ from market import SYMBOL_FORMAT_HINT, SYMBOL_RE
 
 
 def fetch_dividends(symbol: str) -> pd.Series:
-    """拉取 A 股现金分红历史（每股派现，索引为除权除息日）。
+    """拉取现金分红历史（每股派现，索引为除权除息日），自动适配市场。
 
-    数据源 akshare 分红送配详情（东财），无需 API Key；仅支持 A 股。
+    - A 股：akshare 分红送配详情（东财），无需 API Key；
+    - 港股/美股：openbb（yfinance provider），无需 Key，原币种每股分红。
+
     供 run_dca.py 显式分红建模（--dividends auto）使用，应搭配不复权价格。
 
     Returns:
         每股现金分红 Series（float，DatetimeIndex 为除权除息日，升序）。
 
     Raises:
-        RuntimeError: 非 A 股、接口异常或无分红记录时。
+        RuntimeError: 不支持的市场、接口异常或无分红记录时。
     """
     if not SYMBOL_RE.match((symbol or "").strip()):
         raise ValueError(f"标的代码不合法：'{symbol}'。{SYMBOL_FORMAT_HINT}")
+    if symbol.upper().endswith((".HK", ".US")):
+        return _fetch_hkus(symbol)
     if not symbol.upper().endswith((".SH", ".SZ", ".BJ")):
         raise RuntimeError(
-            f"分红数据目前仅支持 A 股（收到 {symbol}）；"
+            f"分红数据目前仅支持 A 股与港美股（收到 {symbol}）；"
             "其他市场可用 --dividends <CSV> 提供（列：date,dps）。"
         )
     import akshare as ak
@@ -63,3 +67,22 @@ def fetch_dividends(symbol: str) -> pd.Series:
     if series.empty:
         raise RuntimeError(f"{symbol} 无有效现金分红记录（可能从未分红）。")
     return series
+
+
+def _fetch_hkus(symbol: str) -> pd.Series:
+    """港美股：openbb 分红历史（错误归一为 RuntimeError，与 A 股路径一致）。"""
+    from data.openbb import fetch_obb_dividends, supports_hkus
+
+    if not supports_hkus(symbol):
+        raise RuntimeError(
+            f"港股代码需为纯数字（收到 {symbol}）；"
+            "可用 --dividends <CSV> 提供（列：date,dps）。"
+        )
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            return fetch_obb_dividends(symbol)
+    except Exception as exc:
+        raise RuntimeError(
+            f"拉取 {symbol} 分红历史失败（{type(exc).__name__}: {exc}）；"
+            "如需分红建模可用 --dividends <CSV> 提供（列：date,dps）。"
+        ) from exc

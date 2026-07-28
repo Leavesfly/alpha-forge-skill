@@ -1,15 +1,17 @@
-"""数据源抽象：TickFlow 主源 + baostock / akshare / yfinance 兜底源。
+"""数据源抽象：TickFlow 主源 + OpenBB 港美主力 + baostock / akshare / yfinance 多源链。
 
 动机：datafeed 原先绑定 TickFlow 单一数据源，服务不可用时整个链路失效。
 本模块把「拉取单标的 K 线」抽象为 ``DataSource`` 协议：
 
+- ``OpenBBSource``：港股/美股主力源，日/周/月 K（Open Data Platform，
+  免费无需 Key，可扩展财务/期权/宏观等更多数据类型）；
 - ``TickFlowSource``：主源，多市场全周期；
 - ``BaostockSource``：二级兜底，仅沪深 A 股日/周/月 K（免费、无需 Key、API 级稳定）；
 - ``AkshareSource``：三级兜底，仅 A 股日/周/月 K（免费、无需 Key）；
 - ``YFinanceSource``：港股/美股兜底，日/周/月 K（Yahoo Finance，免费、无需 Key）；
 - ``get_sources``：按环境变量 ``ALPHA_FORGE_DATA_SOURCE`` 返回数据源链
-  （``tickflow`` / ``baostock`` / ``akshare`` / ``yfinance`` 强制单源，
-  缺省 auto = A 股三级降级 + 港美股 yfinance 兜底）。
+  （``tickflow`` / ``openbb`` / ``baostock`` / ``akshare`` / ``yfinance`` 强制单源，
+  缺省 auto = 港美股 OpenBB 主力＋A 股三级降级＋yfinance 兜底）。
 
 所有源返回列名归一的升序 DataFrame：``trade_date/open/high/low/close/volume``。
 """
@@ -302,25 +304,107 @@ class YFinanceSource:
         return df.tail(count).reset_index(drop=True)
 
 
+# ─── OpenBB ──────────────────────────────────────────────────────────────────────
+
+#: OpenBB 周期映射：本项目周期 -> openbb yfinance provider interval
+_OBB_PERIODS = {"1d": "1d", "1w": "1W", "1M": "1M"}
+
+#: 复权口径映射：归一化口径 -> openbb yfinance provider adjustment 参数
+#: forward -> 拆股+分红全调整（涨跌幅与前复权一致，回测可用）；none -> 仅拆股
+_OBB_ADJUSTS = {"forward": "splits_and_dividends", "none": "splits_only"}
+
+#: 估算拉取起始日的历日天数系数：count 根 K 线需回溯多少天（含休市日余量）
+_OBB_CALENDAR_FACTOR = {"1d": 2, "1w": 9, "1M": 33}
+
+
+class OpenBBSource:
+    """OpenBB 港股/美股主力数据源：日/周/月 K（Open Data Platform，免费无需 Key）。
+
+    经 openbb 的 yfinance provider 拉取，相比直连 yfinance 提供统一 schema，
+    且后续可平滑扩展财务、期权、宏观等更多数据类型。
+    复权口径：forward -> splits_and_dividends；none -> splits_only；
+    backward 不支持（fetch 报错，交给其他源）。
+
+    注意：openbb 内部走 anyio portal，anyio<4 会导致所有请求报
+    "This portal is not running"，项目依赖已约束 anyio>=4.0。
+    """
+
+    name = "openbb"
+
+    def supports(self, symbol: str, period: str) -> bool:
+        if not symbol.upper().endswith(_YF_SUFFIXES) or period not in _OBB_PERIODS:
+            return False
+        code = symbol.rsplit(".", 1)[0]
+        # 港股代码必须是纯数字才能映射到 Yahoo 格式
+        if symbol.upper().endswith(".HK") and not code.isdigit():
+            return False
+        return True
+
+    def fetch(self, symbol: str, period: str, count: int, adjust: str) -> pd.DataFrame:
+        if adjust == "backward":
+            raise DataFetchError(
+                "openbb 源不支持后复权（hfq），请改用前复权或配置 TICKFLOW_API_KEY。"
+            )
+        from openbb import obb
+
+        ticker = _to_yahoo_symbol(symbol)
+        # 按 count 估算起始日（留余量），尾部 tail(count) 截取精确根数
+        days = count * _OBB_CALENDAR_FACTOR[period] + 30
+        start = (pd.Timestamp.now() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+        out = obb.equity.price.historical(
+            ticker,
+            interval=_OBB_PERIODS[period],
+            start_date=start,
+            provider="yfinance",
+            adjustment=_OBB_ADJUSTS.get(adjust, "splits_and_dividends"),
+        )
+        df = out.to_dataframe()
+        if df is None or len(df) == 0:
+            raise DataFetchError(f"openbb 未返回 {symbol}（{ticker}）的 K 线数据。")
+        # 索引为 date，列含 open/high/low/close/volume（及 dividend 等额外列）
+        df = df.reset_index().rename(columns={"date": "trade_date"})
+        keep = [c for c in ("trade_date", "open", "high", "low", "close", "volume") if c in df.columns]
+        df = df[keep].copy()
+        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        if getattr(df["trade_date"].dt, "tz", None) is not None:
+            df["trade_date"] = df["trade_date"].dt.tz_localize(None)
+        df = df.dropna(subset=["close"])
+        df = _validate_and_sort(df, symbol)
+        return df.tail(count).reset_index(drop=True)
+
+
 def source_label() -> str:
-    """当前数据源配置标签（缓存键的一部分）：tickflow/baostock/akshare/yfinance/auto。"""
+    """当前数据源配置标签（缓存键的一部分）：tickflow/openbb/baostock/akshare/yfinance/auto。"""
     forced = get_env_config().data_source
-    return forced if forced in ("tickflow", "baostock", "akshare", "yfinance") else "auto"
+    return (
+        forced
+        if forced in ("tickflow", "openbb", "baostock", "akshare", "yfinance")
+        else "auto"
+    )
 
 
 def get_sources() -> list[DataSource]:
     """按环境变量返回数据源链（顺序即优先级）。
 
-    缺省 auto 模式：TickFlow → baostock → akshare → yfinance
-    （A 股走前三级；港股/美股由 yfinance 兜底，supports 自动分流）。
+    缺省 auto 模式：OpenBB → TickFlow → baostock → akshare → yfinance
+    （港股/美股 OpenBB 主力、TickFlow/yfinance 兜底；A 股 supports 自动跳过
+    OpenBB，仍走 TickFlow → baostock → akshare 三级降级）。
     """
     label = source_label()
     if label == "tickflow":
         return [TickFlowSource()]
+    if label == "openbb":
+        return [OpenBBSource()]
     if label == "baostock":
         return [BaostockSource()]
     if label == "akshare":
         return [AkshareSource()]
     if label == "yfinance":
         return [YFinanceSource()]
-    return [TickFlowSource(), BaostockSource(), AkshareSource(), YFinanceSource()]
+    return [
+        OpenBBSource(),
+        TickFlowSource(),
+        BaostockSource(),
+        AkshareSource(),
+        YFinanceSource(),
+    ]

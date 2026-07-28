@@ -1,8 +1,8 @@
-"""CAN SLIM 基本面数据获取：A 股季度 EPS / ROE（akshare）+ 港美股（yfinance）。
+"""CAN SLIM 基本面数据获取：A 股季度 EPS / ROE（akshare）+ 港美股（openbb 主力 / yfinance 兜底）。
 
 C（当季 EPS 增长）与 A（年度 EPS 复合增长）需要按报告期的每股收益序列：
 - A 股：akshare 财务摘要接口（东财口径，累计/YTD 值，无需 API Key）；
-- 港股/美股：yfinance 利润表（单季/年度摊薄 EPS，无需 Key）自动兜底，
+- 港股/美股：openbb 利润表主力（失败降级 yfinance 直连），单季/年度摊薄 EPS，
   以 ``eps_quarterly`` / ``eps_annual`` 预拆分序列返回（财年口径）。
 接口异常或列名变更时返回 None（调用方降级：C/A 标注 unavailable）。
 
@@ -35,13 +35,13 @@ def fetch_fundamentals(symbol: str) -> dict | None:
     Returns:
         A 股：``{"eps": Series(累计/YTD), "roe": Series | None, "source": "akshare"}``；
         港美股：``{"eps_quarterly": Series(单季), "eps_annual": Series(年度),
-        "roe": Series | None, "source": "yfinance"}``（财年口径）。
+        "roe": Series | None, "source": "openbb" | "yfinance"}``（财年口径）。
         获取失败时返回 None（stderr 告警，不中断主流程）。
     """
     if is_a_share(symbol):
         return _fetch_akshare(symbol)
     if symbol.upper().endswith(YF_SUFFIXES):
-        return _fetch_yfinance(symbol)
+        return _fetch_openbb(symbol) or _fetch_yfinance(symbol)
     return None
 
 
@@ -64,8 +64,45 @@ def _fetch_akshare(symbol: str) -> dict | None:
         return None
 
 
+def _fetch_openbb(symbol: str) -> dict | None:
+    """港美股主力：openbb 利润表摊薄 EPS（单季 + 年度，财年口径）。
+
+    失败时返回 None（stderr 短告警），由调用方降级 yfinance 直连。
+    """
+    try:
+        from data.openbb import fetch_obb_eps, fetch_obb_metrics, supports_hkus
+
+        if not supports_hkus(symbol):
+            return None
+        with contextlib.redirect_stdout(sys.stderr):
+            eps_q, eps_a = fetch_obb_eps(symbol)
+        if eps_q is None and eps_a is None:
+            raise RuntimeError("利润表无可用 EPS 行")
+
+        roe = None
+        with contextlib.suppress(Exception):
+            v = fetch_obb_metrics(symbol).get("roe")
+            if v is not None:
+                anchor = (eps_a if eps_a is not None else eps_q).index[-1]
+                # 适配器返回百分数，本模块统一小数口径
+                roe = pd.Series([float(v) / 100.0], index=pd.DatetimeIndex([anchor]))
+        return {
+            "eps_quarterly": eps_q,
+            "eps_annual": eps_a,
+            "roe": roe,
+            "source": "openbb",
+        }
+    except Exception as exc:
+        print(
+            f"[warn] openbb 拉取 {symbol} 基本面失败（{type(exc).__name__}），"
+            "降级 yfinance 直连...",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _fetch_yfinance(symbol: str) -> dict | None:
-    """港美股：yfinance 利润表摊薄 EPS（单季 + 年度，财年口径）。
+    """港美股兜底：yfinance 利润表摊薄 EPS（单季 + 年度，财年口径）。
 
     季度表通常仅返回近 4~5 个季度：不足以同比时 C 会诚实标注
     unavailable；年度表约 4 个财年，满足 A（需 ≥3 年）。

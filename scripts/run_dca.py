@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
         const="auto",
         default=None,
         metavar="CSV",
-        help="显式分红建模：不带值自动拉 A 股分红历史（akshare），带路径读 CSV（列：date,dps）；启用后自动改用不复权价格",
+        help="显式分红建模：不带值自动拉分红历史（A 股 akshare / 港美股 openbb），带路径读 CSV（列：date,dps）；启用后自动改用不复权价格",
     )
     parser.add_argument(
         "--div-policy",
@@ -100,13 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_dividends(args, log):
-    """加载每股分红序列：auto 走 akshare（仅 A 股），否则读 CSV（date,dps）。"""
+    """加载每股分红序列：auto 自动适配市场（A 股 akshare / 港美股 openbb），否则读 CSV（date,dps）。"""
     import pandas as pd
 
     if args.dividends == "auto":
         from datafeed import fetch_dividends
 
-        log(f"拉取 {args.symbol} 分红历史（akshare）...")
+        src = "openbb" if args.symbol.upper().endswith((".HK", ".US")) else "akshare"
+        log(f"拉取 {args.symbol} 分红历史（{src}）...")
         return fetch_dividends(args.symbol)
     from pathlib import Path
 

@@ -10,7 +10,7 @@
 | `TICKFLOW_API_KEY` 未配置 / 401 | 实时行情、分钟 K、股票池、财务数据需要完整服务 | 前往 [tickflow.org](https://tickflow.org) 申请 Key 并 `export TICKFLOW_API_KEY="..."`；仅做历史日 K 回测可不配置（免费服务） |
 | `libomp.dylib` 加载失败（macOS） | LightGBM 依赖 OpenMP 运行库 | `brew install libomp`；或改用 `--model ridge/logistic`（纯 sklearn，无此依赖） |
 | 标的代码不识别 / 无数据 | 缺市场后缀或格式错误 | 统一使用 **代码.市场后缀**：`600000.SH`、`000001.SZ`、`AAPL.US`、`00700.HK`；后缀大写 |
-| 拉到 0 根 K 线 / `没有数据源支持` | 标的不存在、周期不支持或数据源受限 | 检查代码拼写；分钟 K 需 API Key；akshare 兜底仅支持 A 股日/周/月 K；`ALPHA_FORGE_DATA_SOURCE=tickflow\|akshare` 可强制单源排查 |
+| 拉到 0 根 K 线 / `没有数据源支持` | 标的不存在、周期不支持或数据源受限 | 检查代码拼写；分钟 K 需 API Key；akshare 兜底仅支持 A 股日/周/月 K；港美股主力源为 openbb；`ALPHA_FORGE_DATA_SOURCE=tickflow\|openbb\|akshare` 可强制单源排查 |
 | 数据陈旧（缓存命中旧行情） | K 线本地缓存未过期 | 加 `--no-cache` 强制重拉；或 `ALPHA_FORGE_NO_CACHE=1` 全局关闭；TTL 分级：日线默认 1 天、分钟线 30 分钟，`ALPHA_FORGE_CACHE_TTL`（秒）可显式覆盖 |
 | 网络抖动偶发失败 | 单次请求超时/连接重置 | 内置自动重试（默认 2 次，退避 1s/2s），`ALPHA_FORGE_RETRIES` 可调（0 关闭）；重试仍失败自动降级下一数据源，且存在过期缓存时回退使用 |
 | `ValueError: 双均线参数要求 fast < slow` 等 | 策略参数组合非法 | 按提示修正参数；各策略约束见 [strategies.md](strategies.md)（如 donchian/turtle 要求 exit <= entry、cci 要求 entry < exit） |

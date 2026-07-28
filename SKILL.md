@@ -276,7 +276,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 
 - 数据获取与回测脚本均在 `scripts/` 目录下用 `uv run python` 运行，首次需 `uv sync`。
 - 回测结果不代表未来收益，参数寻优存在过拟合风险；判断策略真伪以样本外/DSR/PBO 为准（`run_validate.py`），任何策略**夏普比率 > 3 应优先怀疑**数据泄露或过拟合。
-- K 线本地缓存与增量更新、数据源自动兜底（baostock/akshare/yfinance）、网络重试及 `ALPHA_FORGE_*` 环境变量详见 [references/data-fetching.md](references/data-fetching.md) 与 [references/faq.md](references/faq.md)；全市场批量研究前可用 `run_sync.py` 预同步，配合 `ALPHA_FORGE_OFFLINE=1` 离线使用（缓存默认在 `~/.alpha-forge/klines`，重装 skill 不丢）。
+- K 线本地缓存与增量更新、数据源自动兜底（港美股主力 openbb；baostock/akshare/yfinance 兜底）、网络重试及 `ALPHA_FORGE_*` 环境变量详见 [references/data-fetching.md](references/data-fetching.md) 与 [references/faq.md](references/faq.md)；全市场批量研究前可用 `run_sync.py` 预同步，配合 `ALPHA_FORGE_OFFLINE=1` 离线使用（缓存默认在 `~/.alpha-forge/klines`，重装 skill 不丢）。
 - 机器学习依赖 lightgbm/scikit-learn（`uv sync` 自动装）；macOS 报 `libomp.dylib` 错误时 `brew install libomp` 或改用 `--model ridge`，详见 faq.md。
 - 新闻情绪与事件风险标注采用 **agent-in-the-loop**：脚本抓素材生成模板 → agent（LLM）逐条打分写回 CSV → 脚本回传使用；无 agent 时有词典兜底（质量有限）。
 - `run_signal.py` / `run_paper.py` 仅输出信号与纸面记账，**不做任何自动化下单或券商对接**；全部输出仅供研究参考，不构成投资建议。

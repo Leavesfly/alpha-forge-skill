@@ -116,10 +116,11 @@ uv run python run_dca.py --symbol AAPL.US --mode dip --dip-window 120 --count 10
 # 价值平均：每期目标市值增长 1000（涨过目标会卖出）
 uv run python run_dca.py --symbol 600000.SH --mode value_avg --amount 1000 --plot
 
-# 显式分红建模：自动拉 A 股分红历史（不复权价 + 分红再投入）
+# 显式分红建模：自动拉分红历史（不复权价 + 分红再投入；A 股 akshare / 港美股 openbb）
 uv run python run_dca.py --symbol 600000.SH --dividends --div-policy reinvest
+uv run python run_dca.py --symbol 00700.HK --dividends --div-policy reinvest
 
-# 分红现金落袋（计入 XIRR 现金流）；非 A 股可用 CSV 提供（列：date,dps）
+# 分红现金落袋（计入 XIRR 现金流）；其他市场可用 CSV 提供（列：date,dps）
 uv run python run_dca.py --symbol 600000.SH --dividends --div-policy cash
 uv run python run_dca.py --symbol AAPL.US --dividends my_divs.csv
 ```
@@ -137,7 +138,7 @@ uv run python run_dca.py --symbol AAPL.US --dividends my_divs.csv
 | `--ma-window` | `60` | `ma` / `smart` 模式均线窗口 |
 | `--boost` | `2.0` | 加码基准倍数（`ma` 低于均线倍数；`smart` / `dip` 分档以此缩放） |
 | `--dip-window` | `120` | `dip` 模式回撤参考高点滚动窗口 |
-| `--dividends [CSV]` | 关 | 显式分红建模：不带值自动拉 A 股分红历史（akshare），带路径读 CSV（`date,dps`）；启用后自动改用**不复权**价格 |
+| `--dividends [CSV]` | 关 | 显式分红建模：不带值自动拉分红历史（A 股 akshare / 港美股 openbb），带路径读 CSV（`date,dps`）；启用后自动改用**不复权**价格 |
 | `--div-policy` | `reinvest` | 分红处理：`reinvest`（除权日收盘价再投入）/ `cash`（现金落袋，计入 XIRR 现金流与盈亏） |
 | `--plot` | 关 | 生成图表 |
 | `--output` | 自动 | 图表路径，默认 `../outputs/dca_<标的>_<模式>_<频率>.png` |

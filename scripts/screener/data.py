@@ -533,12 +533,21 @@ def _fetch_astock_rd_ratio_remote(code: str) -> dict | None:
 def fetch_yfinance_rd_ratio(symbol: str) -> float | None:
     """港美股单标的研发强度(%)：利润表 R&D / Total Revenue × 100。
 
-    ``.info`` 无研发字段，需额外拉取年度利润表（仅启用费雪研发维度时
-    调用，避免逐只多打一次接口）。
+    openbb 年度利润表主力（异常时降级 yfinance 直连）；``.info`` 无研发
+    字段，需额外拉取利润表（仅启用费雪研发维度时调用，避免逐只多打一次接口）。
 
     Returns:
         最新财年研发费用/营收占比(%)；无研发科目或接口异常返回 None。
     """
+    # openbb 主力：返回 None 表示未披露研发（有效答案，不再降级）
+    try:
+        from data.openbb import fetch_obb_rd_ratio, supports_hkus
+
+        if supports_hkus(symbol):
+            with contextlib.redirect_stdout(sys.stderr):
+                return fetch_obb_rd_ratio(symbol)
+    except Exception:
+        pass  # 接口异常才降级 yfinance 直连
     try:
         import yfinance as yf
 
@@ -724,8 +733,11 @@ def fetch_technical_profile(
 def fetch_yfinance_metrics(symbol: str) -> dict | None:
     """港美股单标的指标：PE/PB/ROE/股息率/负债率/增速（yfinance .info）。
 
+    .info 单次调用字段最全（含现价/52 周/FCF，openbb 需 3 次调用才能凑齐），
+    故保留为主力；失败时降级 openbb 关键指标（部分字段缺失，抵御接口变更）。
+
     Returns:
-        归一化指标 dict；接口异常时返回 None。
+        归一化指标 dict；两条路径均异常时返回 None。
     """
     try:
         import yfinance as yf
@@ -735,10 +747,10 @@ def fetch_yfinance_metrics(symbol: str) -> dict | None:
         ticker = yf.Ticker(_to_yahoo_symbol(symbol))
         info = ticker.info or {}
     except Exception:
-        return None
+        info = {}
 
     if not info:
-        return None
+        return _fetch_openbb_metrics_fallback(symbol)
 
     # yfinance ROE 为小数（如 0.168 = 16.8%），转百分数
     roe_raw = info.get("returnOnEquity")
@@ -799,4 +811,44 @@ def fetch_yfinance_metrics(symbol: str) -> dict | None:
         "gross_margin": gross_margin,
         "drawdown": drawdown,
         "asset_growth": None,  # yfinance .info 无资产增速，聪明增长维度仅 A 股支持
+    }
+
+
+def _fetch_openbb_metrics_fallback(symbol: str) -> dict | None:
+    """.info 失败时的 openbb 关键指标兜底（抵御 yfinance 接口变更/限流）。
+
+    覆盖估值/质量/增速核心字段；现价/52 周位置/现金流收益率等缺失置
+    None（price_pos 缺失时 engine 会自行走日 K 补算）。
+    """
+    try:
+        from data.openbb import fetch_obb_metrics, supports_hkus
+
+        if not supports_hkus(symbol):
+            return None
+        with contextlib.redirect_stdout(sys.stderr):
+            m = fetch_obb_metrics(symbol)
+    except Exception:
+        return None
+
+    print(
+        f"[warn] yfinance .info 拉取 {symbol} 失败，已降级 openbb 关键指标"
+        "（现价/52周位置/现金流收益率等字段缺失）。",
+        file=sys.stderr,
+    )
+    return {
+        "name": symbol,
+        "close": None,
+        "pe": m["pe"],
+        "pb": m["pb"],
+        "roe": m["roe"],
+        "div_yield": m["div_yield"],
+        "debt_ratio": m["debt_ratio"],
+        "profit_growth": m["profit_growth"],
+        "revenue_growth": m["revenue_growth"],
+        "total_mv": m["total_mv"],
+        "cash_yield": None,
+        "price_pos": None,
+        "gross_margin": m["gross_margin"],
+        "drawdown": None,
+        "asset_growth": None,
     }

@@ -1,11 +1,12 @@
-"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + baostock / akshare / yfinance 兖底）。
+"""数据获取辅助：多源 K 线拉取（TickFlow 主源 + OpenBB 港美主力 + baostock / akshare / yfinance）。
 
-统一拉取 K 线为回测所需的 OHLCV DataFrame。默认优先 TickFlow
-（免费服务历史日 K 足以回测，配置 TICKFLOW_API_KEY 后支持分钟级）；
+统一拉取 K 线为回测所需的 OHLCV DataFrame。A 股默认优先 TickFlow
+（免费服务历史日 K 足以回测，配置 TICKFLOW_API_KEY 后支持分钟级），
+港股/美股日/周/月 K 优先 OpenBB（数据类型更丰富，免费无需 Key）；
 单源失败先重试（默认 2 次，退避 1s/2s，``ALPHA_FORGE_RETRIES`` 可调，0 关闭），
 重试仍失败时自动降级：A 股日/周/月 K 走 baostock → akshare，
-港股/美股日/周/月 K 走 yfinance。
-环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|baostock|akshare|yfinance`` 可强制指定单源。
+港股/美股日/周/月 K 走 TickFlow → yfinance。
+环境变量 ``ALPHA_FORGE_DATA_SOURCE=tickflow|openbb|baostock|akshare|yfinance`` 可强制指定单源。
 
 弃用提示：``fetch_dividends`` / ``fetch_fundamentals`` / ``get_client`` 为向后兼容
 重导出，建议改用 ``from data.dividends import fetch_dividends`` 等新路径。

@@ -23,7 +23,7 @@ class EnvConfig:
     Attributes:
         debug: ALPHA_FORGE_DEBUG=1 时输出完整堆栈。
         data_source: ALPHA_FORGE_DATA_SOURCE 强制指定数据源
-            （tickflow/baostock/akshare/yfinance），空串为 auto 模式。
+            （tickflow/openbb/baostock/akshare/yfinance），空串为 auto 模式。
         retries: ALPHA_FORGE_RETRIES 数据拉取重试次数（0 关闭）。
         offline: ALPHA_FORGE_OFFLINE=1 时离线模式：K 线只读本地缓存
             （跳过 TTL 新鲜度检查，不发起任何网络拉取）。

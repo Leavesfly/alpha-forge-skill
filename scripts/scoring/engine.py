@@ -762,8 +762,8 @@ def _left_side_plan(value: dict, decision: dict, symbol: str) -> dict | None:
         return None
     sym = symbol or "<代码>"
     dca_cmd = f"run_dca.py --symbol {sym} --mode smart"
-    if sym.upper().endswith((".SH", ".SZ", ".BJ")):
-        dca_cmd += " --dividends auto"  # A 股可显式建模分红（红利股收益大头）
+    if sym.upper().endswith((".SH", ".SZ", ".BJ", ".HK", ".US")):
+        dca_cmd += " --dividends auto"  # A 股/港美股可显式建模分红（红利股收益大头）
     return {
         "reason": f"估值分位均值 {val_avg:.0%} ≤ {VAL_DEEP:.0%}（价灯深绿）且基本面无硬伤",
         "approach": "时间分批（DCA）替代一次性抄底：左侧不预测底部，用纪律分批摊低成本",

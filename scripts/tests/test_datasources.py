@@ -11,6 +11,7 @@ from data.cache import _key
 from data.sources import (
     AkshareSource,
     BaostockSource,
+    OpenBBSource,
     YFinanceSource,
     _to_yahoo_symbol,
     get_sources,
@@ -113,7 +114,13 @@ def test_forced_source_env(monkeypatch):
     monkeypatch.delenv("ALPHA_FORGE_DATA_SOURCE", raising=False)
     reset_env_config()
     assert source_label() == "auto"
-    assert [s.name for s in get_sources()] == ["tickflow", "baostock", "akshare", "yfinance"]
+    assert [s.name for s in get_sources()] == [
+        "openbb",
+        "tickflow",
+        "baostock",
+        "akshare",
+        "yfinance",
+    ]
 
 
 def test_yfinance_forced_source_env(monkeypatch):
@@ -122,6 +129,74 @@ def test_yfinance_forced_source_env(monkeypatch):
     assert source_label() == "yfinance"
     sources = get_sources()
     assert len(sources) == 1 and sources[0].name == "yfinance"
+
+
+def test_openbb_forced_source_env(monkeypatch):
+    monkeypatch.setenv("ALPHA_FORGE_DATA_SOURCE", "openbb")
+    reset_env_config()
+    assert source_label() == "openbb"
+    sources = get_sources()
+    assert len(sources) == 1 and sources[0].name == "openbb"
+
+
+def test_openbb_supports_scope():
+    """openbb 主力源仅覆盖港股/美股日/周/月 K。"""
+    src = OpenBBSource()
+    assert src.supports("AAPL.US", "1d")
+    assert src.supports("00700.HK", "1w")
+    assert src.supports("MSFT.US", "1M")
+    assert not src.supports("600000.SH", "1d")  # A 股交给 TickFlow/baostock
+    assert not src.supports("AAPL.US", "5m")  # 分钟级不覆盖
+    assert not src.supports("ABCD.HK", "1d")  # 非数字港股代码无法映射
+
+
+def test_openbb_backward_adjust_unsupported():
+    from errors import DataFetchError
+
+    with pytest.raises(DataFetchError, match="后复权"):
+        OpenBBSource().fetch("AAPL.US", "1d", 20, "backward")
+
+
+def test_openbb_column_normalization(monkeypatch):
+    """openbb 返回（date 索引 + 额外 dividend 列）归一为标准 OHLCV。"""
+    dates = pd.Index(pd.date_range("2024-01-02", periods=30, freq="B").date, name="date")
+    obb_df = pd.DataFrame(
+        {
+            "open": np.linspace(10, 11, 30),
+            "high": np.linspace(10.2, 11.2, 30),
+            "low": np.linspace(9.9, 10.9, 30),
+            "close": np.linspace(10.1, 11.1, 30),
+            "volume": np.full(30, 1000.0),
+            "dividend": np.zeros(30),
+        },
+        index=dates,
+    )
+
+    class _FakeOut:
+        @staticmethod
+        def to_dataframe():
+            return obb_df
+
+    def _fake_historical(ticker, interval, start_date, provider, adjustment):
+        assert ticker == "0700.HK"
+        assert interval == "1d"
+        assert provider == "yfinance"
+        assert adjustment == "splits_and_dividends"
+        return _FakeOut()
+
+    import sys
+    from types import SimpleNamespace
+
+    fake_obb = SimpleNamespace(
+        equity=SimpleNamespace(
+            price=SimpleNamespace(historical=_fake_historical)
+        )
+    )
+    monkeypatch.setitem(sys.modules, "openbb", SimpleNamespace(obb=fake_obb))
+    out = OpenBBSource().fetch("00700.HK", "1d", 20, "forward")
+    assert list(out.columns) == ["trade_date", "open", "high", "low", "close", "volume"]
+    assert len(out) == 20
+    assert out["trade_date"].is_monotonic_increasing
 
 
 def test_yfinance_supports_scope():
@@ -268,7 +343,7 @@ def test_fetch_dividends_no_record_typeerror(monkeypatch):
         datafeed.fetch_dividends("688981.SH")
 
 
-def test_fetch_dividends_non_a_share_raises():
-    """非 A 股标的应提前拦截。"""
-    with pytest.raises(RuntimeError, match="仅支持 A 股"):
-        datafeed.fetch_dividends("AAPL.US")
+def test_fetch_dividends_unsupported_market_raises():
+    """无分红数据源的市场（如期货）应提前拦截。"""
+    with pytest.raises(RuntimeError, match="仅支持 A 股与港美股"):
+        datafeed.fetch_dividends("cu2501.SHF")

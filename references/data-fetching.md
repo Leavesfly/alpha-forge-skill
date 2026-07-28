@@ -54,12 +54,26 @@ uv run python your_script.py  # 运行你的脚本
 
 回测类 CLI（经 `datafeed.fetch_ohlcv`）采用多数据源链（按顺序尝试，前一源失败自动降级并在 stderr 告警）：
 
-- **主源 TickFlow**：多市场全周期；
+- **港股/美股主力 OpenBB**：日/周/月 K（Open Data Platform，免费无需 Key，
+  如 `AAPL.US`、`00700.HK`；数据类型可扩展财务/期权/宏观等；不支持后复权）；
+- **主源 TickFlow**：多市场全周期（A 股主力，港美股排在 OpenBB 之后兜底）；
 - **兜底 baostock / akshare**：仅 A 股日/周/月 K（免费无需 Key）；
-- **兜底 yfinance**：仅港股/美股日/周/月 K（免费无需 Key，如 `AAPL.US`、`00700.HK`；不支持后复权）；
-- 环境变量 `ALPHA_FORGE_DATA_SOURCE=tickflow|baostock|akshare|yfinance` 可强制只用单源；不同源的本地缓存互不混用（缓存键含源标签）。
+- **兜底 yfinance**：仅港股/美股日/周/月 K（免费无需 Key；不支持后复权）；
+- 环境变量 `ALPHA_FORGE_DATA_SOURCE=tickflow|openbb|baostock|akshare|yfinance` 可强制只用单源；不同源的本地缓存互不混用（缓存键含源标签）。
+- 依赖注意：openbb 内部走 anyio portal，`anyio<4` 会导致所有请求报
+  `This portal is not running`，项目已在 pyproject 中约束 `anyio>=4.0`。
 
 各源均输出列名归一的升序 DataFrame（`trade_date/open/high/low/close/volume`），回测链路无需感知差异。
+
+### 港美股基本面与分红（OpenBB）
+
+K 线之外，港美股的基本面数据也经 OpenBB（`scripts/data/openbb.py` 适配层，免费无需 Key）：
+
+- **季度/年度 EPS**（CAN SLIM C/A 检查）：openbb 利润表主力，失败降级 yfinance 直连；
+- **研发强度**（费雪筛选）：openbb 年度利润表主力；
+- **估值分位 PE/PB Band**：openbb 关键指标主力 + 项目缓存周 K（不重复拉取）；
+- **每股分红历史**（DCA 显式分红建模 `--dividends auto`）：此前仅 A 股，现已覆盖港美股；
+- 筛选器深度指标保留 yfinance `.info` 主力（单次调用字段最全），失败时降级 openbb 关键指标。
 
 ### 本地优先工作流（先同步、后研究）
 

@@ -235,9 +235,16 @@ class TestLeftPlan:
         assert res.verdict == "left_watch"
         assert res.left_plan is None
 
-    def test_non_astock_command_without_dividends(self):
-        """非 A 股的 DCA 命令不附 --dividends auto（分红数据源仅 A 股）。"""
+    def test_hkus_command_with_dividends(self):
+        """港美股的 DCA 命令也附 --dividends auto（openbb 分红数据源）。"""
         res = score_symbol(_downtrend_df(), symbol="AAPL.US", valuation=LOW_VAL)
+        assert res.verdict == "left_watch"
+        assert res.left_plan is not None
+        assert "--dividends auto" in res.left_plan["suggested_command"]
+
+    def test_unsupported_market_command_without_dividends(self):
+        """无分红数据源的市场（如期货）不附 --dividends auto。"""
+        res = score_symbol(_downtrend_df(), symbol="CU2501.SHF", valuation=LOW_VAL)
         assert res.verdict == "left_watch"
         assert res.left_plan is not None
         assert "--dividends" not in res.left_plan["suggested_command"]

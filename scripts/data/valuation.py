@@ -9,7 +9,8 @@
 数据源：
 - A 股：``ak.stock_a_indicator_lg``（乐咕乐股，旧版名 ``stock_a_lg_indicator``），
   接口不存在时降级 ``ak.stock_value_em``（东财估值分析，日频 PE/PB）；
-- 港美股：yfinance 历史价格 + 当前 TTM EPS / BVPS 近似推算（精度有限，标注近似）。
+- 港美股：openbb 关键指标主力（失败降级 yfinance .info）+ 历史价格 /
+  当前 TTM EPS / BVPS 近似推算（精度有限，标注近似）。
 
 分位计算采用中位秩（并列值各计一半），避免估值恒定时分位恒为 0 或 1。
 """
@@ -35,7 +36,7 @@ class ValuationPercentile:
     pb_percentile: float | None   # 0~1，越低越便宜
     n_samples: int                # 有效样本数
     lookback_years: float         # 实际回看年数
-    source: str                   # akshare / yfinance_approx
+    source: str                   # akshare / openbb_approx / yfinance_approx
     note: str = ""                # 补充说明（如数据不足、近似口径）
 
     def to_dict(self) -> dict:
@@ -233,6 +234,94 @@ def fetch_valuation_astock(
 
 
 # ---------------------------------------------------------------------------
+# 港美股：openbb 主力（关键指标 + 项目缓存周 K）
+# ---------------------------------------------------------------------------
+
+
+def fetch_valuation_openbb(
+    symbol: str,
+    lookback_years: int = 5,
+) -> ValuationPercentile | None:
+    """港美股估值历史分位（openbb 近似：历史价格 / 当前 TTM EPS/BVPS）。
+
+    与 yfinance 路径同一近似口径；EPS 由现价/PE 反推，BVPS 直接取自
+    openbb 关键指标。历史价格走 datafeed 周 K（命中本地缓存，不重复拉取）。
+
+    Returns:
+        ValuationPercentile；接口异常或数据不足时返回 None（调用方降级 yfinance）。
+    """
+    try:
+        from data.openbb import fetch_obb_metrics, supports_hkus
+
+        if not supports_hkus(symbol):
+            return None
+        with contextlib.redirect_stdout(sys.stderr):
+            m = fetch_obb_metrics(symbol)
+    except Exception:
+        return None
+
+    pe = m.get("pe")
+    pb = m.get("pb")
+    bvps = m.get("bvps")
+    if pe is None and pb is None:
+        return None
+
+    # 历史价格：项目缓存周 K（OpenBB 主力链），与 yf 路径的 5y 周线同口径
+    try:
+        from datafeed import fetch_ohlcv
+
+        df = fetch_ohlcv(symbol, period="1w", count=lookback_years * 52)
+    except Exception:
+        return None
+    if df is None or len(df) < 30:
+        return None
+    prices = pd.Series(
+        df["close"].astype(float).to_numpy(), index=pd.to_datetime(df["trade_date"])
+    ).dropna()
+    if len(prices) < 30:
+        return None
+
+    close = float(prices.iloc[-1])
+    # TTM EPS 由现价/PE 反推（openbb 关键指标无直接 EPS 字段）
+    eps = close / pe if pe and pe > 0 else None
+
+    pe_current = None
+    pe_pct = None
+    pb_current = None
+    pb_pct = None
+
+    if eps and eps > 0:
+        pe_hist = prices / eps
+        pe_hist = pe_hist[pe_hist > 0]
+        if len(pe_hist) >= 30:
+            pe_current = float(pe)
+            pe_pct = _percentile_rank(pe_hist, pe_current)
+
+    if bvps and bvps > 0:
+        pb_hist = prices / bvps
+        pb_hist = pb_hist[pb_hist > 0]
+        if len(pb_hist) >= 30:
+            pb_current = float(pb) if pb else float(pb_hist.iloc[-1])
+            pb_pct = _percentile_rank(pb_hist, pb_current)
+
+    if pe_pct is None and pb_pct is None:
+        return None
+
+    span_days = (prices.index.max() - prices.index.min()).days
+    return ValuationPercentile(
+        symbol=symbol,
+        pe_current=pe_current,
+        pb_current=pb_current,
+        pe_percentile=pe_pct,
+        pb_percentile=pb_pct,
+        n_samples=len(prices),
+        lookback_years=span_days / 365.25,
+        source="openbb_approx",
+        note="近似口径：历史价格/当前EPS(BVPS)，未考虑盈利增长，仅反映价格相对位置",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 港美股：yfinance 近似（历史价格 / 当前 EPS/BVPS）
 # ---------------------------------------------------------------------------
 
@@ -341,7 +430,7 @@ def fetch_valuation_percentile(
     symbol: str,
     lookback_years: int = 5,
 ) -> ValuationPercentile | None:
-    """统一入口：自动分流 A 股（akshare 精确）/ 港美股（yfinance 近似）。
+    """统一入口：自动分流 A 股（akshare 精确）/ 港美股（openbb 主力、yfinance 兜底，近似）。
 
     Args:
         symbol: 带市场后缀的标的代码。
@@ -352,7 +441,9 @@ def fetch_valuation_percentile(
     """
     if symbol.upper().endswith(_A_SUFFIXES):
         return fetch_valuation_astock(symbol, lookback_years)
-    return fetch_valuation_yfinance(symbol, lookback_years)
+    return fetch_valuation_openbb(symbol, lookback_years) or fetch_valuation_yfinance(
+        symbol, lookback_years
+    )
 
 
 def format_valuation(vp: ValuationPercentile | None) -> str:
