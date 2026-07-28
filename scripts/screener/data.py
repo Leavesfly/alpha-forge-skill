@@ -318,8 +318,8 @@ def _fetch_astock_detail_remote(code: str) -> dict | None:
 
     result: dict = {
         "roe": None, "debt_ratio": None, "profit_growth": None,
-        "revenue_growth": None, "asset_growth": None, "ocf_per_share": None,
-        "gross_margin": None,
+        "profit_growth_prev": None, "revenue_growth": None, "asset_growth": None,
+        "ocf_per_share": None, "gross_margin": None,
     }
 
     # 取最新一期（按日期降序取第一行）
@@ -353,6 +353,11 @@ def _fetch_astock_detail_remote(code: str) -> dict | None:
         val = pd.to_numeric(latest.get(growth_col), errors="coerce")
         if pd.notna(val):
             result["profit_growth"] = float(val)
+        # 上一报告期增速（纳维里尔盈利动能维度：最新增速是否较上期加速）
+        if len(df) > 1:
+            prev = pd.to_numeric(df.iloc[1].get(growth_col), errors="coerce")
+            if pd.notna(prev):
+                result["profit_growth_prev"] = float(prev)
 
     # 主营业务收入增长率（百倍股维度：增长须由营收驱动，防纯削减成本的假增长）
     rev_col = _find_col(df, [
@@ -390,15 +395,40 @@ def _fetch_astock_detail_remote(code: str) -> dict | None:
 
 
 def fetch_astock_gross_margin(code: str) -> float | None:
-    """A 股单标的毛利率兜底：``ak.stock_financial_abstract``（同花顺财务摘要）。
+    """A 股单标的毛利率兜底：委托 :func:`fetch_astock_margin_profile` 取最新期。
 
-    新浪财务分析指标的「销售毛利率」近年报告期普遍为 NaN，此接口作为
-    DHQ 毛利率维度的兜底数据源（仅启用该维度且主接口缺失时调用，避免
-    全市场扫描额外打接口）。
+    新浪财务分析指标的「销售毛利率」近年报告期普遍为 NaN，同花顺摘要
+    作为 DHQ 毛利率维度的兜底数据源（仅启用该维度且主接口缺失时调用，
+    避免全市场扫描额外打接口）。
 
     Returns:
         最新报告期毛利率(%)；接口异常或无数据返回 None。
     """
+    profile = fetch_astock_margin_profile(code)
+    return profile.get("gross_margin") if profile else None
+
+
+def fetch_astock_margin_profile(code: str) -> dict | None:
+    """A 股单标的利润率画像（本地优先）：最新毛利率 + 同比变动。
+
+    费雪《怎样选择成长股》要点 6/7：优秀公司须维持并改善利润率，
+    毛利率同比下滑是成本控制/定价权恶化的领先信号。数据源为同花顺
+    财务摘要（``ak.stock_financial_abstract``，多报告期）；同比取同期
+    报告期（去年同一 MMDD）避免季节性干扰；仅启用相关维度时逐只调用。
+
+    Returns:
+        ``{"gross_margin": 最新期毛利率(%), "margin_trend_pp": 同比变动(pp)}``
+        （值均为 float|None）；接口异常或无数据返回 None。
+    """
+    from data.cache import load_json_obj
+
+    return load_json_obj(
+        lambda: _fetch_astock_margin_profile_remote(code), f"astock_margin_{code}"
+    )
+
+
+def _fetch_astock_margin_profile_remote(code: str) -> dict | None:
+    """利润率画像远端拉取（无缓存）：同花顺摘要多报告期。"""
     try:
         import akshare as ak
 
@@ -406,7 +436,11 @@ def fetch_astock_gross_margin(code: str) -> float | None:
             df = ak.stock_financial_abstract(symbol=code)
     except Exception:
         return None
+    return _margin_profile_from_abstract(df)
 
+
+def _margin_profile_from_abstract(df: pd.DataFrame | None) -> dict | None:
+    """从同花顺财务摘要表提取最新毛利率与同比变动（纯解析，可单测）。"""
     if df is None or len(df) == 0 or "指标" not in df.columns:
         return None
 
@@ -416,11 +450,24 @@ def fetch_astock_gross_margin(code: str) -> float | None:
 
     # 报告期列为 YYYYMMDD，取最新一期非空值
     date_cols = sorted((c for c in df.columns if str(c).isdigit()), reverse=True)
+    latest_col, latest_val = None, None
     for col in date_cols:
         val = pd.to_numeric(rows.iloc[0].get(col), errors="coerce")
         if pd.notna(val):
-            return float(val)
-    return None
+            latest_col, latest_val = str(col), float(val)
+            break
+    if latest_val is None:
+        return None
+
+    # 同比：去年同一报告期（年份-1，MMDD 相同），避免季报/年报季节性干扰
+    trend_pp = None
+    prev_col = str(int(latest_col[:4]) - 1) + latest_col[4:]
+    if prev_col in {str(c) for c in date_cols}:
+        prev_val = pd.to_numeric(rows.iloc[0].get(prev_col), errors="coerce")
+        if pd.notna(prev_val):
+            trend_pp = latest_val - float(prev_val)
+
+    return {"gross_margin": latest_val, "margin_trend_pp": trend_pp}
 
 
 #: 新浪财报接口的市场前缀（研发强度取数用；北交所新浪无覆盖，返回 None）
@@ -570,6 +617,275 @@ def fetch_yfinance_rd_ratio(symbol: str) -> float | None:
     if rev[latest] <= 0:
         return None
     return float(rd[latest] / rev[latest] * 100.0)
+
+
+#: 增发记录进程内缓存（全市场扫描数百只候选共用一张批量表）
+_OFFERING_CACHE: dict[str, list[str]] | None = None
+
+
+def fetch_astock_offering_count(code: str, years: int = 3) -> int | None:
+    """A 股近 N 年增发次数（本地优先）：股权融资稀释的直接证据。
+
+    费雪《怎样选择成长股》要点 13：成长不应靠大量股权融资稀释老股东。
+    数据源为东财全部增发记录（``ak.stock_qbzf_em``，批量表一次拉取全市场，
+    逐只查询为本地字典命中，零逐只接口成本）；直接记录比股本增速可靠
+    （A 股送转股普遍，股本变动不等于稀释）。
+
+    Returns:
+        近 N 年增发次数（从未增发返回 0）；批量表不可用返回 None
+        （调用方按数据缺失剔除）。
+    """
+    global _OFFERING_CACHE
+    if _OFFERING_CACHE is None:
+        from data.cache import load_table
+
+        table = load_table(_fetch_astock_offerings_remote, "astock_offerings")
+        if table is None:
+            return None
+        _OFFERING_CACHE = _offering_dates_from_table(table)
+    from datetime import date
+
+    cutoff = f"{date.today().year - years}{date.today().strftime('%m%d')}"
+    return sum(1 for d in _OFFERING_CACHE.get(str(code), []) if d >= cutoff)
+
+
+def _fetch_astock_offerings_remote(log: Callable[..., None] | None = None) -> pd.DataFrame | None:
+    """全市场增发记录远端拉取（无缓存）：归一为 code/date 两列。"""
+    try:
+        import akshare as ak
+
+        with contextlib.redirect_stdout(sys.stderr):
+            raw = ak.stock_qbzf_em()
+    except Exception:
+        return None
+
+    if raw is None or len(raw) == 0:
+        return None
+    code_col = _find_col(raw, ["股票代码", "code"])
+    date_col = _find_col(raw, ["发行日期", "增发上市日期", "date"])
+    if code_col is None or date_col is None:
+        return None
+    df = pd.DataFrame({
+        "code": raw[code_col].astype(str),
+        "date": pd.to_datetime(raw[date_col], errors="coerce").dt.strftime("%Y%m%d"),
+    })
+    return df.dropna(subset=["date"]).reset_index(drop=True)
+
+
+def _offering_dates_from_table(df: pd.DataFrame) -> dict[str, list[str]]:
+    """增发记录表 → 代码到发行日（YYYYMMDD）列表的字典（纯解析，可单测）。"""
+    result: dict[str, list[str]] = {}
+    for code, d in zip(df["code"].astype(str), df["date"].astype(str)):
+        result.setdefault(code, []).append(d)
+    return result
+
+
+def fetch_yfinance_fisher_extra(symbol: str) -> dict | None:
+    """港美股利润率趋势与股本扩张：年度利润表一次拉齐两个费雪维度。
+
+    - 利润率趋势（要点 6/7）：毛利率最新财年 vs 上一财年的变动（pp）；
+    - 股本扩张（要点 13）：Basic Average Shares 同比增速(%)，IAS 33 要求
+      按拆股/送股追溯重述，天然避免拆股假阳性（与 A 股增发记录口径互补）。
+
+    ``.info`` 无历史字段，需额外拉利润表（仅启用费雪趋势/稀释维度时调用）。
+
+    Returns:
+        ``{"margin_trend_pp": 毛利率变动(pp), "share_growth": 股本增速(%)}``
+        （值均为 float|None）；接口异常返回 None。
+    """
+    try:
+        import yfinance as yf
+
+        from data.sources import _to_yahoo_symbol
+
+        stmt = yf.Ticker(_to_yahoo_symbol(symbol)).income_stmt
+    except Exception:
+        return None
+    return _fisher_extra_from_income_stmt(stmt)
+
+
+def _fisher_extra_from_income_stmt(stmt: pd.DataFrame | None) -> dict | None:
+    """从年度利润表提取毛利率趋势与股本增速（纯解析，可单测）。"""
+    if stmt is None or len(stmt) == 0 or stmt.shape[1] < 2:
+        return None
+
+    def _two_latest(row_name: str) -> tuple[float, float] | None:
+        if row_name not in stmt.index:
+            return None
+        vals = pd.to_numeric(stmt.loc[row_name], errors="coerce").dropna()
+        if len(vals) < 2:
+            return None
+        vals = vals.sort_index(ascending=False)
+        return float(vals.iloc[0]), float(vals.iloc[1])
+
+    # 毛利率趋势：(毛利/营收) 最新财年 - 上一财年，单位 pp
+    margin_trend_pp = None
+    gross, rev = _two_latest("Gross Profit"), _two_latest("Total Revenue")
+    if gross and rev and rev[0] > 0 and rev[1] > 0:
+        margin_trend_pp = (gross[0] / rev[0] - gross[1] / rev[1]) * 100.0
+
+    # 股本扩张：基本加权股本同比增速（缺失时降级摊薄口径）
+    share_growth = None
+    shares = _two_latest("Basic Average Shares") or _two_latest("Diluted Average Shares")
+    if shares and shares[1] > 0:
+        share_growth = (shares[0] / shares[1] - 1.0) * 100.0
+
+    if margin_trend_pp is None and share_growth is None:
+        return None
+    return {"margin_trend_pp": margin_trend_pp, "share_growth": share_growth}
+
+
+#: 盈利预测批量表进程内缓存（全市场扫描数百只候选共用一张批量表）
+_FORECAST_CACHE: dict[str, float] | None = None
+
+
+def fetch_astock_forecast_growth(code: str) -> float | None:
+    """A 股机构一致预测盈利增速(%)（本地优先）：东财盈利预测批量表。
+
+    纳维里尔《怎样选择成长股：持续获利选股8大指标》指标 1（盈利预期
+    上调）的免费近似：免费源无预测修正历史，以「机构一致预测 EPS 隐含
+    增速」代理预期面向好；真正的上调/下调方向须人工核查研报。批量表
+    一次拉取全市场（``ak.stock_profit_forecast_em``），逐只查询为本地字典
+    命中，零逐只接口成本。
+
+    Returns:
+        次年预测 EPS / 首年预测 EPS - 1（%）；无机构覆盖或基数非正返回
+        None（调用方按数据缺失剔除）；批量表不可用返回 None。
+    """
+    global _FORECAST_CACHE
+    if _FORECAST_CACHE is None:
+        from data.cache import load_table
+
+        table = load_table(_fetch_astock_forecast_remote, "astock_profit_forecast")
+        if table is None:
+            return None
+        _FORECAST_CACHE = {
+            str(c): float(g)
+            for c, g in zip(table["code"], table["forecast_growth"])
+            if pd.notna(g)
+        }
+    return _FORECAST_CACHE.get(str(code))
+
+
+def _fetch_astock_forecast_remote(log: Callable[..., None] | None = None) -> pd.DataFrame | None:
+    """全市场盈利预测批量表远端拉取（无缓存）：归一为 code/forecast_growth。"""
+    try:
+        import akshare as ak
+
+        with contextlib.redirect_stdout(sys.stderr):
+            raw = ak.stock_profit_forecast_em()
+    except Exception:
+        return None
+    return _forecast_table_from_raw(raw)
+
+
+def _forecast_table_from_raw(raw: pd.DataFrame | None) -> pd.DataFrame | None:
+    """东财盈利预测原始表 → code/forecast_growth 两列（纯解析，可单测）。
+
+    预测 EPS 列形如「2026预测每股收益」；取最近两个预测年度，增速 =
+    (次年 / 首年 - 1) × 100；首年预测 EPS 非正时置 NaN（无法计算增速，
+    调用方按数据缺失处理）。
+    """
+    if raw is None or len(raw) == 0:
+        return None
+    code_col = _find_col(raw, ["代码", "股票代码", "code"])
+    if code_col is None:
+        return None
+    year_cols = sorted(
+        (int(str(c)[:4]), c)
+        for c in raw.columns
+        if "预测每股收益" in str(c) and str(c)[:4].isdigit()
+    )
+    if len(year_cols) < 2:
+        return None
+    base = pd.to_numeric(raw[year_cols[0][1]], errors="coerce")
+    nxt = pd.to_numeric(raw[year_cols[1][1]], errors="coerce")
+    growth = (nxt / base - 1.0) * 100.0
+    growth[~(base > 0)] = float("nan")
+    df = pd.DataFrame({"code": raw[code_col].astype(str), "forecast_growth": growth})
+    return df.dropna(subset=["code"]).reset_index(drop=True)
+
+
+def fetch_yfinance_navellier(symbol: str) -> dict | None:
+    """港美股纳维里尔预期/惊喜/动能维度：一只标的一次拉齐三项。
+
+    - 预测盈利增速（指标 1 近似）：分析师一致预期当财年盈利增速
+      （``earnings_estimate`` 的 growth 行，免费源无修正方向历史）；
+    - 盈利惊喜（指标 2）：最近季度 (实际 EPS - 预期 EPS) / |预期| × 100
+      （``earnings_history``）；
+    - 盈利动能（指标 7）：年度净利润增速加速度（最新财年增速 - 上一财年
+      增速，pp；港美股无免费的多期增速序列，年度口径粗于 A 股报告期口径）。
+
+    仅启用纳维里尔维度时逐只调用；三个子项独立容错（缺失置 None）。
+
+    Returns:
+        ``{"forecast_growth", "surprise_pct", "eps_momentum_pp"}``
+        （值均为 float|None)；接口整体异常或三项全缺返回 None。
+    """
+    try:
+        import yfinance as yf
+
+        from data.sources import _to_yahoo_symbol
+
+        ticker = yf.Ticker(_to_yahoo_symbol(symbol))
+    except Exception:
+        return None
+
+    out: dict = {"forecast_growth": None, "surprise_pct": None, "eps_momentum_pp": None}
+    with contextlib.suppress(Exception):
+        est = ticker.earnings_estimate  # 行 0q/+1q/0y/+1y，growth 为小数
+        if est is not None and "growth" in est.columns and "0y" in est.index:
+            g = pd.to_numeric(est.loc["0y", "growth"], errors="coerce")
+            if pd.notna(g):
+                out["forecast_growth"] = float(g) * 100.0
+    with contextlib.suppress(Exception):
+        out["surprise_pct"] = _surprise_from_history(ticker.earnings_history)
+    with contextlib.suppress(Exception):
+        out["eps_momentum_pp"] = _momentum_from_income_stmt(ticker.income_stmt)
+
+    if all(v is None for v in out.values()):
+        return None
+    return out
+
+
+def _surprise_from_history(hist: pd.DataFrame | None) -> float | None:
+    """最近一期盈利惊喜(%)：(实际 EPS - 预期 EPS) / |预期| × 100（纯解析，可单测）。
+
+    自行计算避免 yfinance surprisePercent 的小数/百分数口径歧义；
+    取最近一期实际与预期同时非空的记录，预期为 0 时跳过（除零）。
+    """
+    if hist is None or len(hist) == 0:
+        return None
+    if "epsActual" not in hist.columns or "epsEstimate" not in hist.columns:
+        return None
+    df = hist.copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()].sort_index()
+    actual = pd.to_numeric(df["epsActual"], errors="coerce")
+    est = pd.to_numeric(df["epsEstimate"], errors="coerce")
+    mask = actual.notna() & est.notna() & (est != 0)
+    if not mask.any():
+        return None
+    ts = mask[mask].index[-1]
+    return float((actual[ts] - est[ts]) / abs(est[ts]) * 100.0)
+
+
+def _momentum_from_income_stmt(stmt: pd.DataFrame | None) -> float | None:
+    """年度净利润增速加速度(pp)：最新财年增速 - 上一财年增速（纯解析，可单测）。
+
+    需要连续 3 个财年净利润且两个基数财年为正（否则增速无意义，返回
+    None，调用方按数据缺失剔除）。
+    """
+    if stmt is None or len(stmt) == 0 or "Net Income" not in stmt.index:
+        return None
+    vals = pd.to_numeric(stmt.loc["Net Income"], errors="coerce").dropna()
+    if len(vals) < 3:
+        return None
+    vals = vals.sort_index(ascending=False)
+    n0, n1, n2 = float(vals.iloc[0]), float(vals.iloc[1]), float(vals.iloc[2])
+    if n1 <= 0 or n2 <= 0:
+        return None
+    return (n0 / n1 - 1.0) * 100.0 - (n1 / n2 - 1.0) * 100.0
 
 
 def fetch_price_position(symbol: str, lookback: int = 250) -> float | None:

@@ -107,12 +107,18 @@ class TestScreenCriteria:
         assert "min_drawdown" not in d2
 
     def test_to_dict_fisher_dims(self):
-        """费雪维度：研发强度默认不启用，启用后进入契约。"""
+        """费雪维度：研发强度/利润率趋势/反稀释默认不启用，启用后进入契约。"""
         assert ScreenCriteria().min_rd_ratio == 0.0
-        c = ScreenCriteria(min_rd_ratio=3.0)
+        assert ScreenCriteria().margin_trend is False
+        assert ScreenCriteria().no_dilution is False
+        c = ScreenCriteria(min_rd_ratio=3.0, margin_trend=True, no_dilution=True)
         d = c.to_dict()
         assert d["min_rd_ratio"] == 3.0
-        assert "min_rd_ratio" not in ScreenCriteria().to_dict()
+        assert d["margin_trend"] is True
+        assert d["no_dilution"] is True
+        d2 = ScreenCriteria().to_dict()
+        for key in ("min_rd_ratio", "margin_trend", "no_dilution"):
+            assert key not in d2
 
     def test_to_dict_dividend_dims(self):
         """红利股维度：连续分红/分位上限默认不启用；分位上限隐含启用分位拉取。"""
@@ -126,6 +132,20 @@ class TestScreenCriteria:
         d2 = ScreenCriteria().to_dict()
         assert "min_div_years" not in d2
         assert "max_val_pct" not in d2
+
+    def test_to_dict_navellier_dims(self):
+        """纳维里尔维度：预期/惊喜/动能默认不启用，启用后进入契约。"""
+        assert ScreenCriteria().min_forecast_growth == 0.0
+        assert ScreenCriteria().earnings_surprise is False
+        assert ScreenCriteria().eps_momentum is False
+        c = ScreenCriteria(min_forecast_growth=15.0, earnings_surprise=True, eps_momentum=True)
+        d = c.to_dict()
+        assert d["min_forecast_growth"] == 15.0
+        assert d["earnings_surprise"] is True
+        assert d["eps_momentum"] is True
+        d2 = ScreenCriteria().to_dict()
+        for key in ("min_forecast_growth", "earnings_surprise", "eps_momentum"):
+            assert key not in d2
 
 
 class TestPresets:
@@ -146,6 +166,9 @@ class TestPresets:
 
     def test_fisher_preset_exists(self):
         assert "fisher" in PRESETS
+
+    def test_navellier_preset_exists(self):
+        assert "navellier" in PRESETS
 
     def test_dividend_preset_exists(self):
         assert "dividend" in PRESETS
@@ -234,19 +257,39 @@ class TestPresets:
         assert "market_filter" not in p      # 不强制择大势：合流已够严，留给用户叠加
 
     def test_fisher_preset_semantics(self):
-        """预设语义（费雪《费雪论成长股获利》）：营收+研发驱动的真成长，不卡小市值、不择时。"""
+        """预设语义（费雪《怎样选择成长股》15 要点）：营收+研发驱动的真成长，
+        利润率趋势不恶化且无增发稀释，不卡小市值、不择时。"""
         p = PRESETS["fisher"]
-        assert p["min_rd_ratio"] > 0         # 核心维度：研发是成长引擎
-        assert p["min_growth"] > 0           # 利润增长高于平均
+        assert p["min_rd_ratio"] > 0         # 核心维度：研发是成长引擎（要点 3）
+        assert p["min_growth"] > 0           # 利润增长高于平均（要点 1/2）
         assert p["min_rev_growth"] > 0       # 真成长由营收驱动（防削减成本假增长）
-        assert p["min_gross_margin"] > 0     # 利润率高于行业（定价权）
+        assert p["min_gross_margin"] > 0     # 利润率高于行业（要点 5：定价权）
+        assert p["margin_trend"] is True     # 维持并改善利润率（要点 6/7）
         assert p["min_roe"] >= 15.0          # 管理层高效运用资本
         assert p["smart_growth"] is True     # 再投资效率：资产增速<利润增速
+        assert p["no_dilution"] is True      # 成长不靠股权融资稀释（要点 13）
         assert 0 < p["max_debt"] <= 70.0     # 财务稳健
         assert p["max_pe"] > 0               # 合理价格（宽松上限防纯故事股）
         assert p["max_pb"] == 0.0            # 不看 PB：评估质地而非账面资产
         assert "max_cap" not in p            # 不卡小市值：成熟成长公司也可
         assert "max_price_pos" not in p      # 不择时：买好公司长期持有
+
+    def test_navellier_preset_semantics(self):
+        """预设语义（纳维里尔 8 大指标）：双高增+高 ROE+现金流+利润率趋势
+        +机构预期+盈利动能，不看估值、不卡市值；盈利惊喜（仅港美股）不入预设。"""
+        p = PRESETS["navellier"]
+        assert p["max_pe"] == 0.0              # 不看 PE：8 指标打分而非估值选股
+        assert p["max_pb"] == 0.0              # 不看 PB
+        assert p["min_roe"] >= 15.0            # 指标 8：高 ROE
+        assert p["min_growth"] >= 20.0         # 指标 6：盈利高增
+        assert p["min_rev_growth"] > 0         # 指标 3：营收驱动
+        assert p["min_cash_yield"] > 0         # 指标 5：现金流验证盈利质量
+        assert p["margin_trend"] is True       # 指标 4：利润率扩张（不恶化近似）
+        assert p["min_forecast_growth"] > 0    # 指标 1 近似：机构预测增速
+        assert p["eps_momentum"] is True       # 指标 7：增长在加速
+        assert "earnings_surprise" not in p    # 指标 2 仅港美股有数据，A 股预设不启用
+        assert "max_cap" not in p              # 不卡市值
+        assert "max_price_pos" not in p        # 不做左侧择时
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +390,13 @@ class TestCompositeScore:
         assert composite_score({"drawdown": 40.0}, c) == 100.0
         assert composite_score({"drawdown": 30.0}, c) > composite_score({"drawdown": 22.0}, c)
 
+    def test_forecast_growth_score(self):
+        """机构预测增速达标程度评分：阈值处 50 分，2 倍阈值封顶；缺失不参与。"""
+        c = ScreenCriteria(max_pe=0, max_pb=0, min_roe=0, max_debt=0, min_forecast_growth=15)
+        assert composite_score({"forecast_growth": 15.0}, c) == 50.0
+        assert composite_score({"forecast_growth": 30.0}, c) == 100.0
+        assert composite_score({"forecast_growth": None}, c) == 0.0
+
 
 # ---------------------------------------------------------------------------
 # _check_detail_criteria
@@ -426,6 +476,38 @@ class TestCheckDetailCriteria:
         reasons = _check_detail_criteria({"rd_ratio": None}, c)
         assert any("未披露" in r for r in reasons)
 
+    def test_margin_trend_pass_fail(self):
+        """利润率趋势维度（费雪要点 6/7）：同比降幅超 2pp 容差剔除，缺失剔除。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, margin_trend=True)
+        # 改善或小幅波动（容差内）→ 通过
+        assert _check_detail_criteria({"margin_trend_pp": 1.5}, c) == []
+        assert _check_detail_criteria({"margin_trend_pp": -1.9}, c) == []
+        # 降幅超容差 → 利润率恶化
+        reasons = _check_detail_criteria({"margin_trend_pp": -5.0}, c)
+        assert any("利润率恶化" in r for r in reasons)
+        # 无同期可比数据 → 缺失剔除
+        reasons = _check_detail_criteria({"margin_trend_pp": None}, c)
+        assert any("缺失" in r for r in reasons)
+        # 未启用维度不检查
+        assert _check_detail_criteria({"margin_trend_pp": -20.0}, ScreenCriteria(min_roe=0, max_debt=0)) == []
+
+    def test_no_dilution_pass_fail(self):
+        """反稀释维度（费雪要点 13）：A 股用增发记录，港美股用股本增速。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, no_dilution=True)
+        # A 股：近 3 年无增发 → 通过；有增发 → 剔除
+        assert _check_detail_criteria({"offerings_3y": 0}, c) == []
+        reasons = _check_detail_criteria({"offerings_3y": 2}, c)
+        assert any("股权融资稀释" in r for r in reasons)
+        # 港美股：股本小幅变动/回购 → 通过；扩张超 5% → 剔除
+        assert _check_detail_criteria({"offerings_3y": None, "share_growth": -1.5}, c) == []
+        reasons = _check_detail_criteria({"offerings_3y": None, "share_growth": 12.0}, c)
+        assert any("增发稀释" in r for r in reasons)
+        # 两个指标都缺失 → 无法核查即不买
+        reasons = _check_detail_criteria({"offerings_3y": None, "share_growth": None}, c)
+        assert any("缺失" in r for r in reasons)
+        # 未启用维度不检查
+        assert _check_detail_criteria({"offerings_3y": 5}, ScreenCriteria(min_roe=0, max_debt=0)) == []
+
     def test_smart_growth_pass_fail(self):
         c = ScreenCriteria(min_roe=0, max_debt=0, smart_growth=True)
         # 资产增速 < 利润增速 → 通过
@@ -436,6 +518,42 @@ class TestCheckDetailCriteria:
         # 数据缺失（如港美股无资产增速）→ 剔除
         reasons = _check_detail_criteria({"asset_growth": None, "profit_growth": 10}, c)
         assert any("缺失" in r for r in reasons)
+
+    def test_forecast_growth_pass_fail(self):
+        """机构预测增速维度（纳维里尔指标 1 近似）：不达阈/无机构覆盖都剔除。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, min_forecast_growth=15)
+        assert _check_detail_criteria({"forecast_growth": 25.0}, c) == []
+        reasons = _check_detail_criteria({"forecast_growth": 8.0}, c)
+        assert any("预期面不足" in r for r in reasons)
+        reasons = _check_detail_criteria({"forecast_growth": None}, c)
+        assert any("无机构覆盖" in r for r in reasons)
+
+    def test_earnings_surprise_pass_fail(self):
+        """盈利惊喜维度（指标 2）：实际低于预期剔除；A 股无数据按缺失剔除。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, earnings_surprise=True)
+        assert _check_detail_criteria({"surprise_pct": 6.5}, c) == []
+        assert _check_detail_criteria({"surprise_pct": 0.0}, c) == []  # 持平不算惊吓
+        reasons = _check_detail_criteria({"surprise_pct": -4.0}, c)
+        assert any("盈利惊吓" in r for r in reasons)
+        reasons = _check_detail_criteria({"surprise_pct": None}, c)
+        assert any("缺失" in r for r in reasons)
+        # 未启用维度不检查
+        assert _check_detail_criteria({"surprise_pct": -50.0}, ScreenCriteria(min_roe=0, max_debt=0)) == []
+
+    def test_eps_momentum_pass_fail(self):
+        """盈利动能维度（指标 7）：增速回落超 5pp 容差剔除，缺失剔除。"""
+        c = ScreenCriteria(min_roe=0, max_debt=0, eps_momentum=True)
+        # 加速或小幅回落（容差内）→ 通过
+        assert _check_detail_criteria({"eps_momentum_pp": 12.0}, c) == []
+        assert _check_detail_criteria({"eps_momentum_pp": -4.9}, c) == []
+        # 回落超容差 → 明显减速
+        reasons = _check_detail_criteria({"eps_momentum_pp": -18.0}, c)
+        assert any("增长明显减速" in r for r in reasons)
+        # 无相邻两期可比 → 缺失剔除
+        reasons = _check_detail_criteria({"eps_momentum_pp": None}, c)
+        assert any("缺失" in r for r in reasons)
+        # 未启用维度不检查
+        assert _check_detail_criteria({"eps_momentum_pp": -30.0}, ScreenCriteria(min_roe=0, max_debt=0)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +861,80 @@ class TestScreenAstockPhase2:
         screen_astock_phase2(survivors, criteria)
         mock_rd.assert_not_called()
 
+    @patch("screener.engine.fetch_astock_offering_count")
+    @patch("screener.engine.fetch_astock_margin_profile")
+    @patch("screener.engine.fetch_astock_detail")
+    def test_fisher_dims_filter(self, mock_detail, mock_margin, mock_offer):
+        """费雪维度接线：利润率趋势/增发记录启用时拉取并过滤，未启用不打接口。"""
+        mock_detail.return_value = {"roe": 20, "debt_ratio": 40, "profit_growth": 20}
+        mock_margin.return_value = {"gross_margin": 45.0, "margin_trend_pp": 1.2}
+        mock_offer.return_value = 0
+        survivors = [
+            {"code": "600000", "name": "测试", "pe": 10, "pb": 1,
+             "total_mv": 100, "div_yield": 2, "close": 10.0},
+        ]
+        criteria = ScreenCriteria(min_roe=10, max_debt=70, margin_trend=True, no_dilution=True)
+        results = screen_astock_phase2(survivors, criteria)
+        assert len(results) == 1
+        assert results[0].metrics["margin_trend_pp"] == pytest.approx(1.2)
+        assert results[0].metrics["offerings_3y"] == 0
+        # 利润率恶化 → 剔除
+        mock_margin.return_value = {"gross_margin": 45.0, "margin_trend_pp": -6.0}
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 近 3 年有增发 → 剔除
+        mock_margin.return_value = {"gross_margin": 45.0, "margin_trend_pp": 1.2}
+        mock_offer.return_value = 1
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 未启用维度 → 不打接口
+        mock_margin.reset_mock()
+        mock_offer.reset_mock()
+        criteria = ScreenCriteria(min_roe=10, max_debt=70)
+        screen_astock_phase2(survivors, criteria)
+        mock_margin.assert_not_called()
+        mock_offer.assert_not_called()
+
+    @patch("screener.engine.fetch_astock_forecast_growth")
+    @patch("screener.engine.fetch_astock_detail")
+    def test_navellier_dims_filter(self, mock_detail, mock_forecast):
+        """纳维里尔维度接线：预测增速批量表命中与相邻报告期动能差，未启用不打接口。"""
+        mock_detail.return_value = {
+            "roe": 20, "debt_ratio": 40,
+            "profit_growth": 30, "profit_growth_prev": 22,
+        }
+        mock_forecast.return_value = 25.0
+        survivors = [
+            {"code": "600000", "name": "测试", "pe": 10, "pb": 1,
+             "total_mv": 100, "div_yield": 2, "close": 10.0},
+        ]
+        criteria = ScreenCriteria(
+            min_roe=10, max_debt=70, min_forecast_growth=15, eps_momentum=True,
+        )
+        results = screen_astock_phase2(survivors, criteria)
+        assert len(results) == 1
+        assert results[0].metrics["forecast_growth"] == pytest.approx(25.0)
+        assert results[0].metrics["eps_momentum_pp"] == pytest.approx(8.0)  # 30 - 22
+        # 预测增速不足 → 剔除
+        mock_forecast.return_value = 5.0
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 增速明显减速（回落超 5pp）→ 剔除
+        mock_forecast.return_value = 25.0
+        mock_detail.return_value = {
+            "roe": 20, "debt_ratio": 40,
+            "profit_growth": 10, "profit_growth_prev": 40,
+        }
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 上期增速缺失 → 动能按缺失剔除
+        mock_detail.return_value = {
+            "roe": 20, "debt_ratio": 40,
+            "profit_growth": 30, "profit_growth_prev": None,
+        }
+        assert screen_astock_phase2(survivors, criteria) == []
+        # 未启用维度 → 不调预测批量表
+        mock_forecast.reset_mock()
+        criteria = ScreenCriteria(min_roe=10, max_debt=70)
+        screen_astock_phase2(survivors, criteria)
+        mock_forecast.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # screen_yfinance (mock)
@@ -791,6 +983,71 @@ class TestScreenYfinance:
         criteria = ScreenCriteria(max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0)
         screen_yfinance(["MSFT.US"], criteria)
         mock_rd.assert_not_called()
+
+    @patch("screener.engine.fetch_yfinance_fisher_extra")
+    @patch("screener.engine.fetch_yfinance_metrics")
+    def test_fisher_dims_filter(self, mock_yf, mock_extra):
+        """费雪维度接线：启用时拉年度利润表一次取齐趋势与股本，未启用不打接口。"""
+        mock_yf.return_value = {
+            "name": "Test", "close": 100, "pe": 20, "pb": 3,
+            "roe": 25, "div_yield": 1, "debt_ratio": 40,
+            "profit_growth": 20, "total_mv": 500,
+        }
+        mock_extra.return_value = {"margin_trend_pp": 0.8, "share_growth": -1.0}
+        criteria = ScreenCriteria(
+            max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0,
+            margin_trend=True, no_dilution=True,
+        )
+        results = screen_yfinance(["MSFT.US"], criteria)
+        assert len(results) == 1
+        assert results[0].metrics["margin_trend_pp"] == pytest.approx(0.8)
+        assert results[0].metrics["share_growth"] == pytest.approx(-1.0)
+        # 股本扩张超 5% → 增发稀释剔除
+        mock_extra.return_value = {"margin_trend_pp": 0.8, "share_growth": 9.0}
+        assert screen_yfinance(["MSFT.US"], criteria) == []
+        # 利润表不可用 → 数据缺失剔除
+        mock_extra.return_value = None
+        assert screen_yfinance(["MSFT.US"], criteria) == []
+        # 未启用维度 → 不打接口
+        mock_extra.reset_mock()
+        criteria = ScreenCriteria(max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0)
+        screen_yfinance(["MSFT.US"], criteria)
+        mock_extra.assert_not_called()
+
+    @patch("screener.engine.fetch_yfinance_navellier")
+    @patch("screener.engine.fetch_yfinance_metrics")
+    def test_navellier_dims_filter(self, mock_yf, mock_nav):
+        """纳维里尔维度接线（港美股）：启用时一次拉齐预期/惊喜/动能，未启用不打接口。"""
+        mock_yf.return_value = {
+            "name": "Test", "close": 100, "pe": 20, "pb": 3,
+            "roe": 25, "div_yield": 1, "debt_ratio": 40,
+            "profit_growth": 20, "total_mv": 500,
+        }
+        mock_nav.return_value = {
+            "forecast_growth": 22.0, "surprise_pct": 5.0, "eps_momentum_pp": 3.0,
+        }
+        criteria = ScreenCriteria(
+            max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0,
+            min_forecast_growth=15, earnings_surprise=True, eps_momentum=True,
+        )
+        results = screen_yfinance(["MSFT.US"], criteria)
+        assert len(results) == 1
+        assert results[0].metrics["forecast_growth"] == pytest.approx(22.0)
+        assert results[0].metrics["surprise_pct"] == pytest.approx(5.0)
+        assert results[0].metrics["eps_momentum_pp"] == pytest.approx(3.0)
+        # 盈利惊吓（实际低于预期）→ 剔除
+        mock_nav.return_value = {
+            "forecast_growth": 22.0, "surprise_pct": -3.0, "eps_momentum_pp": 3.0,
+        }
+        assert screen_yfinance(["MSFT.US"], criteria) == []
+        # 接口不可用 → 三项全缺失剔除
+        mock_nav.return_value = None
+        assert screen_yfinance(["MSFT.US"], criteria) == []
+        # 未启用维度 → 不打接口
+        mock_nav.reset_mock()
+        criteria = ScreenCriteria(max_pe=30, max_pb=0, min_roe=15, max_debt=0, min_cap=0)
+        screen_yfinance(["MSFT.US"], criteria)
+        mock_nav.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1238,6 +1495,47 @@ class TestApplyPreset:
         assert args.min_div_years == 3
         assert args.max_val_pct == PRESETS["dividend"]["max_val_pct"]  # 未显式提供的项仍用预设
 
+    def test_fisher_preset_applied(self):
+        args = self._parse(["--preset", "fisher"])
+        p = PRESETS["fisher"]
+        assert args.min_rd_ratio == p["min_rd_ratio"]
+        assert args.min_gross_margin == p["min_gross_margin"]
+        assert args.margin_trend is True
+        assert args.no_dilution is True
+        assert args.smart_growth is True
+        assert args.max_pb == 0.0            # 不看 PB
+        # 未在预设中的项保持 CLI 默认：不卡市值上限、不择时
+        assert args.max_cap == 0.0
+        assert args.max_price_pos == 0.0
+
+    def test_fisher_explicit_override(self):
+        """显式参数 > 预设：研发强度抬高到 8%（硬科技口径）。"""
+        args = self._parse(["--preset", "fisher", "--min-rd-ratio", "8"])
+        assert args.min_rd_ratio == 8.0
+        assert args.margin_trend is True     # 未显式提供的项仍用预设
+
+    def test_navellier_preset_applied(self):
+        args = self._parse(["--preset", "navellier"])
+        p = PRESETS["navellier"]
+        assert args.min_roe == p["min_roe"]
+        assert args.min_growth == p["min_growth"]
+        assert args.min_rev_growth == p["min_rev_growth"]
+        assert args.min_cash_yield == p["min_cash_yield"]
+        assert args.margin_trend is True
+        assert args.min_forecast_growth == p["min_forecast_growth"]
+        assert args.eps_momentum is True
+        assert args.max_pe == 0.0            # 不看估值
+        assert args.max_pb == 0.0
+        # 未在预设中的项保持 CLI 默认：盈利惊喜（仅港美股）不启用、不择时
+        assert args.earnings_surprise is False
+        assert args.max_price_pos == 0.0
+
+    def test_navellier_explicit_override(self):
+        """显式参数 > 预设：港美股筛选叠加盈利惊喜维度。"""
+        args = self._parse(["--preset", "navellier", "--earnings-surprise"])
+        assert args.earnings_surprise is True
+        assert args.eps_momentum is True     # 未显式提供的项仍用预设
+
 
 # ---------------------------------------------------------------------------
 # 红利股：_filter_dividend_years / _filter_valuation_pct / 连续分红年数口径
@@ -1332,3 +1630,205 @@ class TestDividendYearsStreak:
 
         mock_div.side_effect = RuntimeError("分红数据目前仅支持 A 股")
         assert _fetch_dividend_years_remote("AAPL.US") is None
+
+
+# ---------------------------------------------------------------------------
+# 费雪维度数据层：利润率画像 / 增发记录 / 港美股利润表解析（纯函数，不依赖网络）
+# ---------------------------------------------------------------------------
+
+
+class TestMarginProfileFromAbstract:
+    def _abstract(self, values: dict) -> pd.DataFrame:
+        return pd.DataFrame([{"指标": "毛利率", **values}])
+
+    def test_latest_and_yoy_trend(self):
+        """最新期毛利率 + 同期报告期（去年同 MMDD）同比变动。"""
+        from screener.data import _margin_profile_from_abstract
+
+        df = self._abstract({"20260331": 42.0, "20251231": 44.0, "20250331": 45.5})
+        profile = _margin_profile_from_abstract(df)
+        assert profile["gross_margin"] == pytest.approx(42.0)
+        # 同比对照是去年同期 20250331（非上一期 20251231，避免季节性）
+        assert profile["margin_trend_pp"] == pytest.approx(-3.5)
+
+    def test_no_prior_period_trend_none(self):
+        """无同期可比报告期 → 趋势为 None（最新值仍返回）。"""
+        from screener.data import _margin_profile_from_abstract
+
+        df = self._abstract({"20260331": 42.0, "20251231": 44.0})
+        profile = _margin_profile_from_abstract(df)
+        assert profile["gross_margin"] == pytest.approx(42.0)
+        assert profile["margin_trend_pp"] is None
+
+    def test_invalid_input_returns_none(self):
+        from screener.data import _margin_profile_from_abstract
+
+        assert _margin_profile_from_abstract(None) is None
+        assert _margin_profile_from_abstract(pd.DataFrame()) is None
+        # 无毛利率行
+        df = pd.DataFrame([{"指标": "ROE", "20260331": 15.0}])
+        assert _margin_profile_from_abstract(df) is None
+
+
+class TestOfferingDatesFromTable:
+    def test_counts_by_code(self):
+        from screener.data import _offering_dates_from_table
+
+        df = pd.DataFrame({
+            "code": ["600001", "600001", "600002"],
+            "date": ["20250601", "20200101", "20260101"],
+        })
+        dates = _offering_dates_from_table(df)
+        assert dates["600001"] == ["20250601", "20200101"]
+        assert dates["600002"] == ["20260101"]
+        assert "600003" not in dates  # 从未增发的代码不在表中（计数为 0）
+
+
+class TestFisherExtraFromIncomeStmt:
+    def _stmt(self, data: dict) -> pd.DataFrame:
+        """构造 yfinance 风格年度利润表（列为财年日期降序）。"""
+        cols = pd.DatetimeIndex(["2025-12-31", "2024-12-31"])
+        return pd.DataFrame(data, index=cols).T
+
+    def test_margin_trend_and_share_growth(self):
+        from screener.data import _fisher_extra_from_income_stmt
+
+        stmt = self._stmt({
+            "Gross Profit": [50.0, 40.0],
+            "Total Revenue": [100.0, 100.0],
+            "Basic Average Shares": [102.0, 100.0],
+        })
+        extra = _fisher_extra_from_income_stmt(stmt)
+        assert extra["margin_trend_pp"] == pytest.approx(10.0)  # 50% - 40%
+        assert extra["share_growth"] == pytest.approx(2.0)
+
+    def test_diluted_fallback_when_basic_missing(self):
+        """Basic 缺失时降级摊薄口径。"""
+        from screener.data import _fisher_extra_from_income_stmt
+
+        stmt = self._stmt({"Diluted Average Shares": [95.0, 100.0]})
+        extra = _fisher_extra_from_income_stmt(stmt)
+        assert extra["share_growth"] == pytest.approx(-5.0)  # 回购缩股
+        assert extra["margin_trend_pp"] is None
+
+    def test_invalid_input_returns_none(self):
+        from screener.data import _fisher_extra_from_income_stmt
+
+        assert _fisher_extra_from_income_stmt(None) is None
+        assert _fisher_extra_from_income_stmt(pd.DataFrame()) is None
+        # 只有一个财年 → 无同比基准
+        one_year = pd.DataFrame(
+            {"Gross Profit": [50.0]}, index=pd.DatetimeIndex(["2025-12-31"])
+        ).T
+        assert _fisher_extra_from_income_stmt(one_year) is None
+
+
+# ---------------------------------------------------------------------------
+# 纳维里尔维度数据层：盈利预测表 / 盈利惊喜 / 盈利动能（纯函数，不依赖网络）
+# ---------------------------------------------------------------------------
+
+
+class TestForecastTableFromRaw:
+    def _raw(self, **overrides) -> pd.DataFrame:
+        base = {
+            "代码": ["600001", "600002", "600003"],
+            "2026预测每股收益": [1.00, 2.00, -0.50],
+            "2027预测每股收益": [1.25, 1.80, 0.30],
+        }
+        base.update(overrides)
+        return pd.DataFrame(base)
+
+    def test_growth_from_two_forecast_years(self):
+        """取最近两个预测年度：增速 = (次年/首年 - 1) × 100；基数非正置 NaN。"""
+        from screener.data import _forecast_table_from_raw
+
+        df = _forecast_table_from_raw(self._raw())
+        by_code = dict(zip(df["code"], df["forecast_growth"]))
+        assert by_code["600001"] == pytest.approx(25.0)
+        assert by_code["600002"] == pytest.approx(-10.0)  # 预期下行也如实返回
+        assert pd.isna(by_code["600003"])                  # 首年预测亏损：无法计算增速
+
+    def test_year_columns_sorted_not_positional(self):
+        """预测年度列按年份排序而非列顺序（接口列序变更不影响口径）。"""
+        from screener.data import _forecast_table_from_raw
+
+        raw = pd.DataFrame({
+            "代码": ["600001"],
+            "2027预测每股收益": [1.50],  # 故意把远年度放前
+            "2026预测每股收益": [1.00],
+        })
+        df = _forecast_table_from_raw(raw)
+        assert df["forecast_growth"].iloc[0] == pytest.approx(50.0)
+
+    def test_invalid_input_returns_none(self):
+        from screener.data import _forecast_table_from_raw
+
+        assert _forecast_table_from_raw(None) is None
+        assert _forecast_table_from_raw(pd.DataFrame()) is None
+        # 只有一个预测年度 → 无法计算增速
+        raw = pd.DataFrame({"代码": ["600001"], "2026预测每股收益": [1.0]})
+        assert _forecast_table_from_raw(raw) is None
+
+
+class TestSurpriseFromHistory:
+    def _hist(self, rows: dict) -> pd.DataFrame:
+        return pd.DataFrame(rows, index=pd.DatetimeIndex(["2026-03-31", "2026-06-30"]))
+
+    def test_latest_surprise_pct(self):
+        """取最近一期实际与预期同时非空的记录自算惊喜幅度。"""
+        from screener.data import _surprise_from_history
+
+        hist = self._hist({"epsActual": [1.00, 1.10], "epsEstimate": [0.90, 1.00]})
+        assert _surprise_from_history(hist) == pytest.approx(10.0)
+
+    def test_negative_estimate_uses_abs_base(self):
+        """预期为负时用绝对值作分母（亏损收窄也是正惊喜）。"""
+        from screener.data import _surprise_from_history
+
+        hist = self._hist({"epsActual": [1.00, -0.10], "epsEstimate": [0.90, -0.20]})
+        assert _surprise_from_history(hist) == pytest.approx(50.0)
+
+    def test_missing_latest_falls_back(self):
+        """最近一期实际未公布（NaN）时回退上一期。"""
+        from screener.data import _surprise_from_history
+
+        hist = self._hist({"epsActual": [1.00, None], "epsEstimate": [0.80, 1.00]})
+        assert _surprise_from_history(hist) == pytest.approx(25.0)
+
+    def test_invalid_input_returns_none(self):
+        from screener.data import _surprise_from_history
+
+        assert _surprise_from_history(None) is None
+        assert _surprise_from_history(pd.DataFrame()) is None
+        # 缺列 / 预期全为 0（除零保护）
+        hist = self._hist({"epsActual": [1.0, 1.0], "epsEstimate": [0.0, 0.0]})
+        assert _surprise_from_history(hist) is None
+
+
+class TestMomentumFromIncomeStmt:
+    def _stmt(self, net_income: list[float]) -> pd.DataFrame:
+        cols = pd.DatetimeIndex(["2025-12-31", "2024-12-31", "2023-12-31"][: len(net_income)])
+        return pd.DataFrame({"Net Income": net_income}, index=cols).T
+
+    def test_accelerating_positive(self):
+        """增速加快 → 动能为正：130/100-1=30% vs 100/90-1≈11.1% → +18.9pp。"""
+        from screener.data import _momentum_from_income_stmt
+
+        assert _momentum_from_income_stmt(self._stmt([130.0, 100.0, 90.0])) == pytest.approx(
+            18.89, abs=0.01
+        )
+
+    def test_decelerating_negative(self):
+        """增速回落 → 动能为负。"""
+        from screener.data import _momentum_from_income_stmt
+
+        assert _momentum_from_income_stmt(self._stmt([105.0, 100.0, 50.0])) < 0
+
+    def test_invalid_input_returns_none(self):
+        from screener.data import _momentum_from_income_stmt
+
+        assert _momentum_from_income_stmt(None) is None
+        assert _momentum_from_income_stmt(pd.DataFrame()) is None
+        # 不足 3 个财年 / 基数财年亏损 → 增速无意义
+        assert _momentum_from_income_stmt(self._stmt([130.0, 100.0])) is None
+        assert _momentum_from_income_stmt(self._stmt([130.0, -10.0, 90.0])) is None

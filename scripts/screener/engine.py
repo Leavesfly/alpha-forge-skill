@@ -13,7 +13,9 @@ from typing import Callable
 
 from .data import (
     fetch_astock_detail,
-    fetch_astock_gross_margin,
+    fetch_astock_forecast_growth,
+    fetch_astock_margin_profile,
+    fetch_astock_offering_count,
     fetch_astock_rd_ratio,
     fetch_astock_snapshot,
     fetch_benchmark_close,
@@ -23,7 +25,9 @@ from .data import (
     fetch_sp500_symbols,
     fetch_technical_profile,
     fetch_us_snapshot,
+    fetch_yfinance_fisher_extra,
     fetch_yfinance_metrics,
+    fetch_yfinance_navellier,
     fetch_yfinance_rd_ratio,
     is_a_share,
 )
@@ -42,6 +46,11 @@ class ScreenCriteria:
     min_rev_growth: float = 0.0  # 营收增速下限(%)，0=不筛（百倍股：增长须由营收驱动）
     min_gross_margin: float = 0.0  # 毛利率下限(%)，0=不筛（DHQ：定价权与规模效应信号）
     min_rd_ratio: float = 0.0   # 研发强度下限(%)，0=不筛（费雪：研发是成长引擎）
+    margin_trend: bool = False  # 利润率趋势：毛利率同比不恶化（费雪要点 6/7）
+    no_dilution: bool = False   # 无股权稀释：A 股近 3 年无增发/港美股股本不扩张（要点 13）
+    min_forecast_growth: float = 0.0  # 机构预测盈利增速下限(%)，0=不筛（纳维里尔指标 1 近似）
+    earnings_surprise: bool = False  # 盈利惊喜：最近一期实际 EPS 不低于预期（指标 2，仅港美股有数据）
+    eps_momentum: bool = False  # 盈利动能：盈利增速较上期不减速（指标 7：增长在加速）
     min_cap: float = 30.0       # 总市值下限(亿)
     max_cap: float = 0.0        # 总市值上限(亿)，0=不筛（十倍股：小市值起步）
     min_cash_yield: float = 0.0  # 现金流收益率下限(%)，0=不筛（FCF Yield 近似）
@@ -74,6 +83,16 @@ class ScreenCriteria:
             d["min_gross_margin"] = self.min_gross_margin
         if self.min_rd_ratio > 0:
             d["min_rd_ratio"] = self.min_rd_ratio
+        if self.margin_trend:
+            d["margin_trend"] = True
+        if self.no_dilution:
+            d["no_dilution"] = True
+        if self.min_forecast_growth > 0:
+            d["min_forecast_growth"] = self.min_forecast_growth
+        if self.earnings_surprise:
+            d["earnings_surprise"] = True
+        if self.eps_momentum:
+            d["eps_momentum"] = True
         if self.min_drawdown > 0:
             d["min_drawdown"] = self.min_drawdown
         if self.max_cap > 0:
@@ -126,19 +145,34 @@ class ScreenCriteria:
 #: 缩量。书名核心信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查
 #: 大股东/高管增持与回购公告补位。与 monster 差异：monster 追接近新高的
 #: 强势不看估值，superstock 要求便宜的爆发成长，条件更严候选更少。
-#: fisher 取自费雪《费雪论成长股获利》（Paths to Wealth Through Common
-#: Stocks, 1960）的成长质量标准：真成长由营收与研发驱动（识破削减
-#: 成本/一次性收益的虚假成长）+ 利润率高于行业（定价权）+ 管理层高效
-#: 再投资（高 ROE 且资产增速<利润增速）+ 财务稳健（低杠杆，少靠增发
-#: 稀释）+ 合理价格（不为成长付任意高价，但不要求便宜）。书中核心
-#: 定性项——管理层质量、闲聊法调研、9 条并购原则——无数据源，须人工
-#: 尽调补位。与 hundredbagger（同为质量成长）差异：fisher 强调研发引擎
-#: 与利润率，不卡小市值（成熟成长公司也可）。
+#: fisher 取自费雪《怎样选择成长股》（Common Stocks and Uncommon Profits,
+#: 1958）选股 15 要点的可量化近似（姊妹篇《费雪论成长股获利》1960 为辅）：
+#: 真成长由营收与研发驱动（要点 1-3，识破削减成本/一次性收益的虚假
+#: 成长）+ 利润率高于行业且同比不恶化（要点 5-7，定价权与成本控制）
+#: + 管理层高效再投资（高 ROE 且资产增速<利润增速）+ 财务稳健不靠
+#: 股权融资稀释（要点 13：低杠杆 + 无增发/股本不扩张）+ 合理价格
+#: （不为成长付任意高价，但不要求便宜）。书中核心定性项——管理层
+#: 诚信与深度（要点 8-11/15）、「闲聊法」调研、长期利益取向（要点 12/14）
+#: ——无数据源，须人工尽调补位。与 hundredbagger（同为质量成长）差异：
+#: fisher 强调研发引擎、利润率与反稀释，不卡小市值（成熟成长公司也可）。
 #: dividend 为红利股左侧筛选：高股息（>3%）+ 低估值（PE<15/PB<2 且 PE/PB
 #: 历史分位低于 50%，防周期顶部假低估）+ 分红纪律（连续分红 ≥5 年，仅 A 股
 #: 有数据）+ 财务稳健（ROE>8% 利润支撑分红、负债<60% 杠杆不撑股息）。
 #: 与 multibagger（便宜小市值博弹性）差异：dividend 买的是可持续现金流，
 #: 候选偏大盘成熟股；左侧分批建仓应接 run_dca（smart/dip），不做一次性抄底。
+#: navellier 取自纳维里尔《怎样选择成长股：持续获利选股8大指标》（The
+#: Little Book That Makes You Rich, 2007）：用数据而非故事选成长股——
+#: 8 大指标中 5 个复用存量维度（营收增速/盈利增速/高 ROE/现金流收益率/
+#: 利润率趋势不恶化），3 个为新增预期与动能维度：机构预测盈利增速
+#: （指标 1「盈利预期上调」的免费近似，A 股东财批量表/港美股分析师一致
+#: 预期）、盈利惊喜（指标 2，实际 EPS ≥ 预期；仅港美股有一致预期数据，
+#: A 股该维度按缺失剔除故预设不启用，可 --earnings-surprise 叠加）、盈利
+#: 动能（指标 7，增速较上期不减速：A 股用相邻报告期净利润增速差，港美股
+#: 用财年口径）。书中另一半方法论——量化风险收益筛选（高 Alpha+低波动）——
+#: 已由 run_scan/run_score 的趋势与 RS 维度承接，不在本预设重复。与
+#: hundredbagger（同看高 ROE 双高增）差异：navellier 加预期面与加速度约束、
+#: 不卡市值；与 fisher（同为成长质量）差异：navellier 用预期/惊喜/动能代替
+#: 研发/反稀释，更偏量价驱动的右侧成长。
 PRESETS: dict[str, dict] = {
     "multibagger": {
         "max_pe": 0.0,          # 不看 PE：十倍股起飞前盈利普遍平庸，PE 失真
@@ -206,12 +240,27 @@ PRESETS: dict[str, dict] = {
         "max_pe": 40.0,            # 合理价格：不为成长付任意高价（宽松上限防纯故事股）
         "max_pb": 0.0,             # 不看 PB：费雪评估企业质地与前景而非账面资产
         "min_roe": 15.0,           # 管理层高效运用资本：持续高回报再投资
-        "max_debt": 60.0,          # 财务稳健：成长靠内生利润而非债务/股权稀释
-        "min_growth": 15.0,        # 利润增长高于平均水平
+        "max_debt": 60.0,          # 财务稳健：成长靠内生利润而非债务支撑
+        "min_growth": 15.0,        # 利润增长高于平均水平（要点 1/2：成长潜力）
         "min_rev_growth": 15.0,    # 真成长由营收驱动（识破削减成本的虚假成长）
-        "min_gross_margin": 30.0,  # 利润率高于行业平均（定价权），A 股全行业口径
+        "min_gross_margin": 30.0,  # 利润率高于行业平均（要点 5：定价权），A 股全行业口径
+        "margin_trend": True,      # 维持并改善利润率（要点 6/7：毛利率同比不恶化）
         "smart_growth": True,      # 再投资效率：资产增速 < 利润增速（仅 A 股有数据）
-        "min_rd_ratio": 3.0,       # 研发引擎：研发费用/营收 ≥3%（科技对成长的驱动）
+        "no_dilution": True,       # 成长不靠股权融资稀释老股东（要点 13）
+        "min_rd_ratio": 3.0,       # 研发引擎：研发费用/营收 ≥3%（要点 3：研发有效性）
+    },
+    "navellier": {
+        "max_pe": 0.0,              # 不看 PE：书中用 8 指标打分而非估值选股（成长领导股 PE 普遍偏高）
+        "max_pb": 0.0,              # 不看 PB：同上，质量成长不按账面资产定价
+        "min_roe": 17.0,            # 指标 8：高 ROE，股东资本高效再投资（书中优秀标准 17%+）
+        "min_growth": 20.0,         # 指标 6：盈利增速高于市场平均（成长股门槛）
+        "min_rev_growth": 15.0,     # 指标 3：营收是最难粉饰的科目，增长须由收入驱动
+        "min_cash_yield": 3.0,      # 指标 5：自由现金流验证盈利质量（高增长期口径宽于 multibagger）
+        "margin_trend": True,       # 指标 4：利润率扩张（毛利率同比不恶化的免费近似）
+        "min_forecast_growth": 15.0,  # 指标 1 近似：机构一致预测盈利增速（预期面向好）
+        "eps_momentum": True,       # 指标 7：盈利增速较上期不减速（增长在加速）
+        # 指标 2（盈利惊喜）仅港美股有一致预期数据：A 股全市场预设不启用
+        # （启用即全部按缺失剔除），港美股筛选可加 --earnings-surprise 叠加。
     },
 }
 
@@ -242,6 +291,16 @@ class ScreenResult:
         return d
 
 
+#: 费雪维度固定阈值（布尔维度的内置容差，不暴露为 CLI 参数以控制参数面）
+_MARGIN_TREND_TOL_PP = -2.0     # 毛利率同比容差：降幅超 2pp 视为利润率恶化（要点 6/7）
+_MAX_SHARE_GROWTH_PCT = 5.0     # 港美股年度股本扩张上限(%)：超出视为增发稀释（要点 13）
+_OFFERING_LOOKBACK_YEARS = 3    # A 股增发记录回看年数
+
+#: 纳维里尔维度固定阈值（同上：布尔维度内置容差）
+_SURPRISE_TOL_PCT = 0.0         # 盈利惊喜容差：实际 EPS 低于预期即为惊吓（指标 2）
+_MOMENTUM_TOL_PP = -5.0         # 盈利动能容差：增速回落超 5pp 视为明显减速（指标 7）
+
+
 def _safe_round(v, ndigits: int = 2):
     """安全四舍五入：None/NaN 返回 None。"""
     if v is None:
@@ -270,6 +329,7 @@ _WEIGHTS = {
     "rev_growth": 0.10,
     "gross": 0.15,
     "rd": 0.15,
+    "forecast": 0.15,
     "cash": 0.15,
     "pos": 0.10,
     "dd": 0.10,
@@ -344,6 +404,12 @@ def composite_score(metrics: dict, criteria: ScreenCriteria) -> float:
         ratio = rd / criteria.min_rd_ratio
         scores["rd"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
         weights["rd"] = _WEIGHTS["rd"]
+
+    forecast = metrics.get("forecast_growth")
+    if criteria.min_forecast_growth > 0 and forecast is not None:
+        ratio = forecast / criteria.min_forecast_growth
+        scores["forecast"] = min(max(ratio, 0), 2.0) / 2.0 * 100.0
+        weights["forecast"] = _WEIGHTS["forecast"]
 
     cash = metrics.get("cash_yield")
     if criteria.min_cash_yield > 0 and cash is not None:
@@ -514,7 +580,7 @@ def screen_astock_phase2(
         criteria.min_roe > 0 or criteria.max_debt > 0 or criteria.min_growth > 0
         or criteria.min_rev_growth > 0 or criteria.min_gross_margin > 0
         or criteria.min_cash_yield > 0 or criteria.smart_growth
-        or criteria.min_rd_ratio > 0
+        or criteria.min_rd_ratio > 0 or criteria.eps_momentum
     )
 
     results: list[ScreenResult] = []
@@ -539,6 +605,11 @@ def screen_astock_phase2(
             "cash_yield": None,
             "gross_margin": None,
             "rd_ratio": None,
+            "margin_trend_pp": None,
+            "offerings_3y": None,
+            "forecast_growth": None,
+            "surprise_pct": None,
+            "eps_momentum_pp": None,
         }
 
         # 股息率 Phase 1 过滤（如果快照有该字段且阈值启用）
@@ -563,17 +634,39 @@ def screen_astock_phase2(
             metrics["revenue_growth"] = detail.get("revenue_growth")
             metrics["asset_growth"] = detail.get("asset_growth")
             metrics["gross_margin"] = detail.get("gross_margin")
-            # 毛利率兜底：新浪口径近年普遍 NaN，启用该维度时用同花顺摘要补齐
-            if criteria.min_gross_margin > 0 and metrics["gross_margin"] is None:
-                metrics["gross_margin"] = fetch_astock_gross_margin(code)
             # 研发强度：新浪财务分析指标无该字段，启用维度时用利润表补齐
             if criteria.min_rd_ratio > 0:
                 metrics["rd_ratio"] = fetch_astock_rd_ratio(code)
+            # 盈利动能：相邻报告期净利润增速差（指标 7：增长在加速）
+            prev_growth = detail.get("profit_growth_prev")
+            if metrics["profit_growth"] is not None and prev_growth is not None:
+                metrics["eps_momentum_pp"] = metrics["profit_growth"] - prev_growth
             # 现金流收益率 = 每股经营现金流 / 股价（FCF Yield 的 A 股免费近似）
             ocf = detail.get("ocf_per_share")
             close = metrics.get("close")
             if ocf is not None and close:
                 metrics["cash_yield"] = ocf / close * 100.0
+
+        # 利润率画像：毛利率兜底（新浪口径近年普遍 NaN）+ 同比趋势（要点 6/7），
+        # 同花顺摘要一次拉齐；仅启用相关维度时逐只调用
+        if criteria.margin_trend or (
+            criteria.min_gross_margin > 0 and metrics["gross_margin"] is None
+        ):
+            profile = fetch_astock_margin_profile(code)
+            if profile is not None:
+                if metrics["gross_margin"] is None:
+                    metrics["gross_margin"] = profile.get("gross_margin")
+                metrics["margin_trend_pp"] = profile.get("margin_trend_pp")
+
+        # 增发稀释检查（要点 13）：批量表本地字典命中，零逐只接口成本
+        if criteria.no_dilution:
+            metrics["offerings_3y"] = fetch_astock_offering_count(
+                code, _OFFERING_LOOKBACK_YEARS
+            )
+
+        # 机构预测盈利增速（纳维里尔指标 1 近似）：同为批量表本地命中
+        if criteria.min_forecast_growth > 0:
+            metrics["forecast_growth"] = fetch_astock_forecast_growth(code)
 
         # 深度过滤
         fail_reasons = _check_detail_criteria(metrics, criteria)
@@ -647,6 +740,52 @@ def _check_detail_criteria(metrics: dict, criteria: ScreenCriteria) -> list[str]
         elif rd < criteria.min_rd_ratio:
             reasons.append(f"研发强度 {rd:.1f}% < {criteria.min_rd_ratio:.0f}%（研发引擎不足）")
 
+    if criteria.margin_trend:
+        mt = metrics.get("margin_trend_pp")
+        if mt is None:
+            reasons.append("毛利率趋势数据缺失（无同期可比报告期）")
+        elif mt < _MARGIN_TREND_TOL_PP:
+            reasons.append(f"毛利率同比下滑 {-mt:.1f}pp（利润率恶化）")
+
+    if criteria.min_forecast_growth > 0:
+        forecast = metrics.get("forecast_growth")
+        if forecast is None:
+            reasons.append("机构盈利预测缺失（无机构覆盖或预测基数非正）")
+        elif forecast < criteria.min_forecast_growth:
+            reasons.append(
+                f"预测盈利增速 {forecast:.1f}% < {criteria.min_forecast_growth:.0f}%（预期面不足）"
+            )
+
+    if criteria.earnings_surprise:
+        surprise = metrics.get("surprise_pct")
+        if surprise is None:
+            reasons.append("盈利惊喜数据缺失（无一致预期可比，A 股无此数据源）")
+        elif surprise < _SURPRISE_TOL_PCT:
+            reasons.append(f"盈利惊吓：最近一期实际 EPS 低于预期 {-surprise:.1f}%")
+
+    if criteria.eps_momentum:
+        momentum = metrics.get("eps_momentum_pp")
+        if momentum is None:
+            reasons.append("盈利动能数据缺失（无相邻两期可比增速）")
+        elif momentum < _MOMENTUM_TOL_PP:
+            reasons.append(f"盈利增速较上期回落 {-momentum:.1f}pp（增长明显减速）")
+
+    if criteria.no_dilution:
+        offerings = metrics.get("offerings_3y")
+        share_growth = metrics.get("share_growth")
+        if offerings is not None:
+            if offerings > 0:
+                reasons.append(
+                    f"近 {_OFFERING_LOOKBACK_YEARS} 年有 {offerings} 次增发（股权融资稀释）"
+                )
+        elif share_growth is not None:
+            if share_growth > _MAX_SHARE_GROWTH_PCT:
+                reasons.append(
+                    f"年度股本扩张 {share_growth:.1f}% > {_MAX_SHARE_GROWTH_PCT:.0f}%（增发稀释）"
+                )
+        else:
+            reasons.append("股权稀释数据缺失（增发记录/股本序列）")
+
     if criteria.min_cash_yield > 0:
         cash = metrics.get("cash_yield")
         if cash is None:
@@ -713,6 +852,28 @@ def screen_yfinance(
         metrics["rd_ratio"] = (
             fetch_yfinance_rd_ratio(symbol) if criteria.min_rd_ratio > 0 else None
         )
+
+        # 利润率趋势 + 股本扩张：启用费雪趋势/反稀释维度时拉年度利润表一次取齐
+        if criteria.margin_trend or criteria.no_dilution:
+            extra = fetch_yfinance_fisher_extra(symbol) or {}
+            metrics["margin_trend_pp"] = extra.get("margin_trend_pp")
+            metrics["share_growth"] = extra.get("share_growth")
+        else:
+            metrics["margin_trend_pp"] = None
+            metrics["share_growth"] = None
+
+        # 预期/惊喜/动能：启用纳维里尔维度时逐只拉分析师预期与利润表
+        metrics["forecast_growth"] = None
+        metrics["surprise_pct"] = None
+        metrics["eps_momentum_pp"] = None
+        if (
+            criteria.min_forecast_growth > 0 or criteria.earnings_surprise
+            or criteria.eps_momentum
+        ):
+            nav = fetch_yfinance_navellier(symbol) or {}
+            metrics["forecast_growth"] = nav.get("forecast_growth")
+            metrics["surprise_pct"] = nav.get("surprise_pct")
+            metrics["eps_momentum_pp"] = nav.get("eps_momentum_pp")
 
         # 全维度过滤
         fail_reasons = _check_all_criteria(metrics, criteria)
@@ -1256,13 +1417,32 @@ def _screen_astock_manual(
         if criteria.max_price_pos > 0 and metrics.get("price_pos") is None:
             metrics["price_pos"] = fetch_price_position(symbol)
 
-        # 毛利率兜底：新浪/yfinance 都缺失时用同花顺摘要补齐
-        if criteria.min_gross_margin > 0 and metrics.get("gross_margin") is None:
-            metrics["gross_margin"] = fetch_astock_gross_margin(code)
+        # 毛利率兜底与同比趋势：新浪/yfinance 缺失时用同花顺摘要补齐（要点 6/7）
+        if criteria.margin_trend or (
+            criteria.min_gross_margin > 0 and metrics.get("gross_margin") is None
+        ):
+            profile = fetch_astock_margin_profile(code)
+            if profile is not None:
+                if metrics.get("gross_margin") is None:
+                    metrics["gross_margin"] = profile.get("gross_margin")
+                metrics["margin_trend_pp"] = profile.get("margin_trend_pp")
+
+        # 增发稀释检查（要点 13）：与全市场路径同口径（东财增发记录）
+        if criteria.no_dilution:
+            metrics["offerings_3y"] = fetch_astock_offering_count(
+                code, _OFFERING_LOOKBACK_YEARS
+            )
 
         # 研发强度：启用费雪维度时用新浪利润表补齐（与全市场路径同口径）
         if criteria.min_rd_ratio > 0:
             metrics["rd_ratio"] = fetch_astock_rd_ratio(code)
+
+        # 预期/动能维度：与全市场路径同口径（A 股无一致预期，惊喜恒缺失）
+        if criteria.min_forecast_growth > 0:
+            metrics["forecast_growth"] = fetch_astock_forecast_growth(code)
+        prev_growth = (detail or {}).get("profit_growth_prev")
+        if metrics.get("profit_growth") is not None and prev_growth is not None:
+            metrics["eps_momentum_pp"] = metrics["profit_growth"] - prev_growth
 
         fail_reasons = _check_all_criteria(metrics, criteria)
         passed = len(fail_reasons) == 0

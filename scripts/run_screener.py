@@ -47,14 +47,27 @@ A 股走 akshare 免费批量接口（无需 API Key）：
   信号"内部人士公开市场买入"无 A 股等价数据源，须人工核查大股东/高管增持
   与回购公告补位。与 monster 的差异：monster 追接近新高的强势不看估值，
   superstock 要求便宜的爆发成长（罕见合流），条件更严候选更少。
-- fisher：成长质量筛选，取自费雪《费雪论成长股获利》(Paths to Wealth
-  Through Common Stocks, 1960)：真成长由营收与研发驱动——利润/营收双高增
-  (>15%，识破削减成本的虚假成长) + 研发强度(研发费用/营收≥3%，成长引擎)
-  + 利润率高于行业(毛利率>30%，定价权) + 管理层高效再投资(ROE>15% +
-  聪明增长) + 财务稳健(负债<60%) + 合理价格(PE<40，不为成长付任意高价)。
-  书中核心定性项（管理层质量、"闲聊法"调研、9 条并购原则）无数据源，须
-  人工尽调补位。与 hundredbagger（同为质量成长）的差异：fisher 强调研发
-  引擎与利润率，不卡小市值（成熟成长公司也可）。
+- fisher：成长质量筛选，取自费雪《怎样选择成长股》(Common Stocks and
+  Uncommon Profits, 1958) 选股 15 要点的可量化近似（姊妹篇《费雪论成长股
+  获利》1960 为辅）：真成长由营收与研发驱动——利润/营收双高增(>15%，
+  要点 1/2) + 研发强度(研发费用/营收≥3%，要点 3) + 利润率高于行业且同比
+  不恶化(毛利率>30% 且降幅≤2pp，要点 5-7) + 管理层高效再投资(ROE>15% +
+  聪明增长) + 成长不靠股权融资稀释(负债<60% + A 股近 3 年无增发/港美股
+  股本不扩张，要点 13) + 合理价格(PE<40，不为成长付任意高价)。书中核心
+  定性项（管理层诚信与深度、“闲聊法”调研、长期利益取向）无数据源，
+  须人工尽调补位。与 hundredbagger（同为质量成长）的差异：fisher 强调
+  研发引擎、利润率趋势与反稀释，不卡小市值（成熟成长公司也可）。
+- navellier：八大指标成长股筛选，取自纳维里尔《怎样选择成长股：持续获利
+  选股8大指标》(The Little Book That Makes You Rich, 2007)：用数据而非
+  故事选成长股——盈利高增(>20%，指标 6) + 营收驱动(>15%，指标 3) + 高
+  ROE(>17%，指标 8) + 现金流验证盈利质量(现金流收益率>3%，指标 5) +
+  利润率扩张(毛利率同比不恶化，指标 4) + 机构预测盈利增速(>15%，指标 1
+  「盈利预期上调」的免费近似) + 盈利动能(增速较上期不减速，指标 7)。
+  指标 2（盈利惊喜）仅港美股有一致预期数据，A 股预设不启用，港美股可加
+  --earnings-surprise 叠加；书中另一半方法论（高 Alpha+低波动的量化风险
+  收益筛选）由 run_scan/run_score 的趋势与 RS 维度承接。与 fisher（同为
+  成长质量）差异：navellier 用预期/惊喜/动能代替研发/反稀释，更偏量价
+  驱动的右侧成长；与 hundredbagger 差异：加预期面与加速度约束、不卡市值。
 - dividend：红利股左侧筛选：高股息(股息率>3%) + 低估值(PE<15, PB<2) +
   PE/PB 历史分位低于 50%(防周期盈利顶部假低估) + 分红纪律(连续分红≥5年，
   仅 A 股有数据) + 财务稳健(ROE>8%，负债<60%)。红利股的买点常在下跌途中
@@ -90,8 +103,11 @@ A 股走 akshare 免费批量接口（无需 API Key）：
     # 超级强势股筛选（低 PE+盈利爆发+小市值+突破形态，斯泰恩书中标准）
     uv run python run_screener.py --preset superstock
 
-    # 成长质量筛选（营收+研发驱动的真成长+高利润率+高效再投资，费雪书中标准）
+    # 成长质量筛选（营收+研发驱动的真成长+利润率趋势+反稀释，费雪 15 要点标准）
     uv run python run_screener.py --preset fisher
+
+    # 八大指标成长股筛选（双高增+高ROE+现金流+机构预期+盈利动能，纳维里尔书中标准）
+    uv run python run_screener.py --preset navellier
 
     # 红利股左侧筛选（高股息+低估值+低分位+连续分红+财务稳健；候选接 run_dca 分批）
     uv run python run_screener.py --preset dividend
@@ -158,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 预设方案
     parser.add_argument(
         "--preset", default=None, choices=sorted(PRESETS),
-        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；fisher=成长质量（营收/利润双高增+研发强度+高毛利+高效再投资+合理价格，费雪书中标准）；dividend=红利股左侧（股息率>3%%+PE/PB低且历史分位<50%%+连续分红≥5年+ROE>8%%+负债<60%%，候选接 run_dca 分批建仓）；显式参数可覆盖预设项",
+        help="预设筛选方案：multibagger=十倍股统计特征（小市值+便宜+现金流+聪明增长+低位）；hundredbagger=百倍股质量成长（高ROE+营收/利润双高增+小市值+低杠杆，迈耶书中标准）；monster=猛兽股右侧强势（大势确认+盈利高增+接近新高+RS跑赢基准+量价吸筹，波伊克书中标准）；dhq=打折的高质量股（营收高增+高毛利+已具规模+回撤进入折扣区，马哈尼书中标准）；superstock=超级强势股（PE<10+盈利爆发+小市值+突破形态+量价吸筹，斯泰恩书中标准）；fisher=成长质量（营收/利润双高增+研发强度+高毛利且趋势不恶化+高效再投资+无增发稀释+合理价格，费雪《怎样选择成长股》15 要点标准）；navellier=八大指标成长股（盈利/营收双高增+高ROE+现金流+利润率趋势+机构预测增速+盈利动能，纳维里尔《怎样选择成长股：持续获利选股8大指标》标准）；dividend=红利股左侧（股息率>3%%+PE/PB低且历史分位<50%%+连续分红≥5年+ROE>8%%+负债<60%%，候选接 run_dca 分批建仓）；显式参数可覆盖预设项",
     )
 
     # 阈值参数
@@ -172,6 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-rev-growth", type=float, default=0.0, help="营收增速下限(%%)，默认 0（0=不限；百倍股标准：增长须由营收驱动）")
     parser.add_argument("--min-gross-margin", type=float, default=0.0, help="毛利率下限(%%)，默认 0=不限（DHQ 标准：高毛利=定价权与规模效应信号）")
     parser.add_argument("--min-rd-ratio", type=float, default=0.0, help="研发强度下限(%%，研发费用/营收)，默认 0=不限（费雪标准：研发是成长引擎；启用时逐只拉利润表较慢，未披露研发的公司按数据缺失剔除）")
+    parser.add_argument("--margin-trend", action="store_true", help="启用利润率趋势过滤：毛利率同比不恶化（降幅≤2pp，费雪要点 6/7；启用时逐只拉财务摘要/利润表较慢，无同期可比数据按缺失剔除）")
+    parser.add_argument("--no-dilution", action="store_true", help="启用反稀释过滤：成长不靠股权融资（费雪要点 13；A 股=近 3 年无增发记录，港美股=年度股本扩张≤5%%，数据不可用按缺失剔除）")
+    parser.add_argument("--min-forecast-growth", type=float, default=0.0, help="机构预测盈利增速下限(%%)，默认 0=不限（纳维里尔指标 1「盈利预期上调」的免费近似：A 股东财盈利预测批量表/港美股分析师一致预期；无机构覆盖的标的按数据缺失剔除）")
+    parser.add_argument("--earnings-surprise", action="store_true", help="启用盈利惊喜过滤：最近一期实际 EPS 不低于分析师预期（纳维里尔指标 2；仅港美股有一致预期数据，A 股按数据缺失剔除）")
+    parser.add_argument("--eps-momentum", action="store_true", help="启用盈利动能过滤：盈利增速较上期不减速（回落≤5pp，纳维里尔指标 7「增长在加速」；A 股用相邻报告期净利润增速差，港美股用财年口径，无两期可比数据按缺失剔除）")
     parser.add_argument("--min-cap", type=float, default=30.0, help="总市值下限(亿)，默认 30")
     parser.add_argument("--max-cap", type=float, default=0.0, help="总市值上限(亿)，默认 0=不限（十倍股研究：小市值起步）")
     parser.add_argument("--min-cash-yield", type=float, default=0.0, help="现金流收益率下限(%%)，默认 0=不限（A 股=每股经营现金流/股价，港美股=FCF/市值）")
@@ -243,6 +264,11 @@ def main() -> None:
         min_rev_growth=args.min_rev_growth,
         min_gross_margin=args.min_gross_margin,
         min_rd_ratio=args.min_rd_ratio,
+        margin_trend=args.margin_trend,
+        no_dilution=args.no_dilution,
+        min_forecast_growth=args.min_forecast_growth,
+        earnings_surprise=args.earnings_surprise,
+        eps_momentum=args.eps_momentum,
         min_cap=args.min_cap,
         max_cap=args.max_cap,
         min_cash_yield=args.min_cash_yield,
@@ -315,6 +341,11 @@ def main() -> None:
             rev_str = f"营收 {item['revenue_growth']:+.0f}%" if item.get("revenue_growth") else ""
             gross_str = f"毛利 {item['gross_margin']:.0f}%" if item.get("gross_margin") else ""
             rd_str = f"研发 {item['rd_ratio']:.1f}%" if item.get("rd_ratio") is not None else ""
+            mt_str = f"毛利趋势 {item['margin_trend_pp']:+.1f}pp" if item.get("margin_trend_pp") is not None else ""
+            fc_str = f"预测增速 {item['forecast_growth']:+.0f}%" if item.get("forecast_growth") is not None else ""
+            sp_str = f"盈利惊喜 {item['surprise_pct']:+.1f}%" if item.get("surprise_pct") is not None else ""
+            mom_str = f"动能 {item['eps_momentum_pp']:+.1f}pp" if item.get("eps_momentum_pp") is not None else ""
+            sg_str = f"股本 {item['share_growth']:+.1f}%" if item.get("share_growth") is not None else ""
             divy_str = f"连续分红 {item['div_years']}年" if item.get("div_years") is not None else ""
             cash_str = f"现金流 {item['cash_yield']:.1f}%" if item.get("cash_yield") else ""
             pos_str = f"52周位置 {item['price_pos']:.0%}" if item.get("price_pos") is not None else ""
@@ -335,7 +366,7 @@ def main() -> None:
             name = item.get("name", "")[:6]
             log(
                 f"{i:>3}. {item['symbol']:<12} {name:<8} "
-                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {divy_str}  {growth_str}  {rev_str}  {gross_str}  {rd_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
+                f"综合 {item['score']:>5.1f}  {pe_str}  {pb_str}  {roe_str}  {div_str}  {divy_str}  {growth_str}  {rev_str}  {gross_str}  {mt_str}  {fc_str}  {sp_str}  {mom_str}  {rd_str}  {sg_str}  {cash_str}  {pos_str}  {dd_str}  {rs_str}  {vol_str}  {val_str}"
             )
     elif market_info is not None and not market_info["uptrend"]:
         log("（本次未筛选：大势未确认上行。《猛兽股》纪律为大势不对不买，等基准重新站上 MA50/MA200 后再筛。）")
@@ -364,10 +395,18 @@ def main() -> None:
             "增持与回购公告补位；低 PE + 高增速合流极罕见，空结果属正常（书中纪律："
             "条件不全部满足就等待）；买强势股须带止损（书中：跌破 10 周线即退出）。")
     if args.preset == "fisher":
-        log("提示：fisher 是《费雪论成长股获利》成长质量标准的可量化近似，不是收益预测；"
-            "书中核心定性项——管理层质量、‘闲聊法’调研、9 条并购原则——无数据源，"
-            "须人工尽调补位；卖出遵循书中三理由（基本面恶化/当初判断错误/有更好标的），"
-            "不因大盘恐慌卖出好公司；单期同比增速有滑头，建议接 run_canslim.py 验证盈利持续性。")
+        log("提示：fisher 是费雪《怎样选择成长股》15 要点的可量化近似，不是收益预测；"
+            "书中核心定性项——管理层诚信与深度（要点 8-11/15）、‘闲聊法’调研、"
+            "长期利益取向——无数据源，须人工尽调补位；卖出遵循书中三理由"
+            "（基本面恶化/当初判断错误/有更好标的），不因大盘恐慌卖出好公司；"
+            "单期同比增速有滑头，建议接 run_canslim.py 验证盈利持续性。")
+    if args.preset == "navellier":
+        log("提示：navellier 是纳维里尔 8 大指标的免费数据近似，不是收益预测；"
+            "指标 1「盈利预期上调」用机构一致预测增速代理（真正的上调/下调方向"
+            "须人工核查研报），指标 2「盈利惊喜」仅港美股有数据（--earnings-surprise）；"
+            "书中另一半方法论——高 Alpha+低波动的量化筛选与组合分散——建议接"
+            " run_scan.py 复核趋势与 RS，候选组合持有而非单点押注；"
+            "机构预测有乐观偏差，建议接 run_canslim.py 验证盈利加速的真实性。")
     if args.preset == "dividend":
         log("提示：dividend 是红利股左侧筛选，不是收益预测；股息率为快照静态口径，"
             "高股息可能来自股价大跌（价值陷阱：分红削减/盈利恶化会双杀）；"
@@ -377,7 +416,7 @@ def main() -> None:
         log(f"提示：负债率<{criteria.max_debt:.0f}% 会剔除银行/保险等高杠杆金融股，纳入请加 --max-debt 0。")
     if not criteria.use_valuation_pct:
         log("提示：低 PE 可能是周期股盈利顶部假象，可加 --valuation-pct 用估值历史分位交叉验证。")
-    if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher"):
+    if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher", "navellier"):
         log_next_steps(
             log,
             "对候选做 CAN SLIM 成长面交叉确认 run_canslim.py --symbols <候选列表>（盈利加速+RS 强度）",
@@ -421,7 +460,7 @@ def main() -> None:
                 f"扫描 {n_scanned} 只标的：{n_final} 只达标。"
                 f"最优候选：{top_sym}。筛选基于基本面快照，非收益预测。"
             )
-        if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher"):
+        if args.preset in ("multibagger", "hundredbagger", "dhq", "fisher", "navellier"):
             next_steps = build_next_steps(
                 {"action": "canslim", "reason": "对候选做 CAN SLIM 成长面交叉确认（盈利加速+RS 强度）",
                  "command": "run_canslim.py --symbols <候选列表> --json"},
@@ -497,6 +536,16 @@ def _active_dimensions(criteria: ScreenCriteria) -> str:
         parts.append(f"毛利率>{criteria.min_gross_margin:.0f}%")
     if criteria.min_rd_ratio > 0:
         parts.append(f"研发强度>{criteria.min_rd_ratio:.0f}%")
+    if criteria.margin_trend:
+        parts.append("毛利率同比不恶化(降幅≤2pp)")
+    if criteria.no_dilution:
+        parts.append("无增发稀释(A股近3年/港美股股本≤5%)")
+    if criteria.min_forecast_growth > 0:
+        parts.append(f"机构预测增速>{criteria.min_forecast_growth:.0f}%")
+    if criteria.earnings_surprise:
+        parts.append("盈利惊喜(实际EPS≥预期，仅港美股)")
+    if criteria.eps_momentum:
+        parts.append("盈利动能(增速回落≤5pp)")
     if criteria.min_cap > 0:
         parts.append(f"市值>{criteria.min_cap:.0f}亿")
     if criteria.max_cap > 0:
