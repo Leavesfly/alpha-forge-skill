@@ -352,9 +352,12 @@ def _build_json_payload(args, result, regime, bench_symbol, replay_payload, cali
     # 估值分位（价灯数据源）
     if valuation is not None:
         payload["valuation"] = valuation.to_dict()
-    # 宏观 regime（可选）
+    # 宏观 regime（可选）：顶层字段保留兼容，同时并入 market_context 成为单一入口
     if macro_regime is not None:
         payload.update(macro_regime.to_dict())
+        payload["market_context"]["macro_regime"] = macro_regime.label
+        payload["market_context"]["macro_regime_cn"] = macro_regime.label_cn
+        payload["market_context"]["macro_advice"] = macro_regime.advice
     # 用户风险画像上下文（如已登记）
     from profile import load_profile as _load_profile
 

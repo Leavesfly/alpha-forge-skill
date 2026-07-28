@@ -38,6 +38,16 @@ def print_score_report(
         log(f"裁决          : {result.decision['rule']}")
     log(format_regime(regime))
 
+    # 大盘环境（market_context：risk-off 硬约束 + 四态状态）
+    ctx = result.market_context
+    if ctx.get("bench_regime_cn"):
+        line = f"大盘状态：{ctx.get('benchmark') or '基准'} {ctx['bench_regime_cn']}"
+        if ctx.get("bench_risk_off"):
+            line += "｜跌破自身 MA200（risk-off，势灯封顶黄）"
+        elif ctx.get("bench_risk_off") is False:
+            line += "｜站上自身 MA200"
+        log(line)
+
     # 估值历史分位（价灯数据源）
     if valuation is not None:
         from data.valuation import format_valuation

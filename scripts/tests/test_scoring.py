@@ -52,6 +52,12 @@ def _flat_benchmark(n: int = 400) -> pd.Series:
     return pd.Series(100.0 + 0.01 * np.arange(n), index=dates)
 
 
+def _riskoff_benchmark(n: int = 400) -> pd.Series:
+    """持续下行的基准：末端收盘低于自身 MA200（大盘 risk-off）。"""
+    dates = pd.date_range("2020-01-01", periods=n, freq="B")
+    return pd.Series(200.0 * np.exp(-0.002 * np.arange(n)), index=dates)
+
+
 #: 注入用估值分位（价灯绿/红）
 LOW_VAL = {"pe_percentile": 0.15, "pb_percentile": 0.20, "source": "test"}
 HIGH_VAL = {"pe_percentile": 0.90, "pb_percentile": 0.85, "source": "test"}
@@ -161,6 +167,38 @@ class TestVerdictMatrix:
             assert res.lights[name]["reasons"]
         assert res.decision["rule"]
         assert res.lights_summary.count("·") == 2
+
+    def test_market_context_risk_off(self):
+        """大盘 risk-off：势灯非绿，速览追加标注，顶层 market_context 可直接引用。"""
+        res = score_symbol(
+            _uptrend_df(), symbol="TEST.SH",
+            benchmark_close=_riskoff_benchmark(), benchmark_symbol="510300.SH",
+        )
+        assert res.lights["trend"]["color"] != "green"  # risk-off 封顶黄
+        assert "大盘 risk-off" in res.lights_summary
+        ctx = res.market_context
+        assert ctx["bench_risk_off"] is True
+        assert ctx["benchmark"] == "510300.SH"
+        assert ctx["impact"] and ctx["recovery_trigger"]
+        # 四态状态：单调下行基准应识别为趋势下行
+        assert ctx["bench_regime"] == "trend_down"
+        assert ctx["bench_regime_cn"] and ctx["bench_advice"]
+        assert res.to_dict()["market_context"] == ctx
+
+    def test_market_context_normal(self):
+        """大盘正常：速览无 risk-off 后缀，market_context 不附 impact，四态为上行。"""
+        res = score_symbol(_uptrend_df(), symbol="TEST.SH", benchmark_close=_flat_benchmark())
+        assert "risk-off" not in res.lights_summary
+        assert res.market_context["bench_risk_off"] is False
+        assert "impact" not in res.market_context
+        assert res.market_context["bench_regime"] == "trend_up"  # 线性上行基准
+
+    def test_market_context_no_benchmark(self):
+        """无基准：bench_risk_off 为 None，无四态字段（诚实标注，不猜测）。"""
+        res = score_symbol(_uptrend_df(), symbol="cu2501.SHF")
+        assert res.market_context["bench_risk_off"] is None
+        assert "bench_regime" not in res.market_context
+        assert "risk-off" not in res.lights_summary
 
     def test_no_benchmark_degraded(self):
         """无基准：相对强度权重并入动量并在势灯理由中标注降级。"""

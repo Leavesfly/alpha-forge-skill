@@ -113,6 +113,7 @@ class ScoreResult:
     risk_events: list[dict] = field(default_factory=list)  # 触发的风险事件
     evidence: list[dict] = field(default_factory=list)  # 结构化证据链（Agent 可引用）
     left_plan: dict | None = None  # 左侧分批计划（仅左侧观察且价深绿+无硬伤）
+    bench_regime: dict | None = None  # 大盘四态状态（detect_regime 应用于基准序列）
 
     @property
     def verdict_cn(self) -> str:
@@ -120,11 +121,34 @@ class ScoreResult:
 
     @property
     def lights_summary(self) -> str:
-        """三灯速览，如「价绿 · 势绿 · 时黄」。"""
-        return " · ".join(
+        """三灯速览，如「价绿 · 势绿 · 时黄」；大盘 risk-off 时追加显式标注。"""
+        summary = " · ".join(
             f"{LIGHT_CN[name]}{COLOR_CN.get(self.lights.get(name, {}).get('color', 'gray'), '灰')}"
             for name in LIGHTS
         )
+        if self.market_context.get("bench_risk_off"):
+            summary += " ｜ 大盘 risk-off"
+        return summary
+
+    @property
+    def market_context(self) -> dict:
+        """大市环境上下文：合并大盘 risk-off 与四态状态为单一权威字段。
+
+        bench_risk_off 取值：True/False；None = 基准缺失或样本不足（诚实标注）。
+        提供基准时附 bench_regime（趋势上行/下行/震荡/高波动）与一句话建议，
+        回答「现在大盘怎么样」时 Agent 引用本字段即可，不必自行推断。
+        """
+        detail = self.lights.get("trend", {}).get("detail", {}) or {}
+        risk_off = detail.get("bench_risk_off")
+        ctx: dict = {"benchmark": self.benchmark, "bench_risk_off": risk_off}
+        if self.bench_regime:
+            ctx["bench_regime"] = self.bench_regime["regime"]
+            ctx["bench_regime_cn"] = self.bench_regime["regime_cn"]
+            ctx["bench_advice"] = self.bench_regime["advice"]
+        if risk_off:
+            ctx["impact"] = "大盘 risk-off：势灯封顶黄，矩阵不会给出趋势买点"
+            ctx["recovery_trigger"] = "基准收复其 MA200（大盘转多）"
+        return ctx
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +157,7 @@ class ScoreResult:
             "verdict_cn": self.verdict_cn,
             "lights": self.lights,
             "lights_summary": self.lights_summary,
+            "market_context": self.market_context,
             "trend_score": self.trend_score,
             "components": self.components,
             "decision": self.decision,
@@ -181,6 +206,9 @@ def score_symbol(
     asof = str(index[-1])[:10] if len(index) else ""
     n = int(close.notna().sum())
 
+    # 大盘四态状态（描述性上下文，不参与裁决）：对基准序列跑 detect_regime
+    bench_regime = _bench_regime(benchmark_close)
+
     if n < MIN_BARS:
         reason = (
             f"有效 K 线仅 {n} 根，低于评估所需 {MIN_BARS} 根"
@@ -198,6 +226,7 @@ def score_symbol(
             asof=asof,
             n_bars=n,
             decision={"rule": "数据不足，无法评估", "triggers": [f"补足历史至 {MIN_BARS} 根以上"]},
+            bench_regime=bench_regime,
         )
 
     volume = df["volume"].astype(float).reset_index(drop=True) if "volume" in df.columns else None
@@ -265,7 +294,26 @@ def score_symbol(
         risk_events=triggered_events,
         evidence=evidence,
         left_plan=left_plan,
+        bench_regime=bench_regime,
     )
+
+
+def _bench_regime(benchmark_close: pd.Series | None) -> dict | None:
+    """对基准序列跑四态状态识别，提炼为 market_context 可引用的精简字段。
+
+    复用 research.regime.detect_regime（效率比 + 波动率分位）；无基准返回 None，
+    样本不足时 detect_regime 自行降级为 unknown（诚实标注）。
+    """
+    if benchmark_close is None:
+        return None
+    from research.regime import detect_regime
+
+    info = detect_regime(pd.Series(benchmark_close, dtype=float))
+    return {
+        "regime": info["regime"],
+        "regime_cn": info["regime_cn"],
+        "advice": info["advice"],
+    }
 
 
 # ---------------------------------------------------------------- 价灯
@@ -433,7 +481,8 @@ def _trend_light(
         reasons.append("周线样本不足 30 根，跳过周线结构检查")
     detail["weekly_broken"] = weekly_broken
 
-    bench_risk_off = False
+    # None = 基准缺失或样本不足（诚实标注，与 False「已检查且非 risk-off」区分）
+    bench_risk_off: bool | None = None
     if benchmark_close is not None:
         bench = benchmark_close.dropna().astype(float)
         if len(bench) >= 200:

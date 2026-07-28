@@ -70,7 +70,20 @@ snapshot 中记录 `vol_k` 供审计。
 | `unrated` | 无法评分 | 有效 K 线 <250 根，核心数据不足时不用猜测补齐 |
 
 JSON 输出同时含 `lights`（三灯各自 color/reasons/detail）、`lights_summary`
-（如「价绿 · 势绿 · 时黄」）与 `decision`（矩阵裁决规则 + 再评估触发条件）。
+（如「价绿 · 势绿 · 时黄」，大盘 risk-off 时追加「｜ 大盘 risk-off」标注）、
+`market_context`（大市环境单一权威字段，见下）与 `decision`（矩阵裁决规则 +
+再评估触发条件）。
+
+### 大市环境字段 market_context（Agent 回答「大盘怎么样」的引用入口）
+
+大盘 risk-off 对结论的影响藏在势灯封顶黄里，容易被误归因为个股趋势弱，
+故把三层大市信号合并为顶层单一字段：
+
+| 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `benchmark` / `bench_risk_off` | 势灯（基准 vs 自身 MA200） | **唯一参与裁决**；true 时附 `impact` 与 `recovery_trigger`；`null` = 基准缺失或样本不足 |
+| `bench_regime(_cn)` / `bench_advice` | `research.regime` 应用于基准序列 | 大盘四态（趋势上行/下行/震荡/高波动）+ 适配打法建议，描述性 |
+| `macro_regime(_cn)` / `macro_advice` | `--macro`（利率/CPI/PMI） | 宏观四态（扩张/宽松/滞胀/收缩），仅开启时存在，描述性 |
 
 ## 趋势分计量（势灯排序用，0~100）
 
