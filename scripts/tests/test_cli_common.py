@@ -120,11 +120,13 @@ def test_doctor_checks_structure(monkeypatch, tmp_path):
     )
     checks = run_list._doctor_checks()
     names = [c["name"] for c in checks]
-    for expected in ("Python 版本", "核心依赖", "TICKFLOW_API_KEY", "缓存目录", "数据拉取"):
+    for expected in ("Python 版本", "核心依赖", "数据源兜底链", "TICKFLOW_API_KEY", "缓存目录", "数据拉取", "验算链路"):
         assert expected in names
     assert all(c["status"] in ("ok", "warn", "fail") for c in checks)
     assert next(c for c in checks if c["name"] == "数据拉取")["status"] == "ok"
     assert next(c for c in checks if c["name"] == "缓存目录")["status"] == "ok"
+    # 验算链路：合成行情回测纯本地执行，健康环境下必须 ok
+    assert next(c for c in checks if c["name"] == "验算链路")["status"] == "ok"
 
 
 def test_doctor_data_fetch_failure_has_hint(monkeypatch, tmp_path):

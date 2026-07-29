@@ -180,7 +180,7 @@ uv --version || curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. 安装依赖（scripts/ 已配置好运行环境，数据获取与回测均在此运行）
 cd scripts && uv sync
 
-# 3. 环境自检（依赖/Key/缓存/字体/数据拉取逐项 ✓/✗ + 修复建议）
+# 3. 环境自检（依赖/数据源/Key/缓存/字体/数据拉取/验算链路逐项 ✓/✗ + 修复建议）
 uv run python run_list.py --doctor
 ```
 

@@ -2,7 +2,7 @@
 """能力清单 CLI：列出全部策略（含默认参数与寻优网格）、轮动、因子、ML 模型与定投模式。
 
 新手用它了解「有哪些可用」，agent 用 --json 拿到结构化清单再编排调用；
---doctor 逐项自检环境（依赖/Key/缓存/字体/数据拉取）并给出修复建议。
+--doctor 逐项自检环境（依赖/数据源/Key/缓存/字体/数据拉取/验算链路）并给出修复建议。
 
 示例：
     # 终端表格查看全部单标的策略与参数
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--doctor",
         action="store_true",
-        help="环境自检：逐项检查 Python/依赖/API Key/缓存/中文字体/数据拉取，并给出修复建议",
+        help="环境自检：逐项检查 Python/依赖/数据源兜底链/API Key/缓存/中文字体/数据拉取/验算链路，并给出修复建议",
     )
     add_json_arg(parser)
     return parser
@@ -67,7 +67,7 @@ def _doctor_checks() -> list[dict]:
         add("Python 版本", "fail", f"{ver.major}.{ver.minor}（需 >= 3.10）",
             "用 uv 运行会自动选择兼容解释器：cd scripts && uv sync && uv run python ...")
 
-    # 2) 核心依赖可导入
+    # 2) 核心依赖可导入（缺失则主流程无法运行；tickflow 主源、akshare 是 A 股估值/筛选唯一源）
     missing = []
     for mod in ("pandas", "numpy", "matplotlib", "sklearn", "rich", "tickflow", "akshare"):
         try:
@@ -80,7 +80,26 @@ def _doctor_checks() -> list[dict]:
     else:
         add("核心依赖", "ok", "pandas/numpy/matplotlib/sklearn/rich/tickflow/akshare 均可用")
 
-    # 3) LightGBM（macOS 缺 libomp 时导入会失败，不致命）
+    # 3) 数据源兜底链（openbb 港美股主力；baostock/yfinance 兜底；缺失不致命但降级能力受损）
+    src_roles = {
+        "openbb": "港美股主力（K线/财务/分红/估值）",
+        "baostock": "A 股日 K 二级兜底",
+        "yfinance": "港美股兜底",
+    }
+    src_missing = []
+    for mod in src_roles:
+        try:
+            __import__(mod)
+        except Exception:
+            src_missing.append(mod)
+    if src_missing:
+        add("数据源兜底链", "warn",
+            "导入失败：" + ", ".join(f"{m}（{src_roles[m]}）" for m in src_missing),
+            "cd scripts && uv sync 重装；缺 openbb 时港美股自动降级 tickflow/yfinance，但估值/财务能力受损")
+    else:
+        add("数据源兜底链", "ok", "openbb/baostock/yfinance 均可导入（含 tickflow/akshare 共五级降级链就绪）")
+
+    # 4) LightGBM（macOS 缺 libomp 时导入会失败，不致命）
     try:
         __import__("lightgbm")
         add("LightGBM", "ok", "可用（run_ml 默认模型）")
@@ -88,14 +107,14 @@ def _doctor_checks() -> list[dict]:
         add("LightGBM", "warn", f"导入失败：{type(exc).__name__}",
             "macOS 执行 brew install libomp；或 run_ml 改用 --model ridge/logistic")
 
-    # 4) API Key（免费日 K 无需 Key，仅提醒影响范围）
+    # 5) API Key（免费日 K 无需 Key，仅提醒影响范围）
     if os.environ.get("TICKFLOW_API_KEY"):
         add("TICKFLOW_API_KEY", "ok", "已配置（完整服务：实时/分钟 K/股票池/财务因子）")
     else:
         add("TICKFLOW_API_KEY", "warn", "未配置：历史日 K 回测/寻优/评分等主流程不受影响",
             "仅实时/分钟 K、--universe 股票池、财务因子需要；tickflow.org 申请后 export TICKFLOW_API_KEY=...")
 
-    # 5) 缓存目录可写（三级优先：env > 项目旧目录非空 > ~/.alpha-forge/klines）
+    # 6) 缓存目录可写（三级优先：env > 项目旧目录非空 > ~/.alpha-forge/klines）
     from data.cache import resolve_cache_dir
 
     cache_dir = resolve_cache_dir()
@@ -109,7 +128,7 @@ def _doctor_checks() -> list[dict]:
         add("缓存目录", "fail", f"不可写：{cache_dir}（{exc}）",
             "检查目录权限，或用 ALPHA_FORGE_CACHE_DIR 指向可写位置")
 
-    # 6) 中文字体（缺失时图表中文显示为方框，不致命）
+    # 7) 中文字体（缺失时图表中文显示为方框，不致命）
     try:
         from matplotlib import font_manager
 
@@ -124,7 +143,7 @@ def _doctor_checks() -> list[dict]:
     except Exception as exc:
         add("中文字体", "warn", f"检查跳过：{type(exc).__name__}", "")
 
-    # 7) 数据拉取端到端（可能命中本地缓存；失败才能确认有问题）
+    # 8) 数据拉取端到端（可能命中本地缓存；失败才能确认有问题）
     try:
         from datafeed import fetch_ohlcv
 
@@ -133,6 +152,40 @@ def _doctor_checks() -> list[dict]:
     except Exception as exc:
         add("数据拉取", "fail", f"600000.SH 拉取失败：{exc}",
             "检查网络；可设 ALPHA_FORGE_DATA_SOURCE=tickflow|akshare 单源排查，详见 references/faq.md")
+
+    # 9) 验算链路端到端（合成行情驱动策略+回测引擎，纯本地不联网）
+    try:
+        import numpy as np
+        import pandas as pd
+
+        from backtest.engine import run_backtest as _run_bt
+        from strategies import get_strategy
+
+        n = 120
+        close = 10.0 + np.sin(np.arange(n) / 5.0)  # 确定性正弦波，足以触发均线交叉
+        prev = np.concatenate([[close[0]], close[:-1]])
+        synth = pd.DataFrame(
+            {
+                "trade_date": pd.date_range("2020-01-01", periods=n, freq="B"),
+                "open": prev,
+                "high": np.maximum(close, prev) * 1.01,
+                "low": np.minimum(close, prev) * 0.99,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            }
+        )
+        result = _run_bt(synth, get_strategy("ma_cross"), symbol="_doctor_")
+        final_equity = float(result.equity.iloc[-1])
+        n_trades = len(result.trades)
+        if np.isfinite(final_equity) and n_trades > 0:
+            add("验算链路", "ok", f"合成行情回测通过：{n_trades} 笔交易，净值有限值")
+        else:
+            add("验算链路", "fail",
+                f"合成行情回测结果异常：trades={n_trades}, equity={final_equity}",
+                "cd scripts && uv sync 重装依赖后重跑；ALPHA_FORGE_DEBUG=1 查看堆栈")
+    except Exception as exc:
+        add("验算链路", "fail", f"回测引擎执行失败：{type(exc).__name__}: {exc}",
+            "cd scripts && uv sync 重装依赖后重跑；ALPHA_FORGE_DEBUG=1 查看堆栈")
 
     return checks
 
