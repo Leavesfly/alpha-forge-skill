@@ -224,6 +224,9 @@ __marimo__/
 .DS_Store
 uv.lock
 
+# Qoder IDE
+.qoder/
+
 # Backtest generated charts
 scripts/*.png
 
