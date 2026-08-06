@@ -45,6 +45,8 @@ CLI_COMMANDS = [
     "run_list.py",
     "run_verify.py",
     "run_sync.py",
+    "run_doctor.py",
+    "run_data.py",
 ]
 
 

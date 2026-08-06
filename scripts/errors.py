@@ -8,6 +8,7 @@
     AlphaForgeError（基类）
     ├── ValidationError      参数/格式错误 → exit 2
     ├── DataFetchError       数据拉取失败 → exit 1
+    ├── DataQualityError     数据质量不合格 → exit 1
     └── InsufficientDataError 数据不足 → exit 1
 
 设计原则：
@@ -46,4 +47,13 @@ class InsufficientDataError(AlphaForgeError):
     """数据量不足以完成计算（→ exit 1）。
 
     典型场景：K 线数量低于策略/评分所需最小窗口、多标的对齐后为空。
+    """
+
+
+class DataQualityError(AlphaForgeError):
+    """数据质量校验发现 error 级问题（→ exit 1）。
+
+    典型场景：重复交易日、OHLC 含 NaN 或非正价、high/low 关系不成立。
+    仅在 ``ALPHA_FORGE_STRICT_DATA=1`` 时抛出；默认只打 stderr 告警并放行，
+    避免单只标的的脏数据中断全市场扫描。
     """

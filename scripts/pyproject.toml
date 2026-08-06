@@ -38,7 +38,11 @@ packages = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
+# 默认排除 live 用例：CI 与日常开发不依赖网络，实测用 -m live 显式开启
+addopts = "-q -m 'not live'"
+markers = [
+    "live: 需真实网络与外部数据源的实测用例（默认跳过，用 -m live 开启）",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

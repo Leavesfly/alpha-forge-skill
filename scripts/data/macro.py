@@ -17,6 +17,10 @@
 数据源：akshare 免费接口（无需 API Key），仅覆盖中国宏观数据。
 港美股标的同样参考中国宏观（A 股/港股直接相关；美股间接参考）。
 
+本地优先：快照经 ``cache.load_json_obj`` 落盘（TTL 12 小时）。宏观指标是
+月频/日频发布，而 akshare 是爬虫接口（慢且易限频），没必要每次评分都重拉；
+顺带使 ``ALPHA_FORGE_OFFLINE=1`` 对宏观数据也生效。
+
 所有接口异常返回 None（调用方跳过宏观上下文，不中断评分流程）。
 """
 
@@ -56,6 +60,25 @@ class MacroSnapshot:
             "errors": self.errors or None,
         }
 
+    @classmethod
+    def from_dict(cls, payload: dict) -> MacroSnapshot:
+        """从 :meth:`to_dict` 的输出重建（缓存反序列化用）。
+
+        注意 to_dict 已按 2 位小数舍入，往返后精度与宏观指标的发布精度一致（
+        国债 2.65%、CPI 0.3%、PMI 50.1），无实际损失。
+        """
+        return cls(
+            bond_yield_10y=payload.get("bond_yield_10y"),
+            bond_yield_trend=payload.get("bond_yield_trend"),
+            cpi_yoy=payload.get("cpi_yoy"),
+            cpi_trend=payload.get("cpi_trend"),
+            pmi=payload.get("pmi"),
+            pmi_trend=payload.get("pmi_trend"),
+            asof=payload.get("asof") or "",
+            source=payload.get("source") or "akshare",
+            errors=list(payload.get("errors") or []),
+        )
+
 
 @dataclass
 class MacroRegime:
@@ -94,6 +117,10 @@ _MACRO_ADVICE = {
     "contraction": "衰退预期中等待政策转向信号，防御板块相对抗跌",
     "unknown": "宏观数据不足，无法判断宏观环境",
 }
+
+
+#: 宏观数据缓存 TTL：国债日频、CPI/PMI 月频，12 小时足够新鲜
+MACRO_TTL = 12 * 3600
 
 
 def _safe_round(v, ndigits: int = 2):
@@ -266,10 +293,35 @@ def _fetch_pmi() -> tuple[float | None, pd.Series | None, str]:
 
 
 def fetch_macro_snapshot() -> MacroSnapshot:
-    """拉取宏观数据快照（国债利率 / CPI / PMI）。
+    """拉取宏观数据快照（国债利率 / CPI / PMI），本地优先缓存 12 小时。
 
     各指标独立拉取，单项失败不影响其他项（errors 记录失败原因）。
+    三项全失败时**不写缓存**（不把失败结果锁存 12 小时），而是回退陈旧快照。
     """
+    from .cache import config_with_ttl, load_json_obj
+
+    payload = load_json_obj(
+        _macro_payload, "macro_snapshot", config_with_ttl(MACRO_TTL)
+    )
+    if payload:
+        return MacroSnapshot.from_dict(payload)
+    return MacroSnapshot(errors=["宏观数据不可用（远端失败且无本地缓存）"])
+
+
+def _macro_payload() -> dict | None:
+    """拉取并序列化宏观快照；三项指标全空时返回 None 表示本次不可缓存。"""
+    snapshot = _fetch_macro_snapshot_remote()
+    if (
+        snapshot.bond_yield_10y is None
+        and snapshot.cpi_yoy is None
+        and snapshot.pmi is None
+    ):
+        return None
+    return snapshot.to_dict()
+
+
+def _fetch_macro_snapshot_remote() -> MacroSnapshot:
+    """直连 akshare 拉取宏观快照（不经缓存）。"""
     errors: list[str] = []
 
     bond_yield, bond_series, bond_err = _fetch_bond_yield()

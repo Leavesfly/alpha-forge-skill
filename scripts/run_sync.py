@@ -20,6 +20,11 @@
     # 只同步池内前 100 只并提高并发（自担免费源限频风险）
     uv run python run_sync.py --universe CN_Equity_A --limit 100 --workers 4
 
+    # 缓存治理：查看用量 / 清理超过 180 天未更新的条目（先试跑）
+    uv run python run_sync.py --cache-usage
+    uv run python run_sync.py --prune-days 180 --dry-run
+    uv run python run_sync.py --prune-days 180
+
     # 结构化 JSON 输出（供 agent/脚本消费）
     uv run python run_sync.py --symbols 600000.SH --json
 """
@@ -40,7 +45,7 @@ from cli_common import (
     split_symbols,
 )
 from cli_config import parse_args_with_config
-from data.cache import resolve_cache_dir
+from data.cache import cache_usage, prune_cache, resolve_cache_dir
 from data.sync import DEFAULT_WORKERS, sync_symbols
 from report import attach_meta
 
@@ -67,6 +72,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workers", type=int, default=DEFAULT_WORKERS,
         help=f"并发线程数，默认 {DEFAULT_WORKERS}（调高自担免费源限频风险）",
+    )
+    parser.add_argument(
+        "--cache-usage", action="store_true",
+        help="只输出缓存用量统计（条目数/占用空间/最旧条目）后退出",
+    )
+    parser.add_argument(
+        "--prune-days", type=int, default=None,
+        help="只清理抓取时间超过 N 天的缓存条目后退出（退市标的的文件会永久残留）",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="配合 --prune-days：只统计待删除量，不真的删",
     )
     add_json_arg(parser)
     return parser
@@ -130,9 +147,85 @@ def resolve_universe(universe: str, limit: int | None, log) -> list[str]:
     return symbols
 
 
+def _report_cache_usage(args: argparse.Namespace, log) -> None:
+    """输出缓存用量统计。"""
+    usage = cache_usage()
+    log(f"\n{'═' * 60}")
+    log(f"  缓存目录：{usage['cache_dir']}")
+    if not usage["exists"]:
+        log("  （目录不存在，尚未同步任何数据）")
+    else:
+        log(f"  K 线条目：{usage['kline_entries']}")
+        log(f"  快照/指标条目：{usage['table_entries']}")
+        log(f"  占用空间：{usage['total_mb']} MB")
+        log(f"  最旧条目：{usage['oldest_entry'] or '未知'}")
+    log(f"{'═' * 60}")
+
+    if args.json is not None:
+        payload = attach_meta(
+            {
+                **usage,
+                "summary": (
+                    f"缓存用量：{usage['kline_entries']} 个 K 线条目 + "
+                    f"{usage['table_entries']} 个快照条目，共 {usage['total_mb']} MB，"
+                    f"目录 {usage['cache_dir']}。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "prune", "reason": "清理长期未更新的陈旧条目（先试跑）",
+                     "command": "run_sync.py --prune-days 180 --dry-run"},
+                ),
+            },
+            command="sync",
+        )
+        emit_json(args.json, payload, log)
+
+
+def _report_prune(args: argparse.Namespace, log) -> None:
+    """执行（或试跑）过期缓存清理。"""
+    if args.prune_days < 0:
+        raise SystemExit("[error] --prune-days 不能为负数。")
+    report = prune_cache(args.prune_days, dry_run=args.dry_run, config=None)
+    mode = "试跑（未删除）" if args.dry_run else "已删除"
+    log(f"\n{'═' * 60}")
+    log(f"  缓存清理{mode}：{report.removed} 个条目，"
+        f"{report.freed_bytes / 1024 / 1024:.2f} MB（阈值 {args.prune_days} 天）")
+    for name in report.entries[:10]:
+        log(f"  - {name}")
+    if len(report.entries) > 10:
+        log(f"  ...（其余 {len(report.entries) - 10} 个略）")
+    log(f"{'═' * 60}")
+
+    if args.json is not None:
+        payload = attach_meta(
+            {
+                **report.to_dict(),
+                "max_age_days": args.prune_days,
+                "cache_dir": str(resolve_cache_dir()),
+                "summary": (
+                    f"缓存清理{mode}：{report.removed} 个条目，"
+                    f"{report.freed_bytes / 1024 / 1024:.2f} MB（保留 {args.prune_days} 天内）。"
+                ),
+                "next_steps": build_next_steps(
+                    {"action": "usage", "reason": "清理后确认当前用量",
+                     "command": "run_sync.py --cache-usage --json"},
+                ),
+            },
+            command="sync",
+        )
+        emit_json(args.json, payload, log)
+
+
 def main() -> None:
     args = parse_args_with_config(build_parser())
     json_stdout, log = init_log(args)
+
+    # 缓存治理子命令：与同步互斥，处理完直接退出
+    if args.cache_usage:
+        _report_cache_usage(args, log)
+        return
+    if args.prune_days is not None:
+        _report_prune(args, log)
+        return
 
     if bool(args.symbols) == bool(args.universe):
         raise SystemExit("[error] --symbols 与 --universe 必须二选一。")

@@ -11,6 +11,12 @@ K 线之外进一步利用 OpenBB（Open Data Platform）的多样化数据能�
 （百分数指标统一为百分数，序列升序）。接口异常向上抛出，由调用方决定
 降级（各调用点保留原 yfinance 直连路径兜底）。
 
+本地优先：``fetch_obb_metrics`` 与 ``fetch_obb_rd_ratio`` 经
+``cache.load_json_obj`` 落盘（TTL 24 小时）——它们是 screener 预设逐只
+校查的热路径。``fetch_obb_eps`` / ``fetch_obb_dividends`` 不在此层缓存：
+它们分别由 ``valuation.fetch_valuation_percentile`` 和
+``dividends.fetch_dividends`` 在更上层整体缓存，再包一层只会重复落盘。
+
 注意：openbb 内部走 anyio portal，anyio<4 会报 "This portal is not running"，
 项目依赖已约束 anyio>=4.0。
 """
@@ -24,6 +30,15 @@ from errors import DataFetchError
 
 #: OpenBB 基本面覆盖的市场后缀（与 K 线主力源一致）
 HKUS_SUFFIXES = (".HK", ".US")
+
+#: 基本面指标缓存 TTL：财报季度更新，24 小时
+METRICS_TTL = 24 * 3600
+
+
+def _cache_key(prefix: str, symbol: str) -> str:
+    """构造文件名安全的缓存键。"""
+    safe = "".join(c if c.isalnum() else "_" for c in symbol)
+    return f"{prefix}_{safe}"
 
 
 def supports_hkus(symbol: str) -> bool:
@@ -42,7 +57,7 @@ def _pct(v) -> float | None:
 
 
 def fetch_obb_metrics(symbol: str) -> dict:
-    """港美股关键指标（估值/质量/增速），归一为项目口径。
+    """港美股关键指标（估值/质量/增速），归一为项目口径，本地优先缓存 24 小时。
 
     Returns:
         ``{"pe", "pb", "roe", "div_yield", "debt_ratio", "profit_growth",
@@ -50,8 +65,23 @@ def fetch_obb_metrics(symbol: str) -> dict:
         百分数指标已转百分数，市值单位为亿（原币种）。
 
     Raises:
-        DataFetchError: 接口未返回数据时。
+        DataFetchError: 接口未返回数据且无本地缓存时。
     """
+    from data.cache import config_with_ttl, load_json_obj
+
+    payload = load_json_obj(
+        lambda: _fetch_obb_metrics_remote(symbol),
+        _cache_key("obb_metrics", symbol),
+        config_with_ttl(METRICS_TTL),
+    )
+    if payload is not None:
+        return payload
+    # 缓存与远端都没有：直连一次以抛出具体原因（load_json_obj 会吞异常）
+    return _fetch_obb_metrics_remote(symbol)
+
+
+def _fetch_obb_metrics_remote(symbol: str) -> dict:
+    """直连 openbb 拉取关键指标（不经缓存）。"""
     from openbb import obb
 
     df = obb.equity.fundamental.metrics(
@@ -123,12 +153,29 @@ def fetch_obb_eps(symbol: str) -> tuple[pd.Series | None, pd.Series | None]:
 def fetch_obb_rd_ratio(symbol: str) -> float | None:
     """港美股最新财年研发强度(%)：研发费用 / 营业总收入 × 100。
 
+    结果本地优先缓存 24 小时（包括“未披露研发”这个结论本身，
+    它与拉取失败是两回事，否则无研发的公司会每次筛选都重拉）。
+
     Returns:
         研发占比百分数；无研发科目（未披露）返回 None。
 
     Raises:
-        DataFetchError: 接口未返回利润表时。
+        DataFetchError: 接口未返回年度利润表且无本地缓存时。
     """
+    from data.cache import config_with_ttl, load_json_obj
+
+    payload = load_json_obj(
+        lambda: {"rd_ratio": _fetch_obb_rd_ratio_remote(symbol)},
+        _cache_key("obb_rd", symbol),
+        config_with_ttl(METRICS_TTL),
+    )
+    if payload is not None:
+        return payload.get("rd_ratio")
+    return _fetch_obb_rd_ratio_remote(symbol)
+
+
+def _fetch_obb_rd_ratio_remote(symbol: str) -> float | None:
+    """直连 openbb 计算研发强度（不经缓存）。"""
     from openbb import obb
 
     df = obb.equity.fundamental.income(

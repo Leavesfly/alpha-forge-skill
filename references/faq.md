@@ -48,6 +48,10 @@
 
 三级优先：`ALPHA_FORGE_CACHE_DIR` > 项目根旧 `.cache/klines`（存在且非空时沿用，老用户零迁移）> `~/.alpha-forge/klines`（新默认，与 skill 目录解耦，重装/更新 skill 不丢数据）。可随时整目录删除，下次运行自动重建；实际生效目录用 `run_list.py --doctor` 查看。
 
+### Q: 某个数据源是不是挂了 / 怎么确认哪些源真的能用？
+
+`uv run python run_doctor.py --json`：绕过缓存对每个源 × 每个代表标的做一次真实拉取，逐项给出成功/失败与失败原因、耗时、返回行数、末根 K 线日期与质量校验结论，并按市场汇总可用源数与**独立上游数**（港美股 openbb 与 yfinance 同上游 Yahoo，会同时失效）。免费源被限流/上游改版属环境问题，链路会自动降级到下一个源；`run_list.py --doctor` 查的是本机环境（依赖/字体/缓存目录），两者互补。
+
 ### Q: 全市场扫描太慢 / 能不能离线用？
 
 先用 `run_sync.py` 批量预同步（全市场 `--universe CN_Equity_A`，指定标的 `--symbols`），之后扫描/回测直接命中本地缓存；再设 `ALPHA_FORGE_OFFLINE=1` 可完全离线（只读缓存不联网，无缓存的标的报错并提示先同步）。

@@ -11,6 +11,10 @@
 - 仅对两个源**共同覆盖**的标的/周期有效；
 - 不影响现有 auto/tickflow/baostock/akshare 数据源切换逻辑——验证是独立旁路；
 - 阈值可由调用方指定，默认价格列 0.5%、成交量列 2%。
+
+关于“同上游”：openbb 走的就是 yfinance provider，两者同源于 Yahoo；
+选这两个做交叉验证只能查出适配层 bug，查不出上游数据质量问题，
+因此会在 warnings 中显式标注（不静默给人假的安全感）。
 """
 
 from __future__ import annotations
@@ -19,14 +23,25 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from .sources import AkshareSource, BaostockSource, TickFlowSource
+from .sources import (
+    AkshareSource,
+    BaostockSource,
+    OpenBBSource,
+    TickFlowSource,
+    YFinanceSource,
+)
 
 #: 可用对照源注册表
 VERIFY_SOURCES: dict[str, type] = {
     "tickflow": TickFlowSource,
+    "openbb": OpenBBSource,
     "baostock": BaostockSource,
     "akshare": AkshareSource,
+    "yfinance": YFinanceSource,
 }
+
+#: 同上游（Yahoo）的源组：互验时验证强度有限，需显式告知
+_SAME_UPSTREAM = ({"openbb", "yfinance"},)
 
 #: 默认相对误差阈值（百分比）
 DEFAULT_PRICE_THRESHOLD = 0.5  # OHLC 列
@@ -143,10 +158,11 @@ def verify_symbol(
     price_threshold_pct: float = DEFAULT_PRICE_THRESHOLD,
     volume_threshold_pct: float = DEFAULT_VOLUME_THRESHOLD,
     source_b_name: str = "baostock",
+    source_a_name: str = "tickflow",
 ) -> VerifyResult:
     """对单标的执行多源交叉验证。
 
-    从 TickFlow（主源）和指定对照源拉取 K 线，按交易日对齐后逐列比对 OHLCV。
+    从两个指定源拉取 K 线，按交易日对齐后逐列比对 OHLCV。
     任一列最大相对误差超过阈值则判定 FAIL。
 
     Args:
@@ -156,15 +172,21 @@ def verify_symbol(
         adjust: 复权口径。
         price_threshold_pct: 价格列（OHLC）相对误差阈值（%）。
         volume_threshold_pct: 成交量列相对误差阈值（%）。
-        source_b_name: 对照源名称（baostock/akshare/tickflow），默认 baostock。
+        source_b_name: 对照源名称，默认 baostock。
+        source_a_name: 主源名称，默认 tickflow（港美股可改 openbb）。
 
     Returns:
         VerifyResult 结构化报告。
 
     Raises:
-        RuntimeError: 对照源不支持该标的/周期，或两源均拉取失败。
+        RuntimeError: 源名未知、源不支持该标的/周期，或两源均拉取失败。
     """
-    source_a = TickFlowSource()
+    source_a_cls = VERIFY_SOURCES.get(source_a_name)
+    if source_a_cls is None:
+        raise RuntimeError(
+            f"未知主源 '{source_a_name}'，可选：{', '.join(VERIFY_SOURCES)}"
+        )
+    source_a = source_a_cls()
     source_b_cls = VERIFY_SOURCES.get(source_b_name)
     if source_b_cls is None:
         raise RuntimeError(
@@ -172,10 +194,16 @@ def verify_symbol(
         )
     source_b = source_b_cls()
 
+    if not source_a.supports(symbol, period):
+        raise RuntimeError(
+            f"主源 {source_a_name} 不支持 {symbol} {period}"
+            f"（openbb/yfinance 仅港美股，baostock 仅沪深）。"
+        )
     if not source_b.supports(symbol, period):
         raise RuntimeError(
             f"对照源 {source_b_name} 不支持 {symbol} {period}"
-            f"（baostock 仅沪深日/周/月 K，akshare 仅 A 股日/周/月 K）。"
+            f"（baostock 仅沪深日/周/月 K，akshare 仅 A 股日/周/月 K，"
+            f"openbb/yfinance 仅港美股）。"
         )
 
     errors: list[str] = []
@@ -184,7 +212,7 @@ def verify_symbol(
     try:
         df_a = source_a.fetch(symbol, period, count, adjust)
     except Exception as exc:
-        errors.append(f"TickFlow: {type(exc).__name__}: {exc}")
+        errors.append(f"{source_a_name}: {type(exc).__name__}: {exc}")
         df_a = None
 
     # 拉取对照源
@@ -201,7 +229,7 @@ def verify_symbol(
         )
     if df_a is None:
         raise RuntimeError(
-            f"主源 TickFlow 拉取失败，无法完成交叉验证：{errors[0]}"
+            f"主源 {source_a_name} 拉取失败，无法完成交叉验证：{errors[0]}"
         )
     if df_b is None:
         raise RuntimeError(
@@ -221,6 +249,14 @@ def verify_symbol(
         rows_b=len(df_b),
         aligned_rows=aligned_rows,
     )
+
+    # 同上游告知：不能让使用者以为这是真正的独立交叉验证
+    if {source_a.name, source_b.name} in _SAME_UPSTREAM:
+        result.warnings.append(
+            f"{source_a.name} 与 {source_b.name} 同源于 Yahoo（openbb 走的就是 "
+            "yfinance provider），本次比对只能查出适配层差异，"
+            "不能证明上游数据质量，交叉验证参考价值有限。"
+        )
 
     if aligned_rows == 0:
         result.warnings.append("两源无共同交易日，无法比对。")

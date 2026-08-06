@@ -7,7 +7,8 @@
 - 定期巡检数据源质量。
 
 对照源可选 baostock（默认，仅沪深）或 akshare（含北交所）；
-其他市场/周期会明确报错。
+港美股用 --source-a openbb --source-b yfinance（注意两者同源于 Yahoo，
+验证强度有限，报告会显式标注）；其他市场/周期会明确报错。
 
 示例：
     # 验证单只标的日 K 数据一致性（默认对照源 baostock）
@@ -74,7 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-b", default="baostock", choices=list(VERIFY_SOURCES),
-        help="对照数据源（默认 baostock，可选 akshare/tickflow）",
+        help="对照数据源（默认 baostock，A 股可选 akshare/tickflow，港美股选 yfinance）",
+    )
+    parser.add_argument(
+        "--source-a", default="tickflow", choices=list(VERIFY_SOURCES),
+        help="主数据源（默认 tickflow；港美股建议 openbb）",
     )
     add_json_arg(parser)
     return parser
@@ -118,7 +123,7 @@ def main() -> None:
 
     results: list[VerifyResult] = []
     for sym in symbols:
-        log(f"验证 {sym} {args.period}（TickFlow vs {args.source_b}）...")
+        log(f"验证 {sym} {args.period}（{args.source_a} vs {args.source_b}）...")
         try:
             r = verify_symbol(
                 sym,
@@ -128,6 +133,7 @@ def main() -> None:
                 price_threshold_pct=args.threshold,
                 volume_threshold_pct=args.volume_threshold,
                 source_b_name=args.source_b,
+                source_a_name=args.source_a,
             )
             results.append(r)
             _print_result(r, log)
@@ -183,7 +189,7 @@ def main() -> None:
                 "passed": passed_count,
                 "failed": failed_count,
                 "summary": (
-                    f"多源交叉验证（TickFlow vs {args.source_b}）：{len(valid)} 只 A 股标的，"
+                    f"多源交叉验证（{args.source_a} vs {args.source_b}）：{len(valid)} 只 A 股标的，"
                     f"{status_text}。阈值：价格 {args.threshold}%、成交量 {args.volume_threshold}%。"
                 ),
                 "next_steps": build_next_steps(

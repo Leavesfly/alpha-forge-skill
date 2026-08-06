@@ -388,7 +388,7 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 
 | 约定 | 说明 |
 |------|------|
-| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` |
+| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` / `run_data` / `run_doctor` / `run_sync` |
 | JSON 结构 | 顶层固定含 `schema`（当前 `alpha-forge/1`）、`command`、`generated_at` 三个元信息键，按 `command` 分发解析；字段只增不删 |
 | Agent 友好字段 | 所有命令的 JSON 输出含 **`summary`**（1–2 句自然语言结论，可直接引用或改写后转述给用户）和 **`next_steps`**（结构化后续动作列表，每项含 `action`/`reason`/`command`，部分项含可选 `condition`，仅条件成立时才提议）。`run_score` 额外含 **`evidence`** 结构化证据链（编号可引用，避免转述事实性错误） |
 | 能力发现 | `run_list.py --json`（`command=list`）返回全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，agent 可据此动态构造后续命令 |
@@ -521,7 +521,36 @@ uv run python run_compare.py --symbol 600000.SH --json
 > 规则格式详见 [strategies.md「自定义规则策略」](strategies.md)；**不执行任意代码**，
 > 非法规则（未知指标/未定义引用/语法错）报友好错误。
 
-### 场景 E：错误处理分支
+### 场景 E：趋势跟踪机会挖掘流水线（宽进严出）
+
+用户：“用趋势跟踪帮我找强势股 / 自动扫一遍现在的趋势机会。”
+
+思路：趋势信号宽口发现（假阳性多）→ 三灯严口确认（补估值 + 出计划）→ 模拟盘跟踪。
+
+```bash
+# 1. 宽口扫描（二选一）
+# 全市场：猛兽股预设 = 多头结构 + RS 跑赢 + 大势确认 + 量价吸筹
+uv run python run_screener.py --preset monster --json > scan.json
+# 解析 .candidates[] 得到候选名单；大势不对时空结果是纪律特性，如实告知
+# 自选池：批量跑趋势策略信号（可换 turtle/ma_cross/momentum）
+uv run python run_signal.py --symbols 600000.SH,600519.SH,300750.SZ \
+    --strategy supertrend --json > signals.json
+# 解析 .signals[]，筛出当日触发买入的标的作为候选
+
+# 2. 严口确认：对每个候选逐只三灯复核（补价灯估值维度 + ATR 交易计划）
+uv run python run_score.py --symbol 300750.SZ --json > score.json
+# 解析 .verdict_cn/.lights_summary/.plan/.evidence[]；
+# 仅 verdict 为趋势买点/纯趋势仓的候选才进入跟踪；价灯灰时如实说明结论仅基于势/时
+
+# 3. 落地跟踪：按三灯结论纸面执行，每日收盘后重跑
+uv run python run_paper.py --symbol 300750.SZ --mode score --json > paper.json
+# .next_steps 含每日重跑与回放验证命令
+```
+
+> Agent 提示：震荡市趋势信号假阳性多，若 screener 返回空候选，先确认大势（market_filter/regime）
+> 再如实告知用户，不要换阈值硬凑结果；落地买卖一律以 run_score 结论与交易计划为准。
+
+### 场景 F：错误处理分支
 
 ```bash
 uv run python run_backtest.py --symbol 600000 --strategy ma_cross --json > out.json

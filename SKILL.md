@@ -1,13 +1,13 @@
 ---
 name: alpha-forge-skill
-description: A股/港股/美股量化研究与交易辅助：行情/财务数据获取、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、买点三灯决策（价·势·时三维判断能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、红利股左侧分批、每日信号与模拟盘、统一持仓账户。对话式触发："XX现在能买吗""持仓该不该卖""买多少合适""帮我回测/调参/做组合/定投""最近有什么值得买的""有没有低估值的股票""红利股能不能越跌越买""这只股符不符合CAN SLIM""每天帮我盯盘"。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
+description: A股/港股/美股量化研究与交易辅助：行情/财务数据取用（五源自动降级 + 本地缓存 + 质量校验）、数据源体检与多源交叉验证、内置策略与自定义 TOML 规则回测、参数寻优与样本外验证、组合轮动优化、多因子选股、配对交易、机器学习预测、新闻情绪、定投 DCA、买点三灯决策（价·势·时三维判断能不能买/该不该卖/买多少）、CAN SLIM 清单、低估值全市场筛选、红利股左侧分批、每日信号与模拟盘、统一持仓账户。对话式触发：“XX现在能买吗”“持仓该不该卖”“买多少合适”“帮我回测/调参/做组合/定投”“最近有什么值得买的”“有没有低估值的股票”“红利股能不能越跌越买”“这只股符不符合CAN SLIM”“每天帮我盯盘”“拉一下 XX 的 K 线/分红/估值”“取不到数据/数据源是不是挂了”。全部 CLI 支持 --json 结构化输出，适合 Agent 程序化消费。
 compatibility: Requires Python 3.10+, uv, and network access; optional TICKFLOW_API_KEY for realtime/minute data
 metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","requires":{"bins":["python3","uv"],"env":["TICKFLOW_API_KEY"]}}}
 ---
 
 # Alpha Forge Skill
 
-通过 TickFlow Python SDK 获取 A 股、港股、美股、期货等市场的行情、K 线与财务数据，
+通过多数据源（TickFlow / OpenBB / baostock / akshare / yfinance 自动降级）获取 A 股、港股、美股、期货等市场的行情、K 线与财务数据（带本地缓存与数据质量校验），
 并内置经典量化策略、回测引擎与买点三灯决策层。本文件足以完成意图路由与命令执行；
 参数细节、原理解释与结果深度解读按需查阅 references/ 对应文档。
 
@@ -15,7 +15,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 | 资源 | 用途 |
 |------|------|
-| [references/data-fetching.md](references/data-fetching.md) | 数据获取：标的代码格式、行情/K线/财务 SDK 示例、K 线周期、数据源兜底与缓存 |
+| [references/data-fetching.md](references/data-fetching.md) | 数据获取：`run_data.py` 取数 CLI、标的代码格式、K 线周期、多源兜底与本地缓存、质量校验与源体检、数据层环境变量 |
 | [references/strategies.md](references/strategies.md) | 内置单标的策略的原理、参数与信号逻辑 + 自定义规则 DSL（TOML 格式/指标白名单） |
 | [references/backtesting.md](references/backtesting.md) | 回测引擎（含账本引擎）、绩效指标、参数寻优、多策略对比、交易保真度、走步样本外验证（PBO/DSR）、事件研究 |
 | [references/portfolio.md](references/portfolio.md) | 多标的组合回测、截面轮动、组合优化（含 HRP/最小CVaR）、风险报告与业绩归因 |
@@ -54,6 +54,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | "帮我找费雪式成长股 / 研发驱动的好公司 / 真成长的优质股" | `run_screener.py --preset fisher --json` | 成长质量候选（费雪《怎样选择成长股》15 要点标准：营收/利润双高增+研发强度≥3%+高毛利且趋势不恶化+高效再投资+无增发稀释+合理价格）；须声明管理层诚信与深度/闲聊法调研等定性项需人工尽调补位，建议接 run_canslim 验证盈利持续性 + run_portfolio 组合长期持有 |
 | "用纳维里尔 8 大指标选股 / 盈利惊喜加速的成长股 / 机构预期好的高增长股" | `run_screener.py --preset navellier --json` | 八大指标成长股候选（纳维里尔《怎样选择成长股：持续获利选股8大指标》标准：盈利/营收双高增+高ROE+现金流+利润率趋势+机构预测增速+盈利动能）；须声明盈利预期上调用机构一致预测代理（有乐观偏差，上调方向须人工核查研报）、盈利惊喜仅港美股有数据（--earnings-surprise 叠加），建议接 run_canslim 验证盈利加速真实性 + run_scan 趋势/RS 复核 + run_portfolio 组合持有 |
 | "在美股里帮我筛 / 扫一遍美股市场 / 美股全市场找低估值" | `run_screener.py --universe us [--preset <方案>] --json` | 美股全市场候选（东财免费快照 ~13000 只→yfinance 逐只核查，快照不可用时降级 S&P 500 名单）；须提醒市值阈值单位变为亿美元（预设按人民币标定，建议显式覆盖如 --max-cap 20）且 Phase 2 逐只较慢（建议阈值压到百只量级） |
+| "用趋势跟踪帮我找强势股 / 自动扫描趋势机会 / 宽进严出挖机会" | 三步链路（宽进严出）：① 宽口扫描——全市场 `run_screener.py --preset monster --json`，自选池用 `run_signal.py --symbols <池> --strategy supertrend --json`（可换 turtle/ma_cross/momentum）→ ② 对候选逐只 `run_score.py --symbol <代码> --json` 三灯复核 → ③ 结论为趋势买点时 `run_paper.py --symbol <代码> --mode score --json` 纸面跟踪 | 候选数 + Top 趋势分/三灯结论 + 交易计划价位；须说明趋势信号在震荡市假阳性多、monster 因大势纪律返回空结果属正常，落地买卖以 run_score 结论为准；免责声明不可省 |
 | “XX 符不符合 CAN SLIM / 用欧奈尔法则筛一筛” | `run_canslim.py --symbol <代码> --json`（多标的比较用 `--symbols`） | 七项通过/失败/不可评明细 + 结论；M（大势）不满足直接否；基本面缺失时诚实说明封顶「观察」 |
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
@@ -63,12 +64,14 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “这几只股票帮我做个组合” | `run_portfolio.py --symbols <列表> --strategy momentum --json` | 组合 vs 等权基准；调仓频率与成本假设 |
 | “我想定投 XX” | `run_dca.py --symbol <代码> --json`（A 股可加 `--dividends` 显式建模分红） | XIRR 与一次性投入对比；定投价值在纪律而非必然更高收益 |
 | “每天帮我盯着 XX 该买该卖” | 首次 `run_paper.py --symbol <代码> --mode score`（或 `--strategy <策略>`），以后每日重跑；只看信号用 `run_signal.py` | 今日动作 + 当前持仓/净值；不自动下单，仅纸面跟踪 |
-| “拉一下 XX 的行情/K 线/财务” | 直接用 TickFlow SDK（见 [references/data-fetching.md](references/data-fetching.md)） | 数据口径（复权/周期） |
+| “拉一下 XX 的行情/K 线/分红/估值分位/财务” | `run_data.py --symbols <代码> --json`（非 K 线加 `--kind dividends\|valuation\|fundamentals\|macro`；排查缓存陈旧加 `--no-cache`；导出表格加 `--csv`） | 数据口径（周期/复权）+ 行数与区间 + **实际命中源**（`actual_source`）+ 是否命中本地缓存 + 质量校验结论；质量不通过时应提议跑 run_verify 交叉验证。**不要自己写 Python 调 SDK 取数**（会绕过多源降级/缓存/质量校验） |
 | “出个报告给我” | 在对应命令加 `--report`（HTML）或 `--plot`（图） | 文件路径（outputs/ 下） |
 | “帮我看看今天整体情况 / 出个总览” | `run_dashboard.py`（可加 `--symbols` 附信号） | Dashboard HTML 路径 + 风控提示摘要 |
 | “把数据先同步到本地 / 我想离线用 / 全市场扫描太慢” | `run_sync.py --universe CN_Equity_A --json`（美股池用 `--universe US_Equity`，指定标的用 `--symbols`） | 成功/失败数量与缓存目录；同步后可设 `ALPHA_FORGE_OFFLINE=1` 完全离线研究；筛选器快照/名单/基本面指标也本地优先（TTL 内重复筛选秒级完成，限流时自动回退陈旧缓存） |
-| “你有哪些功能 / 都能做什么 / 功能列表” | 不执行命令，按「功能总览话术」分门别类介绍（见下） | 七大类能力 + 每类一句话 + 邀请用户选一个试试 |
+| “你有哪些功能 / 都能做什么 / 功能列表” | 不执行命令，按「功能总览话术」分门别类介绍（见下） | 八大类能力 + 每类一句话 + 邀请用户选一个试试 |
 | 命令报错 / 环境不确定 | `run_list.py --doctor`；再查 [references/faq.md](references/faq.md) | 失败项与修复建议 |
+| “取不到数据 / 某个数据源是不是挂了 / 数据源体检” | `run_doctor.py --json`（限定标的加 `--symbols`，限定源加 `--sources`） | 逐源 × 逐标的真实拉取的成功/失败、耗时、末根 K 线日期与质量校验结论；须转述「港美股 openbb 与 yfinance 同上游 Yahoo，独立上游数比可用源数少」，失败源要区分是环境问题（限流/无 Key）还是代码问题 |
+| “这数据靠不靠谱 / 两个平台价格不一样 / 校一下数据” | `run_verify.py --symbols <代码> --json`（对照源默认 baostock，A 股可 `--source-b akshare`；港美股用 `--source-a openbb --source-b yfinance`） | 逐列最大/平均偏差与 PASS/FAIL；若报告含“同上游”告警（openbb 与 yfinance 同源 Yahoo）**必须向用户转述验证强度有限**，不能说成“已双源确认” |
 
 标的代码需补全市场后缀（600519 → `600519.SH`，腾讯 → `00700.HK`，苹果 → `AAPL.US`）；
 用户只说公司名时先推断代码，无法确定则向用户确认。
@@ -100,7 +103,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 ### 功能总览话术
 
-用户问“有哪些功能”时按七大类介绍（每类 1–2 句白话，不列命令参数），结尾邀请用户挑一个试：
+用户问“有哪些功能”时按八大类介绍（每类 1–2 句白话，不列命令参数），结尾邀请用户挑一个试：
 
 | 类别 | 白话介绍（转述给用户） |
 |------|----------------------|
@@ -111,6 +114,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | 🤖 智能与另类 | 机器学习走步预测方向、新闻情绪打分并回测情绪信号 |
 | 💰 定投规划 | 定期定额/智能定投/超跌加码/价值平均，算 XIRR 真实年化并与一次性投入对比 |
 | 📋 日常跟踪 | 登记持仓自动体检、记住风险偏好、每日盯盘信号（可推送）、模拟盘纸面演练、一页 Dashboard 总览 |
+| 🗄️ 数据与运维 | **取数与数据体检**：拉 K 线/分红/估值分位/宏观数据（自带五源自动降级、本地缓存与质量校验）、体检各数据源当下是否可用、两源交叉校数据、批量预同步后可完全离线研究 |
 
 介绍后追加一句边界声明：“全部输出仅供研究参考，不构成投资建议，也不会自动下单。想先从哪个开始？直接说股票名字也行。”
 
@@ -198,6 +202,22 @@ uv run python run_list.py --doctor
 `setx TICKFLOW_API_KEY "..."`）。未配置时，需要 Key 的接口会报错并附申请与配置指引；
 财务因子等能力会自动降级为价格因子继续运行。
 
+### 数据层开关（Agent 可根据场景主动建议）
+
+| 环境变量 | 作用 | 何时用 |
+|---|---|---|
+| `ALPHA_FORGE_OFFLINE=1` | 只读本地缓存，完全不联网 | `run_sync.py` 预同步后批量研究；无网/限流环境 |
+| `ALPHA_FORGE_DATA_SOURCE=<源>` | 强制单源（tickflow\|openbb\|baostock\|akshare\|yfinance） | 怀疑某源数据有问题时逐源排查 |
+| `ALPHA_FORGE_STRICT_DATA=1` | error 级质量问题直接报错而非仅告警 | 实盘信号/上线前的数据把关 |
+| `ALPHA_FORGE_NO_QUALITY_CHECK=1` | 跳过质量校验 | 性能逃生阀（不建议常开） |
+| `ALPHA_FORGE_SOURCE_FAILFAST=N` | 源连续失败 N 次后本进程熔断跳过（默认 3，0 关闭） | 全市场扫描时避免逐只重试付代价 |
+| `ALPHA_FORGE_NO_CACHE=1` / `ALPHA_FORGE_CACHE_TTL=<秒>` | 关缓存 / 调 TTL | 需要强制取最新数据时（单次取数优先用 `run_data.py --no-cache`） |
+| `ALPHA_FORGE_CACHE_DIR=<目录>` | 自定义缓存目录 | 多项目隔离或指定大盘存放 |
+| `ALPHA_FORGE_DEBUG=1` | 出错时打印完整堆栈（含静默降级的真实原因） | 排查“为何没数据”与未预期异常 |
+
+完整说明与数据层行为（交易日历新鲜度判定、原子写与自愈、实际命中源审计）见
+[references/data-fetching.md](references/data-fetching.md)。
+
 ## 快速开始
 
 标的代码统一格式为 **代码.市场后缀**（如 `600000.SH`、`AAPL.US`、`00700.HK`），
@@ -215,13 +235,26 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot
 uv run python run_dca.py --symbol 600000.SH --plot
 ```
 
-SDK 直接取数（更多用法见 [references/data-fetching.md](references/data-fetching.md)）：
+取数一律走 `run_data.py`（多源降级 + 本地缓存 + 质量校验自动生效）：
+
+```bash
+# K 线（含实际命中源与质量结论；--csv 导出表格）
+uv run python run_data.py --symbols 600000.SH --count 250 --json
+
+# 非 K 线：分红 / 估值分位 / 财务 / 宏观
+uv run python run_data.py --symbols 600000.SH --kind dividends --json
+uv run python run_data.py --kind macro --json
+```
+
+若需在自己的 Python 代码里取数，用项目数据层而不是裸 SDK：
 
 ```python
-from tickflow import TickFlow
+from datafeed import fetch_ohlcv     # 多源降级 + 缓存 + 质量校验 + 离线模式均生效
 
-tf = TickFlow.free()  # 免费历史日 K；完整服务用 TickFlow()（自动读 TICKFLOW_API_KEY）
-df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
+df = fetch_ohlcv("600000.SH", period="1d", count=250)
+
+from tickflow import TickFlow       # 次选：仅当需要本项目未包装的 SDK 能力时
+tf = TickFlow.free()                # （实时快照/日内分时等）；此路径无降级与缓存
 ```
 
 新手逐级上手动线与端到端用例见 [references/use-cases.md](references/use-cases.md)。
@@ -257,6 +290,10 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 | 事件研究 | `run_event.py` 事件窗 AAR/CAAR（可选基准超额） | backtesting.md |
 | 统一总览 | `run_dashboard.py` 聚合持仓+模拟盘+今日信号于一页 HTML | use-cases.md |
 | 能力发现 | `run_list.py --json` 列出全部策略/因子/模型/模式清单；`--doctor` 环境自检 | use-cases.md |
+| 数据取用 | `run_data.py --symbols <代码>` 取 K 线/分红/估值分位/财务/宏观（`--kind`），自带多源降级、本地缓存、质量校验与来源审计；`--csv` 导出、`--no-cache` 直连源 | data-fetching.md |
+| 数据源体检 | `run_doctor.py` 逐源 × 逐标的真实拉取，报告可用源、耗时、质量与**独立上游数**（Key 仅显前 6 位） | data-fetching.md |
+| 多源交叉验证 | `run_verify.py --source-a/--source-b` 两源逐列比对 OHLCV，同上游组合会显式告警 | data-fetching.md |
+| 预同步与缓存治理 | `run_sync.py` 批量预热本地缓存（配 `ALPHA_FORGE_OFFLINE=1` 离线研究）；`--cache-usage` 看用量、`--prune-days N [--dry-run]` 清理陈旧条目 | data-fetching.md |
 
 ## CLI 通用约定（Agent 友好）
 
@@ -268,7 +305,7 @@ df = tf.klines.get("600000.SH", period="1d", count=100, as_dataframe=True)
 - **规范退出码**：0=成功，1=运行错误（数据/网络），2=参数错误，130=用户中断；失败信息以 `[error] ` 前缀输出 stderr，含可操作的修复建议。
 - **输出命名规范**：图表/报告默认 `outputs/<命令>_<关键参数>.png|html`（与 `scripts/` 平级，首次自动创建），同配置重跑才覆盖；`--output` 可自定义。
 - **能力清单**：`run_list.py --json` 列出全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式。
-- **调试开关**：`ALPHA_FORGE_DEBUG=1` 出错时查看完整堆栈。
+- **调试开关**：`ALPHA_FORGE_DEBUG=1` 出错时查看完整堆栈（数据层静默降级也会打出真实原因）；其余数据层开关见「环境配置」的数据层开关表。
 
 典型的 agent 流水线（对比→寻优→复跑、批量信号巡检、配置驱动批量实验）见
 [references/use-cases.md](references/use-cases.md) 的「Agent 使用场景」章节。

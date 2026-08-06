@@ -1,6 +1,9 @@
 """分红数据获取：A 股（akshare）+ 港美股（openbb）现金分红历史。
 
 从 datafeed.py 拆分而来，职责单一化。
+
+本地优先：分红历史经 ``cache.load_json_obj`` 落盘（TTL 7 天）。分红是季度/
+年度事件，而东财分红接口是爬虫（慢且易限频），DCA 回测反复调用时没必要重拉。
 """
 
 from __future__ import annotations
@@ -12,6 +15,9 @@ import pandas as pd
 
 from market import SYMBOL_FORMAT_HINT, SYMBOL_RE
 
+#: 分红历史缓存 TTL：季度/年度事件，7 天
+DIVIDENDS_TTL = 7 * 86400
+
 
 def fetch_dividends(symbol: str) -> pd.Series:
     """拉取现金分红历史（每股派现，索引为除权除息日），自动适配市场。
@@ -20,6 +26,7 @@ def fetch_dividends(symbol: str) -> pd.Series:
     - 港股/美股：openbb（yfinance provider），无需 Key，原币种每股分红。
 
     供 run_dca.py 显式分红建模（--dividends auto）使用，应搭配不复权价格。
+    结果本地优先缓存 7 天。
 
     Returns:
         每股现金分红 Series（float，DatetimeIndex 为除权除息日，升序）。
@@ -29,6 +36,43 @@ def fetch_dividends(symbol: str) -> pd.Series:
     """
     if not SYMBOL_RE.match((symbol or "").strip()):
         raise ValueError(f"标的代码不合法：'{symbol}'。{SYMBOL_FORMAT_HINT}")
+
+    from .cache import config_with_ttl, load_json_obj
+
+    key = "".join(c if c.isalnum() else "_" for c in symbol)
+    payload = load_json_obj(
+        lambda: _dividends_payload(symbol),
+        f"dividends_{key}",
+        config_with_ttl(DIVIDENDS_TTL),
+    )
+    if payload:
+        return _series_from_payload(payload)
+    # 缓存与远端都没有：直连一次以抛出**具体原因**
+    # （load_json_obj 的失败契约是返 None，会吞掉“从未分红/接口变更”等可操作提示）
+    return _fetch_dividends_remote(symbol)
+
+
+def _dividends_payload(symbol: str) -> dict | None:
+    """序列化为 ``{"YYYY-MM-DD": dps}``；拉取失败时抛出由 load_json_obj 归一为 None。"""
+    series = _fetch_dividends_remote(symbol)
+    return {
+        "dps": {ts.strftime("%Y-%m-%d"): float(v) for ts, v in series.items()}
+    }
+
+
+def _series_from_payload(payload: dict) -> pd.Series:
+    """从缓存 payload 重建分红 Series。"""
+    dps = payload.get("dps") or {}
+    series = pd.Series(
+        [float(v) for v in dps.values()],
+        index=pd.DatetimeIndex([pd.Timestamp(k) for k in dps]),
+        dtype=float,
+    )
+    return series.sort_index()
+
+
+def _fetch_dividends_remote(symbol: str) -> pd.Series:
+    """直连数据源拉取分红历史（不经缓存）。"""
     if symbol.upper().endswith((".HK", ".US")):
         return _fetch_hkus(symbol)
     if not symbol.upper().endswith((".SH", ".SZ", ".BJ")):

@@ -13,6 +13,10 @@
   当前 TTM EPS / BVPS 近似推算（精度有限，标注近似）。
 
 分位计算采用中位秩（并列值各计一半），避免估值恒定时分位恒为 0 或 1。
+
+本地优先：结果经 ``cache.load_json_obj`` 按「标的 + 回看年数」落盘
+（TTL 24 小时）。估值分位需拉数年日频 PE/PB 历史，是全市场筛选中最慢的
+环节之一；且分位本身日频更新，没必要重复筛选时反复碰免费源限频。
 """
 
 from __future__ import annotations
@@ -51,6 +55,24 @@ class ValuationPercentile:
             "source": self.source,
             "note": self.note or None,
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> ValuationPercentile:
+        """从 :meth:`to_dict` 的输出重建（缓存反序列化用）。
+
+        分位保留 4 位小数（千分之一精度），对「低估/合理/高估」标签判定无影响。
+        """
+        return cls(
+            symbol=payload.get("symbol", ""),
+            pe_current=payload.get("pe_current"),
+            pb_current=payload.get("pb_current"),
+            pe_percentile=payload.get("pe_percentile"),
+            pb_percentile=payload.get("pb_percentile"),
+            n_samples=int(payload.get("n_samples") or 0),
+            lookback_years=float(payload.get("lookback_years") or 0.0),
+            source=payload.get("source", ""),
+            note=payload.get("note") or "",
+        )
 
     @property
     def valuation_label(self) -> str:
@@ -425,12 +447,17 @@ def fetch_valuation_yfinance(
 
 _A_SUFFIXES = (".SH", ".SZ", ".BJ")
 
+#: 估值分位缓存 TTL：PE/PB 日频更新，24 小时
+VALUATION_TTL = 24 * 3600
+
 
 def fetch_valuation_percentile(
     symbol: str,
     lookback_years: int = 5,
 ) -> ValuationPercentile | None:
     """统一入口：自动分流 A 股（akshare 精确）/ 港美股（openbb 主力、yfinance 兜底，近似）。
+
+    结果本地优先缓存 24 小时（按标的 + 回看年数分键）；远端返回 None 时不写缓存。
 
     Args:
         symbol: 带市场后缀的标的代码。
@@ -439,6 +466,33 @@ def fetch_valuation_percentile(
     Returns:
         ValuationPercentile；数据不可用时返回 None。
     """
+    from .cache import config_with_ttl, load_json_obj
+
+    code = _sanitize_key(symbol)
+    payload = load_json_obj(
+        lambda: _valuation_payload(symbol, lookback_years),
+        f"valuation_{code}_{lookback_years}y",
+        config_with_ttl(VALUATION_TTL),
+    )
+    return ValuationPercentile.from_dict(payload) if payload else None
+
+
+def _sanitize_key(symbol: str) -> str:
+    """标的代码 -> 文件名安全的缓存键片段。"""
+    return "".join(c if c.isalnum() else "_" for c in symbol)
+
+
+def _valuation_payload(symbol: str, lookback_years: int) -> dict | None:
+    """远端拉取并序列化；不可用返回 None（不缓存失败结果）。"""
+    vp = _fetch_valuation_remote(symbol, lookback_years)
+    return vp.to_dict() if vp is not None else None
+
+
+def _fetch_valuation_remote(
+    symbol: str,
+    lookback_years: int,
+) -> ValuationPercentile | None:
+    """按市场分流直连拉取（不经缓存）。"""
     if symbol.upper().endswith(_A_SUFFIXES):
         return fetch_valuation_astock(symbol, lookback_years)
     return fetch_valuation_openbb(symbol, lookback_years) or fetch_valuation_yfinance(

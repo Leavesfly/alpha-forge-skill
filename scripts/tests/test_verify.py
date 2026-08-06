@@ -104,7 +104,7 @@ def test_verify_symbol_pass(monkeypatch, base_df):
     """两源数据一致时验证通过。"""
     import data.verify as vmod
 
-    monkeypatch.setattr(vmod, "TickFlowSource", lambda: _MockSource("tickflow", base_df))
+    monkeypatch.setitem(vmod.VERIFY_SOURCES, "tickflow", lambda: _MockSource("tickflow", base_df))
     monkeypatch.setitem(vmod.VERIFY_SOURCES, "akshare", lambda: _MockSource("akshare", base_df))
 
     result = verify_symbol("600000.SH", period="1d", count=60, source_b_name="akshare")
@@ -121,7 +121,7 @@ def test_verify_symbol_fail_on_price_diff(monkeypatch, base_df):
     df_b = base_df.copy()
     df_b["close"] = df_b["close"] * 1.01
 
-    monkeypatch.setattr(vmod, "TickFlowSource", lambda: _MockSource("tickflow", base_df))
+    monkeypatch.setitem(vmod.VERIFY_SOURCES, "tickflow", lambda: _MockSource("tickflow", base_df))
     monkeypatch.setitem(vmod.VERIFY_SOURCES, "akshare", lambda: _MockSource("akshare", df_b))
 
     result = verify_symbol("600000.SH", period="1d", count=60, source_b_name="akshare")
@@ -141,7 +141,11 @@ def test_verify_symbol_source_b_not_supported(monkeypatch):
         def fetch(self, *a):
             raise RuntimeError("not supported")
 
-    monkeypatch.setattr(vmod, "TickFlowSource", lambda: _MockSource("tickflow", make_ohlcv(np.ones(10))))
+    monkeypatch.setitem(
+        vmod.VERIFY_SOURCES,
+        "tickflow",
+        lambda: _MockSource("tickflow", make_ohlcv(np.ones(10))),
+    )
     monkeypatch.setitem(vmod.VERIFY_SOURCES, "baostock", _NoSupport)
 
     with pytest.raises(RuntimeError, match="对照源 baostock 不支持"):
@@ -152,7 +156,9 @@ def test_verify_symbol_both_fail(monkeypatch):
     """两源均失败时抛出汇总错误。"""
     import data.verify as vmod
 
-    monkeypatch.setattr(vmod, "TickFlowSource", lambda: _MockSource("tickflow", error="timeout"))
+    monkeypatch.setitem(
+        vmod.VERIFY_SOURCES, "tickflow", lambda: _MockSource("tickflow", error="timeout")
+    )
     monkeypatch.setitem(vmod.VERIFY_SOURCES, "baostock", lambda: _MockSource("baostock", error="blocked"))
 
     with pytest.raises(RuntimeError, match="两个数据源均无法拉取"):
@@ -167,7 +173,7 @@ def test_verify_symbol_row_diff_warning(monkeypatch, base_df):
     df_short = make_ohlcv(close_short)
 
     df_a = base_df  # 60 行
-    monkeypatch.setattr(vmod, "TickFlowSource", lambda: _MockSource("tickflow", df_a))
+    monkeypatch.setitem(vmod.VERIFY_SOURCES, "tickflow", lambda: _MockSource("tickflow", df_a))
     monkeypatch.setitem(vmod.VERIFY_SOURCES, "baostock", lambda: _MockSource("baostock", df_short))
 
     result = verify_symbol("600000.SH", period="1d", count=60, source_b_name="baostock")

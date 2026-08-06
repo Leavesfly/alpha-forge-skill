@@ -10,6 +10,9 @@
 
 弃用提示：``fetch_dividends`` / ``fetch_fundamentals`` / ``get_client`` 为向后兼容
 重导出，建议改用 ``from data.dividends import fetch_dividends`` 等新路径。
+
+源级熔断：某源连续失败达 ``ALPHA_FORGE_SOURCE_FAILFAST``（默认 3）次后，
+本进程内后续标的直接跳过该源，不再逐只付重试与退避代价（见 ``data.health``）。
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import warnings
 import pandas as pd
 
 from data import find_date_column, load_klines, normalize_adjust
+from data.health import filter_sources, record_failure, record_success
 from data.sources import (
     API_KEY_HELP,
     get_sources,
@@ -102,26 +106,35 @@ def _fetch_ohlcv_raw(
     """按数据源优先级拉取单标的 K 线（不经缓存）。
 
     单源失败先重试（退避），仍失败且存在可用兜底源时自动降级（stderr 告警）；
-    全部失败时抛出汇总错误。
+    全部失败时抛出汇总错误。已熔断的源（本进程内连续失败达阈值）直接跳过，
+    避免全市场扫描时逐只标的重复付重试与退避代价（见 ``data.health``）。
+
+    成功时在 ``df.attrs["actual_source"]`` 回传实际命中的源名，供缓存层落入 meta
+    做审计与增量更新的同源校验。
     """
-    sources = [s for s in get_sources() if s.supports(symbol, period)]
-    if not sources:
+    supported = [s for s in get_sources() if s.supports(symbol, period)]
+    if not supported:
         raise RuntimeError(
             f"没有数据源支持 {symbol} {period}（兜底源仅限 A 股/港股/美股的日/周/月 K）。"
         )
+    sources = filter_sources(supported)
     errors: list[str] = []
     for i, source in enumerate(sources):
         try:
             df = _fetch_with_retry(source, symbol, period, count, adjust)
-            if i > 0:
-                print(
-                    f"[warn] 主源失败，已降级使用 {source.name} 数据源："
-                    f"{'; '.join(errors)}",
-                    file=sys.stderr,
-                )
-            return df
         except Exception as exc:
+            record_failure(source.name)
             errors.append(f"{source.name}: {type(exc).__name__}: {exc}")
+            continue
+        record_success(source.name)
+        if i > 0:
+            print(
+                f"[warn] 主源失败，已降级使用 {source.name} 数据源："
+                f"{'; '.join(errors)}",
+                file=sys.stderr,
+            )
+        df.attrs["actual_source"] = source.name
+        return df
     raise RuntimeError(
         f"拉取 {symbol} {period} K 线失败（已尝试 {len(sources)} 个数据源）：\n  "
         + "\n  ".join(errors)
@@ -146,7 +159,9 @@ def fetch_ohlcv(
         use_cache: 是否使用本地缓存（命中且新鲜则不走网络）。
 
     Returns:
-        至少包含 ``close`` 列的 DataFrame。
+        至少包含 ``close`` 列的 DataFrame。走数据源拉取时，``df.attrs["quality"]``
+        携带 :class:`data.quality.QualityReport`（缓存命中路径无此字段，
+        那份数据在首次落盘时已校验过）。
 
     Raises:
         RuntimeError: 标的代码格式非法、所有数据源均失败或返回空数据时，
@@ -158,7 +173,9 @@ def fetch_ohlcv(
         df = _fetch_ohlcv_raw(symbol, period, count, adj)
     else:
         df = load_klines(
-            lambda: _fetch_ohlcv_raw(symbol, period, count, adj),
+            # 接 count 形参：缓存层会传 max(请求数, 已缓存行数)，避免小请求
+            # 把已有的长历史缓存缩水（然后下次大请求又全量重拉）
+            lambda n: _fetch_ohlcv_raw(symbol, period, n, adj),
             symbol=symbol,
             period=period,
             count=count,

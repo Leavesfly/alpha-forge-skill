@@ -13,18 +13,23 @@
   （``tickflow`` / ``openbb`` / ``baostock`` / ``akshare`` / ``yfinance`` 强制单源，
   缺省 auto = 港美股 OpenBB 主力＋A 股三级降级＋yfinance 兜底）。
 
-所有源返回列名归一的升序 DataFrame：``trade_date/open/high/low/close/volume``。
+所有源返回列名归一的升序 DataFrame：``trade_date/open/high/low/close/volume``，
+并统一经 ``_validate_and_sort`` 做列校验与数据质量校验（见 ``quality.py``）。
 """
 
 from __future__ import annotations
 
 import os
+import sys
+import threading
 from typing import Protocol
 
 import pandas as pd
 
 from envconfig import get_env_config
-from errors import DataFetchError
+from errors import DataFetchError, DataQualityError
+
+from .quality import validate_ohlcv
 
 # 需要 TICKFLOW_API_KEY 的接口在报错/告警时统一附带此指引，
 # 提醒用户去哪里申请、如何设置与验证。
@@ -78,11 +83,25 @@ def get_tickflow_client(period: str = "1d"):
     return TickFlow.free()
 
 
-def _validate_and_sort(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """校验必需列并按时间升序。
+def _validate_and_sort(
+    df: pd.DataFrame,
+    symbol: str,
+    period: str = "1d",
+    tail: int | None = None,
+) -> pd.DataFrame:
+    """校验必需列、按时间升序、截取尾部并做数据质量校验。
+
+    五个数据源的唯一公共出口，质量校验在此单点接入。
+
+    Args:
+        tail: 只保留末尾 N 行。部分源（yfinance/openbb/akshare/baostock）只能
+            整段拉取再截取，而质量校验必须只针对**实际返回的行**：
+            否则 Yahoo 上世纪的陈年数据（拆股前分钱、OHLC 不自洽）会把当下
+            完全干净的 60 根 K 线误判为“数据有问题”（且严格模式下直接报错）。
 
     Raises:
         DataFetchError: 数据为空或缺少 close 列。
+        DataQualityError: 存在 error 级质量问题且启用了严格模式。
     """
     if df is None or len(df) == 0:
         raise DataFetchError(f"未获取到 {symbol} 的 K 线数据，请检查代码与周期。")
@@ -92,6 +111,36 @@ def _validate_and_sort(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if col in df.columns:
             df = df.sort_values(col).reset_index(drop=True)
             break
+    if tail is not None and tail > 0 and tail < len(df):
+        df = df.tail(tail).reset_index(drop=True)
+    return _check_quality(df, symbol, period)
+
+
+def _check_quality(df: pd.DataFrame, symbol: str, period: str) -> pd.DataFrame:
+    """执行质量校验：默认告警放行，严格模式抛错，可完全关闭。
+
+    报告挂在 ``df.attrs["quality"]`` 供 CLI 层写入 JSON 的 ``data_quality``
+    字段，不改变任何函数签名。注意：缓存命中路径不经过本函数，
+    因此无新鲜报告（那份数据在首次落盘时已校验过）。
+    """
+    env = get_env_config()
+    if env.no_quality_check:
+        return df
+
+    report = validate_ohlcv(df, symbol, period)
+    if report.issues:
+        print(f"[warn] {report.summary()}", file=sys.stderr)
+        for issue in report.issues:
+            print(f"       - [{issue.level}] {issue.detail}", file=sys.stderr)
+    if not report.passed and env.strict_data:
+        raise DataQualityError(
+            f"{report.summary()}\n"
+            "已启用严格模式（ALPHA_FORGE_STRICT_DATA=1），数据不可用。可选：\n"
+            "  ① 取消该环境变量降级为仅告警；\n"
+            "  ② 用 ALPHA_FORGE_DATA_SOURCE 指定其他数据源重试；\n"
+            "  ③ 用 run_verify.py 对比多源数据确认哪个源有问题。"
+        )
+    df.attrs["quality"] = report
     return df
 
 
@@ -108,7 +157,7 @@ class TickFlowSource:
         df = tf.klines.get(
             symbol, period=period, count=count, adjust=adjust, as_dataframe=True
         )
-        return _validate_and_sort(df, symbol)
+        return _validate_and_sort(df, symbol, period)
 
 
 # ─── baostock ──────────────────────────────────────────────────────────────────
@@ -121,6 +170,12 @@ _BS_ADJUSTS = {"forward": "2", "backward": "1", "none": "3"}
 
 #: baostock 市场前缀映射
 _BS_MARKET = {"SH": "sh", "SZ": "sz"}
+
+#: baostock 串行锁：baostock 的 login/logout 操作的是**模块级全局连接**，
+#: 并非每个调用方一个会话。sync.py 默认 2 线程、run_sync.py 还支持
+#: --workers 4，若不串行，A 线程的 logout() 会掐断 B 线程正在进行的查询，
+#: 表现为随机失败且被降级逻辑吞掉（表面上只看到“已降级使用 akshare”）。
+_BAOSTOCK_LOCK = threading.Lock()
 
 
 class BaostockSource:
@@ -143,23 +198,25 @@ class BaostockSource:
         code, market = symbol.rsplit(".", 1)
         bs_code = f"{_BS_MARKET[market.upper()]}.{code}"
 
-        lg = bs.login()
-        if lg.error_code != "0":
-            raise DataFetchError(f"baostock 登录失败：{lg.error_msg}")
-        try:
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                frequency=_BS_PERIODS[period],
-                adjustflag=_BS_ADJUSTS.get(adjust, "2"),
-            )
-            if rs.error_code != "0":
-                raise DataFetchError(f"baostock 查询 {symbol} 失败：{rs.error_msg}")
-            rows = []
-            while rs.next():
-                rows.append(rs.get_row_data())
-        finally:
-            bs.logout()
+        # 全局连接必须串行：login → query → logout 整段持锁
+        with _BAOSTOCK_LOCK:
+            lg = bs.login()
+            if lg.error_code != "0":
+                raise DataFetchError(f"baostock 登录失败：{lg.error_msg}")
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,volume",
+                    frequency=_BS_PERIODS[period],
+                    adjustflag=_BS_ADJUSTS.get(adjust, "2"),
+                )
+                if rs.error_code != "0":
+                    raise DataFetchError(f"baostock 查询 {symbol} 失败：{rs.error_msg}")
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+            finally:
+                bs.logout()
 
         if not rows:
             raise DataFetchError(f"baostock 未返回 {symbol} 的 K 线数据。")
@@ -171,8 +228,7 @@ class BaostockSource:
         df["trade_date"] = pd.to_datetime(df["trade_date"])
         # 停牌日 volume 为空字符串 -> NaN，填 0
         df["volume"] = df["volume"].fillna(0)
-        df = _validate_and_sort(df, symbol)
-        return df.tail(count).reset_index(drop=True)
+        return _validate_and_sort(df, symbol, period, tail=count)
 
 
 # ─── akshare ───────────────────────────────────────────────────────────────────
@@ -219,8 +275,7 @@ class AkshareSource:
         keep = [c for c in ("trade_date", "open", "high", "low", "close", "volume") if c in df.columns]
         df = df[keep].copy()
         df["trade_date"] = pd.to_datetime(df["trade_date"])
-        df = _validate_and_sort(df, symbol)
-        return df.tail(count).reset_index(drop=True)
+        return _validate_and_sort(df, symbol, period, tail=count)
 
 
 # ─── yfinance ────────────────────────────────────────────────────────────────
@@ -300,8 +355,7 @@ class YFinanceSource:
         df = df[keep].copy()
         df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.tz_localize(None)
         df = df.dropna(subset=["close"])
-        df = _validate_and_sort(df, symbol)
-        return df.tail(count).reset_index(drop=True)
+        return _validate_and_sort(df, symbol, period, tail=count)
 
 
 # ─── OpenBB ──────────────────────────────────────────────────────────────────────
@@ -369,8 +423,7 @@ class OpenBBSource:
         if getattr(df["trade_date"].dt, "tz", None) is not None:
             df["trade_date"] = df["trade_date"].dt.tz_localize(None)
         df = df.dropna(subset=["close"])
-        df = _validate_and_sort(df, symbol)
-        return df.tail(count).reset_index(drop=True)
+        return _validate_and_sort(df, symbol, period, tail=count)
 
 
 def source_label() -> str:
