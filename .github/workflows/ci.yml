@@ -22,7 +22,9 @@ jobs:
 
       - name: Sync dependencies (incl. dev group)
         working-directory: scripts
-        run: uv sync --group dev
+        # --locked：uv.lock 已纳入版本控制，若与 pyproject.toml 不一致则直接失败，
+        # 避免锁文件静默漂移导致「本地能跑、CI 挂」或首次安装退化为冷解析。
+        run: uv sync --group dev --locked
 
       - name: Lint (ruff)
         working-directory: scripts

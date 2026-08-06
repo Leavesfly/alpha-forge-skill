@@ -112,9 +112,23 @@ Alpha Forge 是一个 **AI Agent 原生的量化研究工作台**，为 [Qoder /
 # 1. 安装 uv（如未安装）
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. 同步依赖
+# 2. 同步依赖（首次需下载约 409MB，请单独跑完再执行后续命令）
 cd scripts && uv sync
 ```
+
+> ⏱️ **首次安装慢？** 仓库已提交 `uv.lock`，依赖解析被完整跳过（142 个包的冷解析实测约 4.5 分钟，
+> 有锁文件后降到 0.15 秒）。剩下的耗时只是 409MB wheel 下载，两个加速手段：
+>
+> ```bash
+> # PyPI 直连慢时切国内镜像（注意：换索引会触发一次重新解析，但走镜像的解析很快）
+> UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple uv sync
+>
+> # 多副本部署（如同一台机器上装多份 skill）共享 wheel 缓存，第二份起安装仅需数百毫秒
+> export UV_CACHE_DIR="$HOME/.cache/uv"   # 须与 .venv 同一磁盘卷，否则 hardlink 退化为复制
+> ```
+>
+> 镜像**不写进 `pyproject.toml`**：那会把锁文件里 194 条 registry URL 全指向镜像，
+> 导致 GitHub Actions 的海外 runner 反过来跨境拉包。
 
 ### 三条路径，按需选择
 

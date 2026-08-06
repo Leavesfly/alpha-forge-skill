@@ -222,7 +222,10 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
-uv.lock
+
+# 注意：scripts/uv.lock 刻意纳入版本控制（不要加回 ignore）。
+#   本项目是应用/CLI 工具而非库，锁定精确版本可让首次 uv run 跳过依赖解析：
+#   142 个包的冷解析实测约 4.5 分钟，有锁文件时降到 0.15 秒。
 
 # Qoder IDE
 .qoder/

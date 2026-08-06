@@ -182,11 +182,18 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 uv --version || curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. 安装依赖（scripts/ 已配置好运行环境，数据获取与回测均在此运行）
+#    首次需下载约 409MB，必须单独预热——不要塞进有超时预算的命令里
 cd scripts && uv sync
 
 # 3. 环境自检（依赖/数据源/Key/缓存/字体/数据拉取/验算链路逐项 ✓/✗ + 修复建议）
 uv run python run_list.py --doctor
 ```
+
+**冷启动硬约束（Agent 必读）**：首次使用前必须先独立执行 `uv sync` 预热，
+而不是直接调用 `run_*.py`。未预热时首次 `uv run` 会同步安装 409MB 依赖，
+耗时远超常见的 60s 命令超时预算；被超时截断后的现象（无输出、疑似卡住）
+**极易误读为数据源或代码故障**，不要据此下结论。预热后常规命令的真实耗时见
+上方路由表（数秒至数十秒）。
 
 免费服务无需 API Key 即可获取历史日 K 线并完成单标的回测/寻优/机器学习；
 以下能力需配置环境变量 `TICKFLOW_API_KEY`（前往 [tickflow.org](https://tickflow.org) 注册申请）：
