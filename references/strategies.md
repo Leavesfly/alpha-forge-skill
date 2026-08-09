@@ -295,6 +295,9 @@ uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml
 
 # 结构化 JSON（含规则摘要 rules 字段）
 uv run python run_custom.py --symbol AAPL.US --rules my_rule.toml --json
+
+# 现成《炒股的智慧》规则（关键点突破入场 + 金字塔加仓 + 趋势破坏离场）
+uv run python run_custom.py --symbol 600000.SH --rules examples/wisdom_rule.toml --stop-loss 0.05 --plot
 ```
 
 指标/运算符白名单可用 `run_list.py --json` 的 `custom_dsl` 字段查询。
