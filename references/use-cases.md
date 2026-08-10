@@ -126,6 +126,7 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot
 | 快速跑通、看懂回测报告 | 上面「Hello Backtest」 | 1 |
 | 今天市场上买什么 | 市场扫描（进阶模块，run_scan 漏斗筛候选） | 5 |
 | 持仓了，该不该减 | `run_score.py --cost <成本价>`（[scoring.md](scoring.md)） | 1 |
+| 它现在走到哪一步了（筑底？突破？高位派发？） | 个股阶段定位（`run_stage.py`，[stage.md](stage.md)）；只答「在哪」，买卖再跑 run_score | 1 |
 | 只用免费数据做研究 | 用例 7 | 1 |
 | 一只股票该用哪个策略 | 用例 1（run_compare 一键对比） | 2 |
 | 给策略找最优参数 | 用例 2（多核并行 + DSR 诊断） | 2 |
@@ -388,7 +389,7 @@ uv run python run_paper.py --symbol 600519.SH --mode score
 
 | 约定 | 说明 |
 |------|------|
-| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` / `run_data` / `run_doctor` / `run_sync` |
+| JSON 输出 | `--json` 不带值打印到 stdout（进度全部转 stderr，stdout 保证纯 JSON）；带路径写入文件。**全部命令均支持**：`run_backtest` / `run_optimize` / `run_compare` / `run_custom` / `run_portfolio` / `run_signal` / `run_dca` / `run_score` / `run_stage` / `run_scan` / `run_screener` / `run_canslim` / `run_ml` / `run_pairs` / `run_factor` / `run_validate` / `run_sentiment` / `run_paper` / `run_event` / `run_list` / `run_account` / `run_profile` / `run_dashboard` / `run_verify` / `run_data` / `run_doctor` / `run_sync` |
 | JSON 结构 | 顶层固定含 `schema`（当前 `alpha-forge/1`）、`command`、`generated_at` 三个元信息键，按 `command` 分发解析；字段只增不删 |
 | Agent 友好字段 | 所有命令的 JSON 输出含 **`summary`**（1–2 句自然语言结论，可直接引用或改写后转述给用户）和 **`next_steps`**（结构化后续动作列表，每项含 `action`/`reason`/`command`，部分项含可选 `condition`，仅条件成立时才提议）。`run_score` 额外含 **`evidence`** 结构化证据链（编号可引用，避免转述事实性错误） |
 | 能力发现 | `run_list.py --json`（`command=list`）返回全部策略（含默认参数与参数网格）、轮动策略、因子、ML 模型与定投模式，agent 可据此动态构造后续命令 |

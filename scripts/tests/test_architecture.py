@@ -21,7 +21,7 @@ SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 #: 领域核心模块（包目录）
 DOMAIN_PACKAGES = {
-    "strategies", "backtest", "scoring", "portfolio", "dca",
+    "strategies", "backtest", "scoring", "stage", "portfolio", "dca",
     "ml", "factors", "pairs", "research", "risk", "canslim",
     "sentiment",
 }

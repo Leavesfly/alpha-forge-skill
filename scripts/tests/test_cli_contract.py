@@ -33,6 +33,7 @@ CLI_COMMANDS = [
     "run_sentiment.py",
     "run_dca.py",
     "run_score.py",
+    "run_stage.py",
     "run_scan.py",
     "run_screener.py",
     "run_canslim.py",
@@ -98,6 +99,13 @@ def test_backtest_invalid_strategy_exits_2():
 def test_score_invalid_symbol_exits_2():
     """run_score.py 非法标的代码应返回 exit 2。"""
     result = _run_cli(["run_score.py", "--symbol", "invalid"])
+    assert result.returncode == 2
+    assert "[error]" in result.stderr
+
+
+def test_stage_invalid_symbol_exits_2():
+    """run_stage.py 非法标的代码应返回 exit 2。"""
+    result = _run_cli(["run_stage.py", "--symbol", "invalid"])
     assert result.returncode == 2
     assert "[error]" in result.stderr
 

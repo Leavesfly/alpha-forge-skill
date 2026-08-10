@@ -135,6 +135,7 @@ cd scripts && uv sync
 | 我想…… | 一条命令 | 耗时 |
 |--------|----------|------|
 | 🔍 **看这只股票能不能买** | `uv run python run_score.py --symbol 600000.SH` | ~10s |
+| 🧭 **看它现在走到哪一步（筑底/突破/派发）** | `uv run python run_stage.py --symbol 600000.SH` | ~5s |
 | 📊 **研究一个策略的历史表现** | `uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot` | ~15s |
 | 💰 **制定定投计划** | `uv run python run_dca.py --symbol 600000.SH --plot` | ~10s |
 
@@ -302,6 +303,7 @@ alpha-forge-skill/
 │   ├── sentiment.md         #    新闻情绪交易
 │   ├── dca.md               #    定投 DCA
 │   ├── scoring.md           #    买点三灯
+│   ├── stage.md             #    个股阶段定位
 │   ├── canslim.md           #    CAN SLIM 清单
 │   ├── stress-testing.md    #    压力测试
 │   ├── live-signal.md       #    信号与模拟盘
@@ -377,6 +379,7 @@ uv run python run_score.py --symbol 600000.SH --json
 | 用户大致会说…… | 执行 | 转述时必须包含 |
 |----------------|------|--------------|
 | "XX 现在能买吗 / 值不值得入手 / 帮我看看 XX" | `run_score.py --symbol <代码> --json` | 三灯速览（如「价绿·势绿·时黄」）+ 结论七态中文（verdict_cn）+ 哪盏灯给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测 |
+| "XX 现在处于什么阶段 / 是不是在筑底 / 是不是在派发" | `run_stage.py --symbol <代码> --json` | 阶段中文（stage_cn）+ 置信度与判定依据 + 位置分位 + 突破价/破位价；必须说明阶段只答「现在在哪」，能不能买要再跑 run_score |
 | "我持有 XX，成本 N，该不该卖/减仓" | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
 | "帮我记一下持仓 / 我的持仓怎么样了" | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
 | "我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万" | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
@@ -435,6 +438,7 @@ uv run pytest tests/ -q
 | [sentiment.md](references/sentiment.md) | 新闻情绪交易 |
 | [dca.md](references/dca.md) | 定投 DCA（现金流 + XIRR） |
 | [scoring.md](references/scoring.md) | 买点三灯与市场扫描 |
+| [stage.md](references/stage.md) | 个股阶段定位（箱体七态） |
 | [canslim.md](references/canslim.md) | CAN SLIM 检查清单 |
 | [stress-testing.md](references/stress-testing.md) | 压力测试与 TOML 配置 |
 | [live-signal.md](references/live-signal.md) | 信号服务与模拟盘 |
