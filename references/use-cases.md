@@ -126,7 +126,7 @@ uv run python run_backtest.py --symbol 600000.SH --strategy ma_cross --plot
 | 快速跑通、看懂回测报告 | 上面「Hello Backtest」 | 1 |
 | 今天市场上买什么 | 市场扫描（进阶模块，run_scan 漏斗筛候选） | 5 |
 | 持仓了，该不该减 | `run_score.py --cost <成本价>`（[scoring.md](scoring.md)） | 1 |
-| 它现在走到哪一步了（筑底？突破？高位派发？） | 个股阶段定位（`run_stage.py`，[stage.md](stage.md)）；只答「在哪」，买卖再跑 run_score | 1 |
+| 它现在走到哪一步了（筑底？突破？高位派发？） | 个股阶段定位（`run_stage.py`，[stage.md](stage.md)）；独立能力只答「在哪」，不与三灯串联 | 1 |
 | 只用免费数据做研究 | 用例 7 | 1 |
 | 一只股票该用哪个策略 | 用例 1（run_compare 一键对比） | 2 |
 | 给策略找最优参数 | 用例 2（多核并行 + DSR 诊断） | 2 |

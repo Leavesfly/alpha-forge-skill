@@ -330,18 +330,24 @@ def test_summary_does_not_overclaim_low_position():
     assert "箱体不成立，价位仅供参考" in text, "箱体不成立时关键价位必须带限定"
 
 
-def test_next_steps_always_hands_back_to_scoring(cycle):
-    """next_steps 必须恒含无条件的 score 一项（买卖裁决不归阶段模块）。"""
+def test_next_steps_never_chain_scoring(cycle):
+    """next_steps 不得引导去跑三灯：阶段定位与三灯是互不干扰的独立能力。
+
+    历史教训：早期 next_steps 恒含无条件 score 步骤，导致 Agent 问阶段时
+    总会顺手链跑三灯、两套结论混述，故用回归测试锁死反向契约。
+    """
     import run_stage
 
     for stage in CUT:
         result = detect_stage(_at(cycle, stage), symbol="TEST.SH")
         steps = run_stage._build_next_steps("TEST.SH", result)
-        score_steps = [s for s in steps if s["action"] == "score"]
-        assert score_steps, "缺少交回三灯的 score 步骤"
-        assert "condition" not in score_steps[0], "score 应为无条件推荐"
+        assert steps, "阶段模块应给出自身闭环的后续动作"
         for s in steps:
             assert {"action", "reason", "command"} <= set(s)
+            assert "run_score" not in s["command"], (
+                f"阶段模块不得串联三灯：{s}"
+            )
+        assert not any(s["action"] == "score" for s in steps)
 
 
 def test_next_steps_conditions_are_evaluable(cycle):

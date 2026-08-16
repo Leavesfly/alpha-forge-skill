@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """个股阶段定位 CLI：现在走到「台阶式循环」的哪一段。
 
-不回答「能不能买」（那是 run_score.py 三灯的职责），只回答**现在在哪**：
+独立能力，自给自足：只回答**现在在哪**，不依赖也不串联买点三灯
+（run_score.py 是另一项独立能力，仅当用户另行提出买卖问题时才单独运行）：
 
     低位筑底 → 突破确认 → 上升推进 → 高位派发 → 破位下行 → 下降趋势 →（重新筑底）
 
@@ -145,21 +146,13 @@ def _build_summary(symbol: str, result) -> str:
 
 
 def _build_next_steps(symbol: str, result) -> list[dict]:
-    """结构化后续动作：阶段只说「在哪」，买卖裁决一律交回三灯。"""
+    """结构化后续动作：只含阶段模块自身的动作，不引导去跑三灯（两能力互不串联）。"""
     return build_next_steps(
-        {"action": "score", "reason": "阶段只定位「在哪」，能不能买/买多少由三灯与交易计划裁决",
-         "command": f"run_score.py --symbol {symbol} --json"},
+        {"action": "history", "reason": "回看阶段迁移轨迹，确认当前判定是否稳定（避免边界抖动）",
+         "command": f"run_stage.py --symbol {symbol} --history 120 --json"},
         {"action": "backtest_wisdom", "reason": "已出现关键点突破，用《炒股的智慧》规则回测这套打法的历史表现",
          "condition": "stage == breakout",
          "command": f"run_custom.py --symbol {symbol} --rules examples/wisdom_rule.toml --stop-loss 0.05 --json"},
-        {"action": "paper", "reason": "升势推进中，纸面跟踪每日动作与趋势破坏点",
-         "condition": "stage == advance",
-         "command": f"run_paper.py --symbol {symbol} --mode score --json"},
-        {"action": "dca", "reason": "低位筑底，若基本面过关可用定投分批替代一次性抄底",
-         "condition": "stage == base",
-         "command": f"run_dca.py --symbol {symbol} --mode smart --json"},
-        {"action": "history", "reason": "回看阶段迁移轨迹，确认当前判定是否稳定（避免边界抖动）",
-         "command": f"run_stage.py --symbol {symbol} --history 120 --json"},
     )
 
 

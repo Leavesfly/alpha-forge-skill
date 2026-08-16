@@ -40,9 +40,9 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 
 | 用户大致会说…… | 执行 | 转述时必须包含 |
 |----------------|------|--------------|
-| “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 三灯速览（lights_summary，如「价绿·势绿·时黄」）+ 结论七态中文（verdict_cn）+ 哪盏灯给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测；价灯灰（无估值数据）时要如实告知结论仅基于势/时 |
+| “XX 现在能买吗 / 值不值得入手 / 帮我看看 XX” | `run_score.py --symbol <代码> --json` | 三灯速览（lights_summary，如「价绿·势绿·时黄」）+ 结论七态中文（verdict_cn）+ 哪盏灯给出的理由 + 交易计划价位与建议仓位；必须说明这是纪律过滤而非涨跌预测；价灯灰（无估值数据）时要如实告知结论仅基于势/时；**不要顺手链跑 run_stage，除非用户另问阶段** |
 | “我持有 XX，成本 N，该不该卖/减仓” | `run_score.py --symbol <代码> --cost N --json` | 同上；「持仓需减风险」≠预测下跌，是风控纪律 |
-| “XX 现在处于什么阶段 / 是不是在筑底 / 是不是在出货派发 / 行情走完了吗 / 现在到哪一步了” | `run_stage.py --symbol <代码> --json`（看阶段是否稳定加 `--history 120`，出图加 `--plot`） | 阶段中文（stage_cn）+ 置信度与判定依据（rule）+ 位置分位 + 突破价/破位价（trigger）+ 该阶段应对姿态（posture）；**必须说明阶段只回答「现在在哪」，能不能买要再跑 run_score 三灯**；置信度 low（结构不清）时不得强行给结论；阶段是描述性统计、有滞后，不预测涨跌 |
+| “XX 现在处于什么阶段 / 是不是在筑底 / 是不是在出货派发 / 行情走完了吗 / 现在到哪一步了” | `run_stage.py --symbol <代码> --json`（看阶段是否稳定加 `--history 120`，出图加 `--plot`） | 阶段中文（stage_cn）+ 置信度与判定依据（rule）+ 位置分位 + 突破价/破位价（trigger）+ 该阶段应对姿态（posture）。**阶段定位与三灯是两个互不干扰的独立能力：只跑 run_stage、只转述阶段结论，不要顺手链跑 run_score 也不要把三灯结论混进来**；只有用户另行明确问「能不能买/该不该卖」时才单独跑 run_score，并把两份结论分开陈述；置信度 low（结构不清）时不得强行给结论；阶段是描述性统计、有滞后，不预测涨跌 |
 | “帮我记一下持仓 / 我的持仓怎么样了” | 登记 `run_account.py --set --symbol <代码> --shares N --cost P`；查看 `run_account.py --json` | 持仓清单与浮盈亏；登记后 run_score/run_scan 自动联动（带入成本/标注已持有） |
 | “我是保守型/平衡型/激进型投资者 / 记住我的风险偏好 / 我只有20万” | `run_profile.py --set --risk-tolerance <档位> --capital N --json` | 画像登记结果；说明后续 run_score 的建议仓位会因人而异（显式参数优先） |
 | "最近有什么值得买的 / 帮我从这几只里挑一挑" | `run_scan.py --symbols <逗号列表> --json`（或 `--universe`，需 Key） | 达标/降级分列；扫描仅覆盖势/时维度（价灯未评估），建议对入选者再跑 run_score 补全价维度复核 |
@@ -290,7 +290,7 @@ tf = TickFlow.free()                # （实时快照/日内分时等）；此�
 | 新闻情绪 | `run_sentiment.py --stage fetch` 抓新闻 → agent 打分 → `--stage backtest`（agent-in-the-loop 三步） | sentiment.md |
 | 定投 DCA | `run_dca.py`；增强模式 `--mode smart/dip/value_avg`，A 股分红建模 `--dividends` | dca.md |
 | 单股买点三灯 | `run_score.py` 价/势/时三维亮灯 + 决策矩阵结论 + 交易计划与建议仓位；估值分位默认拉取（`--no-valuation` 跳过）、`--macro` 宏观环境、`--replay` 回放验证、`--fetch-events` 事件风险 | scoring.md |
-| 个股阶段定位 | `run_stage.py` 箱体 + 位置分位 + 均线结构 → 七态（筑底/突破/推进/派发/破位/下降）+ 突破价/破位价；`--history` 阶段迁移轨迹、`--window` 调箱体周期；只答「在哪」，买卖交回 run_score | stage.md |
+| 个股阶段定位 | `run_stage.py` 箱体 + 位置分位 + 均线结构 → 七态（筑底/突破/推进/派发/破位/下降）+ 突破价/破位价；`--history` 阶段迁移轨迹、`--window` 调箱体周期；与三灯互不串联，各自独立出结论 | stage.md |
 | 市场扫描选候选 | `run_scan.py` 流动性初筛 + 批量三灯（仅势/时维度），达标/降级分列 | scoring.md |
 | 低估值/潜力筛选 | `run_screener.py` 基本面硬阈值漏斗（A 股免费全市场；`--universe us` 美股全市场，市值阈值单位变亿美元）；`--preset multibagger` 十倍股统计特征，`--preset hundredbagger` 百倍股质量成长（迈耶书中标准），`--preset monster` 猛兽股右侧强势（波伊克书中标准），`--preset dhq` 打折的高质量股（马哈尼书中标准），`--preset superstock` 超级强势股（斯泰恩书中标准），`--preset fisher` 成长质量（费雪《怎样选择成长股》15 要点标准：营收+研发驱动，利润率趋势不恶化且无增发稀释），`--preset navellier` 八大指标成长股（纳维里尔书中标准：双高增+高ROE+现金流+机构预期+盈利动能），`--preset dividend` 红利股左侧（高股息+低估值+低分位+连续分红，候选接 run_dca 分批建仓） | scoring.md |
 | CAN SLIM 核查 | `run_canslim.py` 欧奈尔七项逐项核查，多标的横截面 RS 排名 | canslim.md |
