@@ -296,9 +296,14 @@ uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml
 # 结构化 JSON（含规则摘要 rules 字段）
 uv run python run_custom.py --symbol AAPL.US --rules my_rule.toml --json
 
-# 现成《炒股的智慧》规则（关键点突破入场 + 金字塔加仓 + 趋势破坏离场）
+# 现成《炒股的智慧》规则（大势+多头排列顺势，关键点放量突破入场，金字塔加仓，趋势破坏离场）
 uv run python run_custom.py --symbol 600000.SH --rules examples/wisdom_rule.toml --stop-loss 0.05 --plot
 ```
+
+`run_custom.py` 的输出除回测绩效外，还会按规则信号给出**当前状态**
+（JSON 的 `current_state` 字段）：持仓（让利润奔跑）/ 建仓中（金字塔未满）/
+刚离场观察（趋势刚破坏）/ 空仓等待（入场条件未满足），回答“按这套规则
+现在该处于什么状态”。
 
 指标/运算符白名单可用 `run_list.py --json` 的 `custom_dsl` 字段查询。
 自定义规则**未经样本外验证**，回测结果不代表未来收益；建议与内置策略对比

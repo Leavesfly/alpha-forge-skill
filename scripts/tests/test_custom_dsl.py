@@ -363,3 +363,106 @@ class TestPyramid:
         nonzero = result.positions[result.positions != 0.0]
         assert (nonzero <= 1.0 + 1e-9).all()
         assert (nonzero.round(2).isin([0.25, 0.5, 0.75, 1.0])).all()
+
+
+# ---------------------------------------------------------------------------
+# 当前状态判定（run_custom.describe_current_state）
+# ---------------------------------------------------------------------------
+
+
+def _state_rules(pyramid: bool = False) -> dict:
+    """构造最简均线穿越规则（用于状态判定测试）。"""
+    rules = {
+        "meta": {"name": "state_test"},
+        "indicators": {"ma": {"type": "sma", "period": 5}},
+        "entry": {"conditions": ["close crosses_above ma"]},
+        "exit": {"conditions": ["close crosses_below ma"]},
+    }
+    if pyramid:
+        rules["pyramid"] = {"units": 4, "step": 0.03}
+    return rules
+
+
+class TestCurrentState:
+    def test_holding_when_entry_active(self):
+        """突破后一路持有至今 → 「持仓」。"""
+        from run_custom import describe_current_state
+        from tests.helpers import make_ohlcv
+
+        close = np.concatenate([np.full(60, 100.0), np.linspace(100.0, 120.0, 20)])
+        state = describe_current_state(CustomStrategy(_state_rules()), make_ohlcv(close))
+        assert state["state"] == "持仓"
+        assert state["signal"] == 1.0
+        assert {"signal", "state", "note"} <= set(state)
+
+    def test_pyramid_building_partial_position(self):
+        """入场后浮盈不足以触发加仓 → 「建仓中」（分数仓位）。"""
+        from run_custom import describe_current_state
+        from tests.helpers import make_ohlcv
+
+        close = np.concatenate([np.full(30, 100.0), np.linspace(100.0, 101.0, 5)])
+        state = describe_current_state(
+            CustomStrategy(_state_rules(pyramid=True)), make_ohlcv(close)
+        )
+        assert state["state"] == "建仓中"
+        assert 0.0 < state["signal"] < 1.0
+
+    def test_just_exited_after_trend_break(self):
+        """刚跌破均线离场 → 「刚离场观察」。"""
+        from run_custom import describe_current_state
+        from tests.helpers import make_ohlcv
+
+        close = np.concatenate([
+            np.full(40, 100.0),
+            np.linspace(100.0, 110.0, 10),  # 突破并持有
+            np.linspace(108.0, 100.0, 4),   # 跌破离场（发生在最后几根）
+        ])
+        state = describe_current_state(CustomStrategy(_state_rules()), make_ohlcv(close))
+        assert state["state"] == "刚离场观察"
+        assert state["signal"] == 0.0
+
+    def test_waiting_when_never_triggered(self):
+        """从未触发入场 → 「空仓等待」。"""
+        from run_custom import describe_current_state
+        from tests.helpers import make_ohlcv
+
+        state = describe_current_state(
+            CustomStrategy(_state_rules()), make_ohlcv(np.full(60, 100.0))
+        )
+        assert state["state"] == "空仓等待"
+
+    def test_waiting_when_exited_long_ago(self):
+        """离场已久且无新信号 → 归为常规「空仓等待」。"""
+        from run_custom import _RECENT_EXIT_BARS, describe_current_state
+        from tests.helpers import make_ohlcv
+
+        close = np.concatenate([
+            np.full(40, 100.0),
+            np.linspace(100.0, 110.0, 10),
+            np.linspace(108.0, 100.0, 4),
+            np.full(_RECENT_EXIT_BARS + 10, 100.0),  # 离场后长期横盘
+        ])
+        state = describe_current_state(CustomStrategy(_state_rules()), make_ohlcv(close))
+        assert state["state"] == "空仓等待"
+
+
+def test_wisdom_rule_file_is_valid_and_runnable():
+    """《炒股的智慧》规则文件必须可加载、可校验、能出信号（防改坏回归）。"""
+    from pathlib import Path
+
+    from tests.helpers import make_ohlcv
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "wisdom_rule.toml"
+    rules = load_rules(path)
+    assert rules["meta"]["name"] == "wisdom"
+    entry_conds = rules["entry"]["conditions"]
+    assert "close > ma200" in entry_conds, "大势过滤（200 日线）不能丢"
+    assert "ma20 > ma60" in entry_conds, "多头排列条件不能丢"
+
+    strategy = CustomStrategy(rules)
+    n = 400  # 需超过 ma200 预热期
+    close = np.concatenate([np.full(250, 100.0), np.linspace(100.0, 130.0, 150)])
+    volume = np.linspace(1000.0, 3000.0, n)  # 升势中递增量能，满足放量条件
+    signals = strategy.generate_signals(make_ohlcv(close, volume=volume))
+    assert len(signals) == n
+    assert signals.iloc[-1] >= 0.0

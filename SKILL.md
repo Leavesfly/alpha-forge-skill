@@ -61,7 +61,7 @@ metadata: {"clawdbot":{"emoji":"📈","homepage":"https://tickflow.org","require
 | “XX 用什么策略好 / 哪个策略适合 XX” | `run_compare.py --symbol <代码> --json` | 最优策略 + 夏普/回撤 + 是否跑赢 Buy&Hold；提示样本内选冠军有偏差 |
 | “帮我回测一下 XX 的 YY 策略” | `run_backtest.py --symbol <代码> --strategy <策略> --json`（出图加 `--plot`） | 累计/年化收益、夏普、最大回撤，并与基准对比；回测不代表未来 |
 | “我想自己定义一个策略：金叉且 RSI 不过热时买……” | agent 按用户描述生成 TOML 规则文件（格式见 `examples/custom_rule.toml`，指标/运算符白名单用 `run_list.py --json` 查），再 `run_custom.py --symbol <代码> --rules <文件> --json` | 规则如何被解析（入场/离场条件）+ 回测结果 vs 基准；提醒自定义规则未经样本外验证 |
-| “用炒股的智慧 / 陈江挺那套 / 突破加仓法回测” | `uv run python run_custom.py --symbol <代码> --rules examples/wisdom_rule.toml --json`（出图加 `--plot`） | 现成规则直接跑：顺势（>60 日均线）+ 布林上轨突破 + 放量确认入场，跌破 20 日均线离场让利润奔跑，`[pyramid]` 分 4 批金字塔加仓；建议搭配 `--stop-loss 0.05` 截断亏损；回测不代表未来 |
+| “用炒股的智慧 / 陈江挺那套 / 突破加仓法回测” | `uv run python run_custom.py --symbol <代码> --rules examples/wisdom_rule.toml --json`（出图加 `--plot`） | 现成规则直接跑：大势（>200 日线）+ 多头排列（ma20>ma60）+ 布林上轨放量突破入场，跌破 20 日均线离场让利润奔跑，`[pyramid]` 分 4 批金字塔加仓；建议搭配 `--stop-loss 0.05` 截断亏损。**转述必须包含 current_state 字段：按该规则标的当前处于什么状态（持仓/建仓中/刚离场观察/空仓等待）及应对说明**；回测不代表未来 |
 | “帮我调参 / 找最优参数” | `run_optimize.py --symbol <代码> --strategy <策略> --json`（大网格加 `--method random`） | 最优参数 + DSR 诊断结论；DSR<90% 时必须提醒过拟合风险并建议 run_validate |
 | “这策略靠谱吗 / 是不是过拟合” | `run_validate.py --symbol <代码> --strategy <策略> --pbo --json` | 样本外夏普 vs 样本内、PBO 概率；以样本外为准 |
 | “这几只股票帮我做个组合” | `run_portfolio.py --symbols <列表> --strategy momentum --json` | 组合 vs 等权基准；调仓频率与成本假设 |

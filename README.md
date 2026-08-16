@@ -167,6 +167,9 @@ uv run python run_compare.py --symbol 600000.SH --plot
 # 自定义策略 DSL（TOML 规则文件，Agent 可按自然语言生成）
 uv run python run_custom.py --symbol 600000.SH --rules examples/custom_rule.toml --plot
 
+# 现成《炒股的智慧》规则（顺势突破入场 + 金字塔加仓），输出含当前状态（持仓/建仓中/刚离场观察/空仓等待）
+uv run python run_custom.py --symbol 600000.SH --rules examples/wisdom_rule.toml --stop-loss 0.05 --json
+
 # 参数寻优（网格/随机/贝叶斯，多核并行）
 uv run python run_optimize.py --symbol 600000.SH --strategy ma_cross --method bayes
 

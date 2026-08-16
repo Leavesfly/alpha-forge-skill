@@ -42,6 +42,57 @@ from naming import default_output
 from report import attach_meta, metrics_table, render_backtest_report, result_to_dict
 from strategies.custom import CustomStrategy, DSLValidationError, load_rules
 
+#: 「刚离场」的观察窗口：离场后 N 根 K 线内提示「刚离场观察」，
+#: 更早则视为常规的「空仓等待」。
+_RECENT_EXIT_BARS = 10
+
+
+def describe_current_state(strategy, df) -> dict:
+    """按规则信号判断标的**现在**处于什么状态（回测之外的实时结论）。
+
+    只看最新一根 K 线的规则信号与最近的信号变化，输出四种状态：
+    持仓（让利润奔跑）/ 建仓中（金字塔未满）/ 刚离场观察 / 空仓等待信号。
+
+    Returns:
+        {"signal": 最新信号值, "state": 状态中文, "note": 一句话应对}
+    """
+    sig = strategy.generate_signals(df)
+    last = float(sig.iloc[-1])
+    if last >= 1.0:
+        return {
+            "signal": round(last, 4), "state": "持仓",
+            "note": "规则信号仍在持有：离场条件未触发，按纪律让利润奔跑，不猜顶。",
+        }
+    if last > 0:
+        return {
+            "signal": round(last, 4), "state": "建仓中",
+            "note": "试探仓已建立但金字塔未加满：仅在浮盈继续扩大时按规则加码，不加亏损仓。",
+        }
+    if last <= -1.0:
+        return {
+            "signal": round(last, 4), "state": "持空",
+            "note": "规则信号持有空头（allow_short 开启），仅适用于可做空市场。",
+        }
+    if last < 0:
+        return {
+            "signal": round(last, 4), "state": "建空仓中",
+            "note": "空头试探仓已建立但未加满，仅适用于可做空市场。",
+        }
+    # 空仓：区分「刚离场」与「常规等待」
+    nonzero = sig[sig != 0]
+    if not nonzero.empty:
+        bars_ago = len(sig) - 1 - int(sig.index.get_loc(nonzero.index[-1]))
+        if bars_ago <= _RECENT_EXIT_BARS:
+            return {
+                "signal": 0.0, "state": "刚离场观察",
+                "note": f"离场信号于 {bars_ago} 根 K 线前触发，趋势刚被破坏；"
+                        "按书中纪律先离场后判断，等新信号再动。",
+            }
+    return {
+        "signal": 0.0, "state": "空仓等待",
+        "note": "入场条件尚未满足：等待关键点出现，不追不抢，错过就错过。",
+    }
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = make_parser("Alpha Forge 自定义规则策略回测（DSL）", __doc__)
@@ -154,6 +205,10 @@ def main() -> None:
         "成交价": args.exec_price,
     }
 
+    # 回测之外的实时结论：按规则信号告诉用户标的现在处于什么状态
+    state = describe_current_state(strategy, df)
+    log(f"\n当前状态：{state['state']}（信号 {state['signal']:+.2f}）——{state['note']}")
+
     log("")
     metrics_table(
         {"策略": result.metrics, "基准 Buy&Hold": result.benchmark_metrics},
@@ -186,8 +241,7 @@ def main() -> None:
 
     log_next_steps(
         log,
-        "参数寻优（调整规则中的 period 等参数）：修改规则文件后重跑",
-        f"样本外验证 run_validate.py --symbol {args.symbol} --strategy ma_cross",
+        "参数寻优（调整规则中的 period 等参数）：修改规则文件后重跑对比",
         f"对比内置策略 run_compare.py --symbol {args.symbol}",
     )
 
@@ -199,20 +253,20 @@ def main() -> None:
         m = result.metrics
         bm = result.benchmark_metrics
         beat = "跑赢" if m.get("sharpe", 0) > bm.get("sharpe", 0) else "跑输"
+        payload["current_state"] = state
         payload["summary"] = (
             f"{args.symbol} 使用自定义规则「{rule_name}」回测："
             f"累计收益 {m.get('total_return', 0) * 100:+.1f}%，"
             f"夏普 {m.get('sharpe', 0):.2f}，最大回撤 {m.get('max_drawdown', 0) * 100:.1f}%，"
             f"{beat}基准 Buy&Hold（夏普 {bm.get('sharpe', 0):.2f}）。"
+            f"按该规则，当前处于「{state['state']}」——{state['note']}"
             f"回测不代表未来收益。"
         )
         payload["next_steps"] = build_next_steps(
             {"action": "compare", "reason": "对比内置 14 个策略，看自定义规则是否更优",
              "command": f"run_compare.py --symbol {args.symbol} --json"},
-            {"action": "validate", "reason": "样本外验证规则稳健性",
-             "command": f"run_validate.py --symbol {args.symbol} --strategy ma_cross --json"},
-            {"action": "paper", "reason": "用自定义规则纸面跟踪",
-             "command": f"run_paper.py --symbol {args.symbol} --strategy ma_cross --json"},
+            {"action": "optimize", "reason": "调整规则文件中的 period 等参数后重跑对比",
+             "command": f"run_custom.py --symbol {args.symbol} --rules {rules_path} --json"},
         )
         payload = attach_meta(payload, command="custom")
         emit_json(args.json, payload, log)
